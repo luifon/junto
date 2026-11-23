@@ -26,7 +26,6 @@ pub(crate) struct AccountTarget {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CallSurface {
     Hidden,
-    InviteChoice,
     Presenter,
     RaisedHand,
     MeetingWaiting,
@@ -38,6 +37,8 @@ pub(crate) enum CallSurface {
     Member {
         inside: bool,
     },
+    /// The row of a person in the call in the list of channels (ADR 0735).
+    Row,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -251,7 +252,6 @@ impl OpenAccountMenu {
                                         .any(|person| person.account_id == *account_id)
                             }
                             CallSurface::Hidden
-                            | CallSurface::InviteChoice
                             | CallSurface::Presenter
                             | CallSurface::RaisedHand
                             | CallSurface::MeetingWaiting => {
@@ -666,6 +666,8 @@ impl Shell {
                     && lists.notices.is_none()
                     && self.call_panel_shown(self.call_panel_overlay, cx)
             }
+            // The list of channels shows the row while the call is drawn.
+            CallSurface::Row => true,
             _ => false,
         }
     }

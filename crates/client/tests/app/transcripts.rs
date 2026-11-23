@@ -521,17 +521,47 @@ fn the_parts_of_a_recording_saved_in_part_state_their_time_ranges(cx: &mut TestA
             .card_detail(recording_id)
             .filter(|detail| matches!(detail.job, JobShown::PartlyFailed { .. }))
     });
-    assert!(!window.shows("recording-parts-list"));
-    window.click("recording-parts");
-    assert!(window.shows("recording-parts-list"));
-    for index in 0..detail.parts.len() {
-        assert!(window.shows_named(format!("recording-part:{index}")));
-    }
-    window.right_click_named("recording-part:0".to_owned());
+    // One list of the files: every part, saved or not, with its state and time range.
+    assert!(!window.shows("recording-files"));
+    window.click("download-recording");
+    assert!(window.shows("recording-files"));
+    let rows = |window: &mut Window| {
+        (0..detail.files.len())
+            .map(|position| format!("recorded-file-{position}"))
+            .chain(
+                detail
+                    .parts
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, part)| {
+                        !detail
+                            .files
+                            .iter()
+                            .any(|file| file.segment_id == part.segment_id)
+                    })
+                    .map(|(index, _)| format!("recording-part:{index}")),
+            )
+            .filter(|name| window.shows_named(name.clone()))
+            .count()
+    };
+    assert_eq!(rows(&mut window), detail.parts.len());
+    // The failed shared sound has no file: its row copies its name, state and time range.
+    let (index, failed) = detail
+        .parts
+        .iter()
+        .enumerate()
+        .find(|(_, part)| part.failed)
+        .unwrap();
+    window.right_click_named(format!("recording-part:{index}"));
     window.click("context-action:Copy text");
-    assert!(window.shows("recording-parts-list"));
+    assert!(window.shows("recording-files"));
     let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
-    assert!(copied.contains(&detail.parts[0].title) && copied.contains(&detail.parts[0].state));
+    assert!(
+        copied.contains(&failed.title)
+            && copied.contains(&failed.state)
+            && copied.contains(failed.span.as_deref().unwrap()),
+        "{copied}"
+    );
     // Each part states the range that the recorder reported for it, in the time of day of
     // the person: the seconds between its start and its end are those of the server.
     let held = world
@@ -564,7 +594,7 @@ fn the_parts_of_a_recording_saved_in_part_state_their_time_ranges(cx: &mut TestA
             .any(|part| part.title == text::RECORDING_VIDEO)
     );
     window.press("escape");
-    assert!(!window.shows("recording-parts-list"));
+    assert!(!window.shows("recording-files"));
 }
 
 /// The connected call of this device in the voice channel, as the media engine states it,
@@ -684,13 +714,16 @@ fn a_recording_starts_in_a_chosen_language_and_is_cancelled_while_the_recorder_s
         window.shows("start-recording") && window.may_record()
     });
 
-    // "Record" opens the languages; the choice of one starts the recording with it.
-    window.click("start-recording");
+    // The arrow beside "Record" opens the languages; the choice of one starts the
+    // recording with it, and the field finds a language by its name.
+    window.click("record-language");
     assert!(window.shows("record-language-menu"));
-    // A second click on the button closes the list.
-    window.click("start-recording");
+    // A second click on the arrow closes the list.
+    window.click("record-language");
     assert!(!window.shows("record-language-menu"));
-    window.click("start-recording");
+    window.click("record-language");
+    window.type_into("record-language-find", "portu");
+    assert!(window.shows("record-language:pt") && !window.shows("record-language:de"));
     reveal_language(&mut window, "record-language:pt");
     window.click("record-language:pt");
     assert!(!window.shows("record-language-menu"));
@@ -718,10 +751,10 @@ fn a_recording_starts_in_a_chosen_language_and_is_cancelled_while_the_recorder_s
         "the cancelled recording is still active: {state:?}"
     );
 
-    // A recording with the language of each sentence detected. "Cancel" becomes "Stop"
-    // at the same place when the recorder runs it (ADR 0730).
+    // "Record" starts at once, in the default language of the server. "Cancel" becomes
+    // "Stop" at the same place when the recorder runs it (ADR 0730).
     window.click("start-recording");
-    window.click("record-language:auto");
+    assert!(!window.shows("record-language-menu"));
     window.until("the recorder starts the second recording", |window| {
         window.shows("cancel-recording")
     });
@@ -735,7 +768,7 @@ fn a_recording_starts_in_a_chosen_language_and_is_cancelled_while_the_recorder_s
     let (state, language, _) = recording_of(&world, &admin, workspace_id).unwrap();
     assert_eq!(
         (state, language.as_str()),
-        (RecordingState::Recording, "auto")
+        (RecordingState::Recording, "en")
     );
     window.click("stop-recording");
     window.until("the server takes the stop", |_| stopped(&world));
@@ -1032,13 +1065,10 @@ const RECORDING_PARTS: [&str; 6] = [
     "recording-details",
 ];
 
-const HEADER_BUTTONS: [&str; 7] = [
-    "call-on-top",
+const HEADER_BUTTONS: [&str; 4] = [
     "return-call",
-    "call-fullscreen",
     "open-call-chat",
     "open-call-members",
-    "open-call-settings",
     "open-call-notices",
 ];
 
@@ -1145,7 +1175,6 @@ fn the_recording_control_of_the_call_window_fits_beside_its_buttons_in_every_sta
     recording_control_fits("may record", &mut window, &mut call, &mut panels);
 
     call.click("start-recording");
-    call.click("record-language:auto");
     call.until("the recorder starts the recording", |call| {
         call.shows("cancel-recording") && call.shows("recording-indicator")
     });
@@ -1182,7 +1211,6 @@ fn the_recording_control_of_the_call_window_fits_beside_its_buttons_in_every_sta
     // Without a recorder the next recording fails: the flag, its details and a new start.
     server.set_recorder_running(false);
     call.click("start-recording");
-    call.click("record-language:auto");
     call.until("the recording starts", |call| {
         call.shows("cancel-recording")
     });
@@ -1372,9 +1400,7 @@ fn a_recording_context_menu_copies_its_link_and_opens_its_transcript(cx: &mut Te
 }
 
 #[gpui::test]
-fn transcript_row_menus_copy_text_and_recording_links_and_open_at_the_line(
-    cx: &mut TestAppContext,
-) {
+fn transcript_row_menus_copy_text_and_recording_links(cx: &mut TestAppContext) {
     use junto_client_core::address::ServerAddress;
     use junto_client_core::links::{self, AppLink};
     let Scene {
@@ -1391,12 +1417,8 @@ fn transcript_row_menus_copy_text_and_recording_links_and_open_at_the_line(
     let id = world.run(server.record(voice, &[&admin.handle, &luca]));
     let said = "Café planning 世界";
     world.run(server.transcribe(id, &[spoken(ada, Some(1), 100, said)]));
-    window.click_channel("Daily");
-    window.until("the transcript preview is ready", |window| {
-        window
-            .card_detail(id)
-            .is_some_and(|detail| detail.transcript.held == 1)
-    });
+    // The card states the transcript in one line; its lines are in the side panel.
+    open_panel(&mut window, id, 1);
     window.right_click_named("transcript-spoken:0".to_owned());
     window.click_named("context-action:Copy text".to_owned());
     assert_eq!(
@@ -1404,11 +1426,6 @@ fn transcript_row_menus_copy_text_and_recording_links_and_open_at_the_line(
         said
     );
     assert!(window.shows("copied-confirmation"));
-    window.right_click_named("transcript-spoken:0".to_owned());
-    window.click_named("context-action:Open transcript".to_owned());
-    window.until("the transcript opens at its selected line", |window| {
-        window.shows_named("marked-line:0".to_owned())
-    });
     window.right_click_named("transcript-spoken:0".to_owned());
     window.click_named("context-action:Copy recording link".to_owned());
     assert_eq!(
@@ -1480,35 +1497,21 @@ fn transcript_microphone_and_shared_audio_owner_identities_have_their_own_menus(
             spoken(ada, Some(1), 200, "A shared voice"),
         ],
     ));
-    window.click_channel("Daily");
-    window.until("both transcript lines are available", |window| {
-        window
-            .card_detail(id)
-            .is_some_and(|detail| detail.transcript.held == 2)
-    });
+    open_panel(&mut window, id, 2);
     for line in [0, 1] {
-        window.right_click_named(format!("transcript-identity:card:{id}:{line}"));
+        window.right_click_named(format!("transcript-identity:panel:{id}:{line}"));
         window.click("context-action:Copy account ID");
         assert_eq!(
             window.cx.read_from_clipboard().unwrap().text().unwrap(),
             ada.to_string()
         );
-        window.right_click_named(format!("transcript-identity:card:{id}:{line}"));
+        window.right_click_named(format!("transcript-identity:panel:{id}:{line}"));
         window.click("context-action:Copy name");
         assert_eq!(
             window.cx.read_from_clipboard().unwrap().text().unwrap(),
             "Ada"
         );
     }
-    window.right_click_named("transcript-spoken:0".to_owned());
-    window.click("context-action:Open transcript");
-    window.until("the panel is open", |window| window.panel().is_some());
-    window.right_click_named(format!("transcript-identity:panel:{id}:0"));
-    window.click("context-action:Copy account ID");
-    assert_eq!(
-        window.cx.read_from_clipboard().unwrap().text().unwrap(),
-        ada.to_string()
-    );
     window.right_click_named(format!("transcript-identity:panel:{id}:0"));
     window.press("escape");
     assert!(window.panel().is_some());

@@ -450,7 +450,6 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || {
         routes!(calls::raise_hand, calls::lower_hand)
     });
-    add(&mut router, || routes!(calls::report_speaking));
     add(&mut router, || routes!(calls::get_channel_call));
     add(&mut router, || routes!(calls::update_call_settings));
     add(&mut router, || routes!(calls::set_voice_channel_status));
@@ -491,6 +490,12 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         routes!(recordings::start_recording, recordings::stop_recording)
     });
     add(&mut router, || routes!(recordings::list_recordings));
+    add(&mut router, || {
+        routes!(
+            recordings::get_recording_settings,
+            recordings::set_recording_settings
+        )
+    });
     add(&mut router, || {
         routes!(recordings::get_recording, recordings::remove_recording)
     });

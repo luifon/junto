@@ -703,6 +703,8 @@ fn a_press_on_a_card_answers_its_own_invitation_when_another_arrives(cx: &mut Te
 
     show(&mut window, vec![first.clone()]);
     let place = bounds_of(&mut window, "invitation-join").center();
+    let accept = selector(format!("invitation-accept:{}", first.id));
+    let drawn = bounds_of(&mut window, accept).origin;
     let (down, up) = press_events(place);
     window.dispatch(down);
     show(&mut window, vec![first.clone(), second.clone()]);
@@ -721,8 +723,7 @@ fn a_press_on_a_card_answers_its_own_invitation_when_another_arrives(cx: &mut Te
     });
     assert_eq!(failed.place, first.place);
     // The drawn card stayed in its place; the new one follows it.
-    let join = selector(format!("invitation-accept:{}", first.id));
-    assert_eq!(bounds_of(&mut window, join).center(), place);
+    assert_eq!(bounds_of(&mut window, accept).origin, drawn);
 }
 
 #[gpui::test]
@@ -744,19 +745,21 @@ fn a_received_share_has_a_keyboard_reachable_sound_control(cx: &mut TestAppConte
     });
     call.watched = Some(junto_media::engine::ShareId::of(account_id, 0));
     give_calls(&mut window, call);
-    assert!(window.shows("share-mute-header"));
+    assert!(window.shows("share-sound-control"));
     let members = if window.shows("open-call-members") {
         "open-call-members"
     } else {
         "call-tab-members"
     };
+    // The sound of a share has one control, on the line of the watched share; Members
+    // lists people only.
     window.click(members);
-    assert!(window.shows("member-share-sound"));
+    assert!(!window.shows("member-share-sound"));
     window.click("detach-call");
     let mut detached = window.call_window();
-    assert!(detached.shows("share-mute-header"));
+    assert!(detached.shows("share-sound-control"));
     detached.click("open-call-members");
-    assert!(detached.shows("member-share-sound"));
+    assert!(!detached.shows("member-share-sound"));
 }
 
 #[gpui::test]
@@ -811,7 +814,17 @@ fn local_input_while_muted_shows_a_notice_in_both_windows(cx: &mut TestAppContex
             .state
             .read_with(&window.cx, |state, _| state.shown_levels().input > 7)
     });
-    assert!(window.shows("muted-speech"));
+    // The notice waits for a few seconds of continuous speech (ADR 0735).
+    let measured = window.cx.executor().now();
+    assert!(!window.shows("muted-speech"));
+    window.until("continuous speech shows the notice", |window| {
+        window.shows("muted-speech")
+    });
+    let waited = window.cx.executor().now().duration_since(measured);
+    assert!(
+        waited >= junto_client::state::muted_speech::ONSET,
+        "{waited:?}"
+    );
     calls.show_levels_for_test(junto_media::engine::Levels {
         input: 1.0,
         people: [(
@@ -824,6 +837,7 @@ fn local_input_while_muted_shows_a_notice_in_both_windows(cx: &mut TestAppContex
         .into(),
         ..Default::default()
     });
+    // Remote sound alone is no speech: the notice goes after its hold.
     window.until(
         "remote sound alone shows no muted speech warning",
         |window| !window.shows("muted-speech"),

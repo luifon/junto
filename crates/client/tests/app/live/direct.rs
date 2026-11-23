@@ -680,9 +680,12 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
         heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS
     });
 
-    // The volume of the other person.
-    let slider = crate::harness::selector(format!("volume:{other}"));
-    window.until("the volume control is drawn", |window| window.shows(slider));
+    // The volume of the other person, in the menu of the person.
+    window.until("the other person is listed in the call", |window| {
+        window.shows_named(format!("call-member:{other}"))
+    });
+    window.right_click_named(format!("call-member:{other}"));
+    let slider = "call-menu-volume";
     window.click(slider);
     window.press(&["left"; 20].join(" "));
     window.until("the other person is not played", |window| {
@@ -697,6 +700,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
     window.until("the other person is played again", |window| {
         heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS
     });
+    window.press("escape");
 
     // The chat of the call is the conversation.
     window.click("call-tab-chat");
@@ -719,7 +723,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
 
     // The microphone, the speaker and the camera, in the settings of the application at
     // "Voice and video".
-    window.click("open-call-settings");
+    window.open_call_devices();
     window.until("the devices are listed", |window| {
         direct_panel(window)
             .is_some_and(|panel| panel.audio.inputs.len() == 2 && panel.audio.outputs.len() == 2)
@@ -790,7 +794,8 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
         },
     );
     // The volume of the watched share, and the quality of the own share.
-    // The slider is on the line of the watched share (ADR 0738).
+    // The slider is in the menu of the speaker of the watched share (ADR 0738).
+    window.click("share-sound-control");
     window.tab_to("share-volume");
     window.press(&["left"; 20].join(" "));
     window.until("the share is not played", |window| {
@@ -799,7 +804,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
             .is_some_and(|stage| stage.volume == 0)
             && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
     });
-    window.click("open-call-settings");
+    window.open_call_devices();
     window.click_in_settings("share-resolution-0");
     window.click_in_settings("share-frame-rate-0");
     window.press("escape");

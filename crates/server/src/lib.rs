@@ -198,9 +198,9 @@ pub fn event_revisions_document(committed: &str) -> Result<String, String> {
 /// The tasks that run beside the requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tasks {
-    /// The admission check of calls, the publication of speaking marks, the controller of
-    /// recordings, the processing of their files and the transcription, at their intervals
-    /// (ADR 0509, ADR 0513, ADR 0604, ADR 0606, ADR 0607). Tests that fix the order of
+    /// The admission check of calls, the controller of recordings, the processing of their
+    /// files and the transcription, at their intervals (ADR 0509, ADR 0604, ADR 0606,
+    /// ADR 0607). Tests that fix the order of
     /// things switch them off and run each step themselves.
     pub calls: bool,
 }
@@ -228,7 +228,6 @@ pub async fn serve_with(
     running.spawn(events::watcher::run(state.clone()));
     if tasks.calls && state.calls.media().is_some() {
         running.spawn(calls::admission::run(state.clone()));
-        running.spawn(calls::speaking::run(state.clone()));
         running.spawn(recordings::control::run(state.clone()));
     }
     if tasks.calls && state.recordings.backend().is_some() {

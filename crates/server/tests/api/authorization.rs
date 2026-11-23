@@ -336,6 +336,20 @@ async fn world() -> World {
             &forbidden,
         ),
         operation(
+            Method::GET,
+            "/api/v1/server/recording-settings",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/server/recording-settings",
+            &[],
+            json!({ "language": "de" }),
+            &forbidden,
+        ),
+        operation(
             Method::PUT,
             "/api/v1/workspaces/{workspace_id}/logo",
             &[&ws],
@@ -1188,13 +1202,6 @@ async fn world() -> World {
         ),
         operation(Method::PUT, "/api/v1/call/hand", &[], none.clone(), &own),
         operation(Method::DELETE, "/api/v1/call/hand", &[], none.clone(), &own),
-        operation(
-            Method::PUT,
-            "/api/v1/call/speaking",
-            &[],
-            json!({ "speaking": true }),
-            &own,
-        ),
         operation(
             Method::GET,
             "/api/v1/channels/{channel_id}/call",

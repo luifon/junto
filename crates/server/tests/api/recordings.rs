@@ -4,8 +4,8 @@
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::recording::{
-    Recording, RecordingFailure, RecordingPage, RecordingState, RecordingStopReason,
-    SegmentFailure, SegmentSource, SegmentState,
+    Recording, RecordingFailure, RecordingPage, RecordingSettings, RecordingState,
+    RecordingStopReason, SegmentFailure, SegmentSource, SegmentState,
 };
 use junto_protocol::server::Health;
 use junto_protocol::{WorkspacePermission, WorkspacePermission as W};
@@ -57,6 +57,7 @@ async fn a_participant_with_the_permission_starts_a_recording_with_one_job_per_a
         (started.workspace_id, started.channel_id),
         (scene.workspace_id, voice)
     );
+    // A request without a language takes the default of the server: English.
     assert_eq!(started.language, "auto");
     assert_eq!((started.segments, started.failed_segments), (0, 0));
     assert_eq!(started.recording_since, None);
@@ -242,6 +243,54 @@ async fn only_a_participant_with_the_permission_starts_and_stops_a_recording() {
         .await
         .error(ErrorCode::Forbidden);
     assert_eq!(server.recording(ben, started.id).await.recording.stop, None);
+}
+
+/// ADR 0604: the default spoken language of the recordings is a setting of the server,
+/// English at first, read by every account and set by an administrator; a recording that
+/// names no language takes it.
+#[tokio::test]
+async fn a_recording_that_asks_for_the_default_language_takes_the_one_of_the_server() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, owner, ann) = (&scene.server, &scene.owner, &scene.ann);
+    let voice = scene.voice.id;
+    let settings = "/api/v1/server/recording-settings";
+    let read: RecordingSettings = server.get(ann, settings).await.ok(StatusCode::OK);
+    assert_eq!(read.language, "en");
+    server
+        .put(ann, settings, &json!({ "language": "pt" }))
+        .await
+        .error(ErrorCode::Forbidden);
+    for language in ["english", "EN", "pt-BR", ""] {
+        server
+            .put(owner, settings, &json!({ "language": language }))
+            .await
+            .error(ErrorCode::InvalidRequest);
+    }
+    let set: RecordingSettings = server
+        .put(owner, settings, &json!({ "language": "pt" }))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(set.language, "pt");
+    let read: RecordingSettings = server.get(ann, settings).await.ok(StatusCode::OK);
+    assert_eq!(read.language, "pt");
+
+    // A request without a language detects the language of each sentence, as a client of
+    // API version 1 before the default language asks for it; `default` takes the default.
+    let started: Recording = server
+        .put(
+            ann,
+            &format!("/api/v1/channels/{voice}/call/recording"),
+            &json!({ "language": "default" }),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(started.language, "pt");
+    // The detection of each sentence is a default that an administrator may choose.
+    let _: RecordingSettings = server
+        .put(owner, settings, &json!({ "language": "auto" }))
+        .await
+        .ok(StatusCode::OK);
 }
 
 #[tokio::test]

@@ -11,8 +11,7 @@ use junto_protocol::call::{
     DirectMute, EndScreenShareQuery, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall,
     LeaveCallQuery, LeaveReason, MAX_SHARES, MeetingEnd, MoveOutcome, MoveParticipant,
     MuteDirectConversation, OwnCallState, OwnCallView, ReportCallState, ReportScreenShare,
-    ReportSpeaking, ReportWatching, SetVoiceChannelStatus, ShareAudio, ShareShows,
-    UpdateCallSettings, ViewerQuery,
+    ReportWatching, SetVoiceChannelStatus, ShareAudio, ShareShows, UpdateCallSettings, ViewerQuery,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, Event};
@@ -26,7 +25,6 @@ use crate::access::{Access, ChannelRecord};
 use crate::audit::{self, About};
 use crate::calls::admission::may_be_at;
 use crate::calls::entry::{self, Fresh, Pass, not_in_call};
-use crate::calls::speaking;
 use crate::calls::store::{
     self, By, CallRow, INVITATION_COLUMNS, MOVE_COLUMNS, MemberRow, MoveRow,
 };
@@ -545,53 +543,6 @@ pub async fn raise_hand(State(app): State<AppState>, bearer: Bearer) -> ApiResul
 )]
 pub async fn lower_hand(State(app): State<AppState>, bearer: Bearer) -> ApiResult<StatusCode> {
     set_hand(&app, &bearer, false).await
-}
-
-/// Reports whether the person speaks. The server relays a mark, not a level, to the people
-/// who may see who is in the voice channel, at most once per second for one call.
-#[utoipa::path(
-    put,
-    path = "/api/v1/call/speaking",
-    tag = "calls",
-    request_body = ReportSpeaking,
-    security(("session" = [])),
-    responses((status = 204), ApiError)
-)]
-pub async fn report_speaking(
-    State(app): State<AppState>,
-    bearer: Bearer,
-    ApiJson(body): ApiJson<ReportSpeaking>,
-) -> ApiResult<StatusCode> {
-    let now = app.now();
-    proof::limit(&app.calls.speaking_reports, bearer.0, now)?;
-    let relayed = read!(app, |connection| {
-        let access = Access::open(connection, &bearer, now).await?;
-        access.require(Request::OwnAccount)?;
-        let member = store::member_of(connection, access.account_id, false)
-            .await?
-            .filter(|member| {
-                member.device_id == access.device_id && member.session_id == access.session_id
-            })
-            .ok_or_else(not_in_call)?;
-        let call = store::call(connection, By::Id(member.call_id), false)
-            .await?
-            .ok_or_else(not_in_call)?;
-        if !may_be_at(connection, &access, &call.place).await? {
-            return Err(not_in_call());
-        }
-        if body.speaking && super::afk::is_afk(connection, &call.place).await? {
-            return Err(ApiError::new(
-                ErrorCode::Forbidden,
-                "speaking is unavailable in the AFK channel",
-            ));
-        }
-        let in_a_channel = matches!(call.place, CallPlace::Channel { .. });
-        Ok((in_a_channel && member.connected_at.is_some()).then_some((call.id, access.account_id)))
-    })?;
-    if let Some((call_id, account_id)) = relayed {
-        speaking::report(&app, call_id, account_id, body.speaking);
-    }
-    Ok(StatusCode::NO_CONTENT)
 }
 
 /// What the caller may see of the call in a voice channel: whether the channel is in use,

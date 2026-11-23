@@ -237,9 +237,6 @@ impl Shell {
                 MenuItem::new("thread-open", text::OPEN_THREAD)
                     .selector("thread-open")
                     .disabled(!available)
-                    .when(!available && open.followed(), |item| {
-                        item.detail(text::THREAD_IN_CALL)
-                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if !this.thread_menu_current(open, cx) {
                             return;

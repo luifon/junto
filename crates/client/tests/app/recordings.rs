@@ -217,7 +217,9 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
     );
     assert_eq!(lines.len(), SHOWN_LINES);
     assert_eq!(lines[2].text, "Can you hear me?");
-    assert!(window.shows_named(format!("transcript-line:{}", lines[2].line)));
+    // The card states the transcript in one line; the side panel shows its lines.
+    assert!(window.shows_named(format!("card-transcript:{recording_id}")));
+    assert!(!window.shows_named(format!("transcript-line:{}", lines[2].line)));
     // The roles of a member do not hold "manage recordings": the control says so.
     assert!(!window.card(recording_id).unwrap().may_remove);
 
@@ -280,6 +282,35 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
         .read_with(&window.cx, |state, _| state.kept_shown().to_vec());
     assert_eq!(shown, std::slice::from_ref(&saved));
 
+    // The tab "Recordings" of the Files panel lists the recording; "Download" lists its
+    // files under its row and saves one through the flow of the card (ADR 0784).
+    window.click("place-files");
+    window.until("the tabs of the voice channel", |window| {
+        window.shows("files-tab-recordings")
+    });
+    window.click("files-tab-recordings");
+    window.until("the recording is listed", |window| {
+        window.shows_named(format!("channel-recording-download:{recording_id}"))
+    });
+    window.click_named(format!("channel-recording-download:{recording_id}"));
+    let (shared, shared_file) = detail
+        .files
+        .iter()
+        .enumerate()
+        .find(|(_, file)| file.kind == FileKind::ShareSound)
+        .map(|(position, file)| (position, file.clone()))
+        .unwrap();
+    window.until("its files are listed under its row", |window| {
+        window.shows_named(format!("channel-recording-file:{recording_id}:{shared}"))
+    });
+    window.click_named(format!("channel-recording-file:{recording_id}:{shared}"));
+    let saved_share = window.until_saved(recording_id, Some(shared_file.segment_id));
+    assert_eq!(
+        saved_share,
+        downloads.path().join(format!("{}.ogg", shared_file.stem))
+    );
+    window.click("close-search");
+
     // The transcript is saved as a text file with the time and the speaker of each line.
     window.click("download-recording");
     window.click("recorded-text");
@@ -310,7 +341,7 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
     assert!(
         std::fs::read(&saved).unwrap() == on_disk(&server, recording_id, &format!("{video}.mp4"))
     );
-    assert_eq!(names(downloads.path()).len(), 3);
+    assert_eq!(names(downloads.path()).len(), 4);
     let opened = |window: &mut Window| {
         window
             .state
@@ -319,7 +350,7 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
     // "Open" again gives the saved file to the player, without a second download.
     window.click("open-recording");
     assert_eq!(opened(&mut window), [saved.clone(), saved.clone()]);
-    assert_eq!(names(downloads.path()).len(), 3);
+    assert_eq!(names(downloads.path()).len(), 4);
     // The person deletes the saved video: "Open" saves it again.
     std::fs::remove_file(&saved).unwrap();
     window.click("open-recording");
@@ -330,7 +361,7 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
     assert!(
         std::fs::read(&again).unwrap() == on_disk(&server, recording_id, &format!("{video}.mp4"))
     );
-    assert_eq!(names(downloads.path()).len(), 3);
+    assert_eq!(names(downloads.path()).len(), 4);
 
     // "Show all" opens the transcript in the side panel.
     window.click_named(format!("show-transcript:{recording_id}"));
@@ -440,20 +471,24 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
                 .card(recording_id)
                 .is_some_and(|card| card.may_remove)
                 && window.detail(recording_id).as_ref() == Some(&read)
-                && window.shows("remove-recording")
         },
     );
-    window.click("remove-recording");
+    // "⋯" of the card, which the pointer over the card shows, and right-click give the same
+    // menu (ADR 0744).
+    window.hover_named(format!("recording:{recording_id}"));
+    window.click("recording-more");
+    window.click_named("context-action:Remove".to_owned());
     assert!(window.shows("confirm-remove-recording"));
     window.click("cancel");
     assert!(window.card(recording_id).is_some());
-    window.click("remove-recording");
+    window.right_click_named(format!("recording:{recording_id}"));
+    window.click_named("context-action:Remove".to_owned());
     window.click("confirm");
     window.until("the card is gone", |window| {
         !window.shows("confirm-remove-recording") && window.card(recording_id).is_none()
     });
     // The saved copies stay with the person.
-    assert_eq!(names(downloads.path()).len(), 3);
+    assert_eq!(names(downloads.path()).len(), 4);
 }
 
 #[gpui::test]

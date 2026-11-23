@@ -539,7 +539,6 @@ impl Rehearsal {
         // The speech of the rehearsal is in one language, and each sentence is detected
         // (ADR 0616).
         self.a.click("start-recording");
-        self.a.click("record-language:auto");
         for window in [&mut self.a, self.b.as_mut().unwrap()] {
             window.until("the call shows that it is recorded", |window| {
                 window.shows("recording-indicator")

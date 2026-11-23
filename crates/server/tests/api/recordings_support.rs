@@ -65,10 +65,14 @@ impl Studio {
         }
     }
 
-    /// Ann starts a recording, and the controller runs one pass: the jobs run.
+    /// Ann starts a recording, and the controller runs two passes: the jobs run and are seen.
     pub async fn record(&self) -> Recording {
         let server = &self.scene.server;
         let started = server.record(&self.scene.ann, self.scene.voice.id).await;
+        // The first pass starts the jobs, and the second sees their participants in the
+        // room: a composite that was in the room has the start limit of every job
+        // (ADR 0604).
+        server.tend().await;
         server.tend().await;
         started
     }

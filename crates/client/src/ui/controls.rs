@@ -179,6 +179,119 @@ impl RenderOnce for Toggle {
     }
 }
 
+/// A check box with its label, in a click area of at least 24 design pixels in height.
+pub struct CheckBox {
+    id: ElementId,
+    label: SharedString,
+    checked: bool,
+    focus: Option<FocusHandle>,
+    selector: Option<&'static str>,
+    on_click: Option<SharedClickHandler>,
+}
+
+impl CheckBox {
+    pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>, checked: bool) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            checked,
+            focus: None,
+            selector: None,
+            on_click: None,
+        }
+    }
+
+    /// The focus handle of the box, for an owner that follows its focus.
+    pub fn focus(mut self, focus: &FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
+        self
+    }
+
+    pub fn selector(mut self, selector: &'static str) -> Self {
+        self.selector = Some(selector);
+        self
+    }
+
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_click = Some(std::rc::Rc::new(handler));
+        self
+    }
+}
+
+impl IntoElement for CheckBox {
+    type Element = gpui::ViewElement<Self>;
+    fn into_element(self) -> Self::Element {
+        gpui::ViewElement::new(self)
+    }
+}
+
+impl RenderOnce for CheckBox {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = theme(cx);
+        let colors = theme.colors;
+        let ring = focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
+        let focus = self
+            .focus
+            .clone()
+            .unwrap_or_else(|| super::reveal::handle(&self.id, window, cx));
+        div()
+            .id(self.id)
+            .role(Role::CheckBox)
+            .aria_label(self.label.clone())
+            .aria_toggled(if self.checked {
+                gpui::Toggled::True
+            } else {
+                gpui::Toggled::False
+            })
+            .when_some(self.selector, |row, selector| {
+                row.debug_selector(|| selector.to_owned())
+            })
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(u(8.0))
+            .min_h(u(24.0))
+            .pr(u(4.0))
+            .rounded(u(4.0))
+            .cursor_pointer()
+            .own_press_focusing(&focus)
+            .track_focus(&focus)
+            .children(super::reveal::report(&focus, window))
+            .focus_visible(move |style| style.shadow(ring))
+            .when_some(self.on_click, |row, handler| {
+                row.on_click(move |event, window, cx| handler(event, window, cx))
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(u(16.0))
+                    .rounded(u(3.0))
+                    .border_1()
+                    .map(|mark| {
+                        if self.checked {
+                            mark.bg(Hsla::from(colors.toggle_on))
+                                .border_color(Hsla::from(colors.toggle_on))
+                                .child(icon(Icon::Check, 12.0, colors.toggle_knob))
+                        } else {
+                            mark.border_color(Hsla::from(colors.ink_2))
+                        }
+                    }),
+            )
+            .child(
+                div()
+                    .typeface(theme.types.small, &theme)
+                    .ink(colors.ink)
+                    .child(super::paint_text(self.label, None)),
+            )
+    }
+}
+
 /// A number with a button that lowers it and a button that raises it.
 #[derive(IntoElement)]
 pub struct Stepper {
@@ -654,6 +767,8 @@ pub struct VolumeSlider {
     selector: Option<SharedString>,
     /// The percentage is drawn after the track.
     value_shown: bool,
+    /// Up and Down move between the items of the menu that holds the control.
+    in_menu: bool,
 }
 
 impl VolumeSlider {
@@ -671,7 +786,15 @@ impl VolumeSlider {
             label: label.into(),
             selector: None,
             value_shown: true,
+            in_menu: false,
         }
+    }
+
+    /// A control in a menu: Left and Right change it, and Up and Down reach the other items
+    /// of the menu.
+    pub fn in_menu(mut self) -> Self {
+        self.in_menu = true;
+        self
     }
 
     /// A control without the percentage after its track, for a place where a control beside
@@ -704,6 +827,7 @@ impl RenderOnce for VolumeSlider {
         let share = (value - VOLUME_RANGE.0) / (VOLUME_RANGE.1 - VOLUME_RANGE.0);
         let ring = focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
         let state = self.state.clone();
+        let in_menu = self.in_menu;
         div()
             .id(self.id)
             .aria_label(self.label)
@@ -721,8 +845,10 @@ impl RenderOnce for VolumeSlider {
             .focus_visible(move |style| style.shadow(ring))
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 let step = match event.keystroke.key.as_str() {
-                    "right" | "up" => VOLUME_STEP,
-                    "left" | "down" => -VOLUME_STEP,
+                    "right" => VOLUME_STEP,
+                    "left" => -VOLUME_STEP,
+                    "up" if !in_menu => VOLUME_STEP,
+                    "down" if !in_menu => -VOLUME_STEP,
                     _ => return,
                 };
                 state.update(cx, |state, cx| {

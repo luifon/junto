@@ -65,12 +65,6 @@ pub struct CallTiming {
     /// The shortest time between two reports of the share of this device. They count
     /// against the limit of the reports of the own state.
     pub share_spacing: Duration,
-    /// The shortest time between two reports of speaking. The server takes 20 in
-    /// 10 seconds (ADR 0513).
-    pub speaking_spacing: Duration,
-    /// A report that the person speaks lasts 5 seconds on the server and is renewed after
-    /// this time.
-    pub speaking_renewal: Duration,
     /// After this time, a state of the server that has never shown the place of this
     /// device means that the place has ended. Before, the events of the join may not have
     /// arrived.
@@ -87,8 +81,6 @@ impl Default for CallTiming {
             reconnect_longest: Duration::from_secs(5),
             state_spacing: Duration::from_millis(500),
             share_spacing: Duration::from_secs(1),
-            speaking_spacing: Duration::from_millis(700),
-            speaking_renewal: Duration::from_secs(3),
             settle: Duration::from_secs(10),
             move_end: Duration::from_secs(20),
         }
@@ -1910,13 +1902,11 @@ fn start(
         #[cfg(test)]
         renewals: Vec::new(),
         grant_closed: granted.is_some(),
-        state_report: Reporter::new(timing.state_spacing, None),
-        speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
+        state_report: Reporter::new(timing.state_spacing),
         share_reports: ShareReports::new(timing.share_spacing),
         watch_report: Reporter::holding(timing.share_spacing, None),
         moving: None,
         probes: Vec::new(),
-        speaking: false,
         sent_open: None,
         #[cfg(test)]
         sent_controls: Vec::new(),
@@ -1932,12 +1922,10 @@ fn start(
 }
 
 /// Decides when a report is sent: a changed value at once, at most one request at a time,
-/// and never two requests closer than the spacing. A value that the server forgets is sent
-/// again before it does.
+/// and never two requests closer than the spacing.
 #[derive(Debug)]
 pub(crate) struct Reporter<T> {
     spacing: Duration,
-    renewal: Option<Duration>,
     sent: Option<T>,
     last: Option<Instant>,
     in_flight: bool,
@@ -1951,10 +1939,9 @@ pub(crate) enum Step {
 }
 
 impl<T: PartialEq + Clone> Reporter<T> {
-    pub(crate) fn new(spacing: Duration, renewal: Option<Duration>) -> Self {
+    pub(crate) fn new(spacing: Duration) -> Self {
         Self {
             spacing,
-            renewal,
             sent: None,
             last: None,
             in_flight: false,
@@ -1966,27 +1953,18 @@ impl<T: PartialEq + Clone> Reporter<T> {
     pub(crate) fn holding(spacing: Duration, value: T) -> Self {
         Self {
             sent: Some(value),
-            ..Self::new(spacing, None)
+            ..Self::new(spacing)
         }
     }
 
-    /// What to do for the value that holds now. `renews`: the server forgets this value
-    /// unless it is sent again.
-    pub(crate) fn step(&self, wanted: &T, renews: bool, now: Instant) -> Step {
-        if self.in_flight {
+    /// What to do for the value that holds now.
+    pub(crate) fn step(&self, wanted: &T, now: Instant) -> Step {
+        if self.in_flight || self.sent.as_ref() == Some(wanted) {
             return Step::Idle;
         }
-        let earliest = self.last.map(|last| last + self.spacing);
-        let renew_at = match (self.renewal, self.last) {
-            (Some(renewal), Some(last)) if renews => Some(last + renewal),
-            _ => None,
-        };
-        let changed = self.sent.as_ref() != Some(wanted);
-        let due = changed || renew_at.is_some_and(|at| now >= at);
-        match (due, earliest) {
-            (true, Some(earliest)) if now < earliest => Step::Wait(earliest),
-            (true, _) => Step::Send,
-            (false, _) => renew_at.map_or(Step::Idle, Step::Wait),
+        match self.last.map(|last| last + self.spacing) {
+            Some(earliest) if now < earliest => Step::Wait(earliest),
+            _ => Step::Send,
         }
     }
 
@@ -2543,7 +2521,6 @@ const CAUSE_WAIT: Duration = Duration::from_millis(500);
 enum Done {
     AfkMode(Box<Result<junto_client_core::protocol::call::OwnCallView, ApiError>>),
     State(bool),
-    Speaking(bool),
     Share(bool),
     Watch(bool),
     /// The answer to a request for a new token. The session confirms that it took the
@@ -2816,7 +2793,6 @@ struct Session {
     /// has stated the end of that statement since (ADR 0521).
     grant_closed: bool,
     state_report: Reporter<(bool, bool)>,
-    speaking_report: Reporter<bool>,
     /// What the server was told of the shares of this device.
     share_reports: ShareReports,
     /// The share of another person that the server was told the person watches (ADR 0502).
@@ -2825,7 +2801,6 @@ struct Session {
     moving: Option<Moving>,
     /// The work of moves that have ended. Each closes the connection that it made.
     probes: Vec<tokio::task::JoinHandle<()>>,
-    speaking: bool,
     /// The count of the gate with which the last controls that the engine was given open
     /// the microphone.
     sent_open: Option<u64>,
@@ -2933,7 +2908,6 @@ impl Session {
                 changed = levels.changed() => {
                     if changed.is_ok() {
                         let now = levels.borrow_and_update().clone();
-                        self.speaking = now.own.speaking;
                         self.inner.levels.send_replace(now);
                     }
                 }
@@ -3848,7 +3822,6 @@ impl Session {
                 }
             }
             Done::State(taken) => self.state_report.done(taken, REPORT_RETRY, now),
-            Done::Speaking(taken) => self.speaking_report.done(taken, REPORT_RETRY, now),
             Done::Share(taken) => self.share_reports.done(taken, REPORT_RETRY, now),
             Done::Watch(taken) => self.watch_report.done(taken, REPORT_RETRY, now),
             Done::Rejoined(answer, taken) => {
@@ -3896,7 +3869,7 @@ impl Session {
                             if answer.cursor.is_none() {
                                 self.grants.unordered();
                             }
-                            self.state_report = Reporter::new(self.timing.state_spacing, None);
+                            self.state_report = Reporter::new(self.timing.state_spacing);
                             self.share_reports = ShareReports::new(self.timing.share_spacing);
                             self.watch_report = Reporter::holding(self.timing.share_spacing, None);
                         }
@@ -4088,7 +4061,7 @@ impl Session {
                 MicrophoneState::Running | MicrophoneState::Closed
             );
         let wanted = (silent, self.controls.deafened);
-        match self.state_report.step(&wanted, false, now) {
+        match self.state_report.step(&wanted, now) {
             Step::Send => {
                 self.state_report.sending(wanted, now);
                 let (api, done) = (self.server.api(), done.clone());
@@ -4143,7 +4116,7 @@ impl Session {
             })
             | None => None,
         };
-        match self.watch_report.step(&watching, false, now) {
+        match self.watch_report.step(&watching, now) {
             Step::Send => {
                 self.watch_report.sending(watching, now);
                 let (api, done) = (self.server.api(), done.clone());
@@ -4154,21 +4127,6 @@ impl Session {
             }
             Step::Wait(at) => wake = wake.min(at),
             Step::Idle => {}
-        }
-        if matches!(self.target.place, CallPlace::Channel { .. }) {
-            let speaking = self.speaking;
-            match self.speaking_report.step(&speaking, speaking, now) {
-                Step::Send => {
-                    self.speaking_report.sending(speaking, now);
-                    let (api, done) = (self.server.api(), done.clone());
-                    self.inner.runtime.spawn(async move {
-                        let taken = api.report_speaking(speaking).await.is_ok();
-                        let _ = done.send(Done::Speaking(taken));
-                    });
-                }
-                Step::Wait(at) => wake = wake.min(at),
-                Step::Idle => {}
-            }
         }
         wake
     }
@@ -4760,62 +4718,35 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_changed_value_is_sent_at_once_and_never_closer_than_the_spacing() {
         let spacing = Duration::from_millis(500);
-        let mut reporter: Reporter<bool> = Reporter::new(spacing, None);
+        let mut reporter: Reporter<bool> = Reporter::new(spacing);
         let start = Instant::now();
-        assert_eq!(reporter.step(&false, false, start), Step::Send);
+        assert_eq!(reporter.step(&false, start), Step::Send);
         reporter.sending(false, start);
         // One request at a time.
-        assert_eq!(reporter.step(&true, false, start), Step::Idle);
+        assert_eq!(reporter.step(&true, start), Step::Idle);
         reporter.done(true, REPORT_RETRY, start);
-        assert_eq!(reporter.step(&false, false, start), Step::Idle);
-        assert_eq!(
-            reporter.step(&true, false, start),
-            Step::Wait(start + spacing)
-        );
+        assert_eq!(reporter.step(&false, start), Step::Idle);
+        assert_eq!(reporter.step(&true, start), Step::Wait(start + spacing));
         let later = start + spacing;
-        assert_eq!(reporter.step(&true, false, later), Step::Send);
+        assert_eq!(reporter.step(&true, later), Step::Send);
         reporter.sending(true, later);
         reporter.done(true, REPORT_RETRY, later);
-        assert_eq!(
-            reporter.step(&true, false, later + spacing * 10),
-            Step::Idle
-        );
+        assert_eq!(reporter.step(&true, later + spacing * 10), Step::Idle);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_value_that_the_server_forgets_is_renewed_and_a_failed_report_is_sent_again() {
-        let (spacing, renewal) = (Duration::from_millis(700), Duration::from_secs(3));
-        let mut reporter: Reporter<bool> = Reporter::new(spacing, Some(renewal));
+    async fn a_failed_report_is_sent_again() {
+        let spacing = Duration::from_millis(700);
         let start = Instant::now();
-        reporter.sending(true, start);
-        reporter.done(true, REPORT_RETRY, start);
-        // While the person speaks, the report is renewed before the server drops it.
-        assert_eq!(
-            reporter.step(&true, true, start),
-            Step::Wait(start + renewal)
-        );
-        assert_eq!(reporter.step(&true, true, start + renewal), Step::Send);
-        reporter.sending(true, start + renewal);
-        reporter.done(true, REPORT_RETRY, start + renewal);
-        // The end of speaking is a change and is not renewed.
-        let end = start + renewal + spacing;
-        assert_eq!(reporter.step(&false, false, end), Step::Send);
-        reporter.sending(false, end);
-        reporter.done(true, REPORT_RETRY, end);
-        assert_eq!(reporter.step(&false, false, end + renewal * 2), Step::Idle);
-
         // A report that the server did not take is sent again after the retry time.
-        let mut reporter: Reporter<bool> = Reporter::new(spacing, None);
+        let mut reporter: Reporter<bool> = Reporter::new(spacing);
         reporter.sending(true, start);
         reporter.done(false, REPORT_RETRY, start);
         assert_eq!(
-            reporter.step(&true, false, start),
+            reporter.step(&true, start),
             Step::Wait(start + REPORT_RETRY)
         );
-        assert_eq!(
-            reporter.step(&true, false, start + REPORT_RETRY),
-            Step::Send
-        );
+        assert_eq!(reporter.step(&true, start + REPORT_RETRY), Step::Send);
     }
 
     #[tokio::test(start_paused = true)]
@@ -4828,14 +4759,14 @@ mod tests {
         reporter.stated(None);
         reporter.done(true, REPORT_RETRY, start);
         let later = start + spacing;
-        assert_eq!(reporter.step(&Some(1), false, later), Step::Send);
+        assert_eq!(reporter.step(&Some(1), later), Step::Send);
         // The server ended the watch: the wanted value is sent again.
         reporter.stated(None);
-        assert_eq!(reporter.step(&Some(1), false, later), Step::Send);
+        assert_eq!(reporter.step(&Some(1), later), Step::Send);
         reporter.sending(Some(1), later);
         reporter.done(true, REPORT_RETRY, later);
         reporter.stated(Some(1));
-        assert_eq!(reporter.step(&Some(1), false, later + spacing), Step::Idle);
+        assert_eq!(reporter.step(&Some(1), later + spacing), Step::Idle);
     }
 
     #[tokio::test(start_paused = true)]
@@ -4845,27 +4776,22 @@ mod tests {
         let start = Instant::now();
         reporter.sending(Some(1u8), start);
         reporter.untold();
-        assert_eq!(reporter.step(&Some(1), false, start + spacing), Step::Idle);
+        assert_eq!(reporter.step(&Some(1), start + spacing), Step::Idle);
         reporter.done(true, REPORT_RETRY, start);
-        assert_eq!(reporter.step(&Some(1), false, start + spacing), Step::Send);
+        assert_eq!(reporter.step(&Some(1), start + spacing), Step::Send);
         reporter.sending(Some(1), start + spacing);
         reporter.done(true, REPORT_RETRY, start + spacing);
-        assert_eq!(
-            reporter.step(&Some(1), false, start + spacing * 2),
-            Step::Idle
-        );
+        assert_eq!(reporter.step(&Some(1), start + spacing * 2), Step::Idle);
     }
 
     #[test]
     fn at_most_the_reports_that_the_server_takes_are_sent() {
-        // 30 reports of the state in 10 seconds (ADR 0510), 20 of speaking (ADR 0513). The
-        // reports of the own state and of the share count against one limit.
+        // 30 reports of the state in 10 seconds (ADR 0510). The reports of the own state
+        // and of the share count against one limit.
         let timing = CallTiming::default();
         let in_10_seconds =
             |spacing: Duration| Duration::from_secs(10).as_millis() / spacing.as_millis();
         assert!(in_10_seconds(timing.state_spacing) + in_10_seconds(timing.share_spacing) <= 30);
-        assert!(Duration::from_secs(10).as_millis() / timing.speaking_spacing.as_millis() <= 20);
-        assert!(timing.speaking_renewal < Duration::from_secs(5));
     }
 
     fn own(identity: &str) -> OwnCall {

@@ -458,12 +458,6 @@ pub struct EndScreenShareQuery {
     pub slot: Option<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct ReportSpeaking {
-    pub speaking: bool,
-}
-
 /// A request of a person outside to enter a locked or full voice channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

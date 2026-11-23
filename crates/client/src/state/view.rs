@@ -178,6 +178,26 @@ pub struct MediaSnapshot {
     pub now: Option<OffsetDateTime>,
     /// This build can capture a screen on the system that it runs on.
     pub can_share: bool,
+    /// What the notice of speech while muted shows ([`super::muted_speech::MutedSpeech`]).
+    pub muted_speech: MutedSpeechShown,
+}
+
+/// The notice of speech while muted is drawn, and whether it states that it was turned off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MutedSpeechShown {
+    pub shown: bool,
+    pub turned_off: bool,
+    pub fading: bool,
+}
+
+/// The independently echo-filtered input of the microphone reaches the level of speech of
+/// the media engine, -45 dBFS (ADR 0735).
+pub fn speech_heard(speech_input: usize) -> bool {
+    speech_input
+        >= junto_media::audio::level::segments(
+            junto_media::audio::level::meter(-45.0),
+            INPUT_SEGMENTS,
+        )
 }
 
 /// The profiles of accounts that were read, the workspaces whose members could not be
@@ -454,8 +474,8 @@ pub struct ThreadEntry {
     pub mentions: u64,
     /// The side panel shows this thread.
     pub open: bool,
-    /// False for a thread of the voice channel of the call of this device: the view of
-    /// that channel is the call, which shows no thread (ADR 0741).
+    /// The thread can be opened: false for the thread of a message whose thread the person
+    /// may not use.
     pub available: bool,
 }
 
@@ -1688,7 +1708,9 @@ pub enum MicrophoneAction {
 pub struct Controls {
     pub microphone: MicrophoneButton,
     pub microphone_action: MicrophoneAction,
-    pub muted_speech: bool,
+    /// The notice of speech while muted is drawn, and whether it states that it was turned
+    /// off.
+    pub muted_speech: Option<MutedSpeechShown>,
     /// The person turned the sound off.
     pub sound_off: bool,
     pub warning: Option<SoundWarning>,
@@ -1697,19 +1719,16 @@ pub struct Controls {
 }
 
 impl Controls {
-    fn show_muted_speech(&mut self, input: usize, connected: bool) {
-        let threshold = junto_media::audio::level::segments(
-            junto_media::audio::level::meter(-45.0),
-            INPUT_SEGMENTS,
-        );
-        self.muted_speech = connected
+    fn show_muted_speech(&mut self, shown: MutedSpeechShown, connected: bool) {
+        self.muted_speech = (shown.shown
+            && connected
             && self.seat.is_some()
             && self.microphone == MicrophoneButton::Muted
-            && input >= threshold
             && !matches!(
                 self.warning.as_ref(),
                 Some(SoundWarning::NoMicrophoneAccess | SoundWarning::MicrophoneFailed)
-            );
+            ))
+        .then_some(shown);
     }
 }
 
@@ -1885,12 +1904,6 @@ impl ShellView {
     /// change of the levels alone, at most every 50 ms, therefore does not derive the view
     /// again (ADR 0730).
     pub fn show_levels(&mut self, levels: &ShownLevels) {
-        self.controls.show_muted_speech(
-            levels.speech_input,
-            self.call
-                .as_ref()
-                .is_some_and(|call| call.phase == Phase::Connected),
-        );
         let Some(SelectedServer {
             content: Content::Lists(lists),
             ..
@@ -2171,12 +2184,9 @@ fn call_people(
                     (Some(block), _) => Microphone::Held(block.reason),
                     (None, true) => Microphone::Closed,
                     (None, false) => Microphone::Open {
-                        // In the call of this device the sound itself tells who speaks;
-                        // outside, the marks of the server do (ADR 0513).
-                        speaking: match measured {
-                            Some((_, speaking)) => speaking,
-                            None => call.speaking.contains(&participant.account_id),
-                        },
+                        // Only the call of this device shows who speaks, from its sound
+                        // (ADR 0513).
+                        speaking: measured.is_some_and(|(_, speaking)| speaking),
                     },
                 },
                 held_by: participant
@@ -3037,14 +3047,6 @@ fn workspace_view(
         // The followed threads are listed under the shown channel only.
         let followed = (Some(row.id) == shown).then_some((server_id, &known.followed));
         (row.threads, row.more_followed) = thread_entries(row.id, model, &names, open, followed);
-        // The view of the voice channel of the call of this device is the call.
-        let in_call = row
-            .voice
-            .as_ref()
-            .is_some_and(|voice| voice.relation == Relation::Inside);
-        for entry in &mut row.threads {
-            entry.available = !in_call;
-        }
         if Some(row.id) == shown {
             row.selected = true;
             channel = Some(row.clone());
@@ -3114,7 +3116,7 @@ fn workspace_view(
         administrator: model.is_administrator(),
         open_thread: open_thread.map(|(_, root_id)| root_id),
         target: target_of_jump(server_id, timeline, known),
-        threads: call.is_none(),
+        threads: true,
         writes: feed::Writes {
             send: allowed.send,
             send_in_threads: allowed.send_in_threads,
@@ -3166,10 +3168,9 @@ fn workspace_view(
             .cloned()
             .unwrap_or_default()
     };
-    // The side panel of the call of this device is the panel of the call: its chat
-    // shows no thread and no pin list.
+    // During the call of this device a thread and the pin list open in the right column of
+    // the call, over its chat (ADR 0741).
     let thread = open_thread
-        .filter(|_| call.is_none())
         .zip(channel.as_ref())
         .map(|((channel_id, root_id), row)| {
             let place = PlaceId::Thread {
@@ -3232,7 +3233,7 @@ fn workspace_view(
     let pins = selection
         .pins
         .filter(|(server, channel_id)| *server == server_id && Some(*channel_id) == shown)
-        .filter(|_| thread.is_none() && call.is_none())
+        .filter(|_| thread.is_none())
         .zip(channel.as_ref())
         .map(|((_, channel_id), row)| {
             let list = model.pin_list(channel_id);
@@ -3267,7 +3268,7 @@ fn workspace_view(
     let transcript = selection
         .transcript
         .filter(|(of, channel_id, _)| *of == server_id && Some(*channel_id) == shown)
-        .filter(|_| thread.is_none() && pins.is_none() && call.is_none())
+        .filter(|_| thread.is_none() && pins.is_none())
         .zip(channel.as_ref())
         .map(|((_, _, recording_id), row)| TranscriptPanel {
             recording_id,
@@ -4178,13 +4179,13 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
         } else {
             MicrophoneAction::Close
         },
-        muted_speech: false,
+        muted_speech: None,
         sound_off: calls.deafened,
         warning,
         seat,
     };
     controls.show_muted_speech(
-        known.media.levels.speech_input,
+        known.media.muted_speech,
         active.is_some_and(|call| {
             call.phase == Phase::Connected && call.microphone == MicrophoneState::Running
         }),

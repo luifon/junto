@@ -4740,9 +4740,20 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.members_open = false;
-        self.state.update(cx, |state, cx| {
-            state.open_thread(server_id, channel_id, root_id, cx);
-        });
+        if self.detached {
+            // The call window opens the thread in its own panel (ADR 0741).
+            self.show_call_tab(super::call::CallTab::Chat, cx);
+            self.state.update(cx, |state, cx| {
+                state.open_in_call_window(
+                    crate::state::call_window::CallWindowShows::Thread(root_id),
+                    cx,
+                )
+            });
+        } else {
+            self.state.update(cx, |state, cx| {
+                state.open_thread(server_id, channel_id, root_id, cx);
+            });
+        }
         self.focus_composer(Pane::Thread, window, cx);
         cx.notify();
     }

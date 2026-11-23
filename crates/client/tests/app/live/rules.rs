@@ -8,7 +8,6 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use gpui::TestAppContext;
-use junto_client::shell::Open;
 use junto_client::state::view::{
     CallNotice, CallPanel, Closed, EntryState, MeetingStart, Microphone, MicrophoneButton,
     OwnShare, Presence, RoomView, VoiceState,
@@ -20,7 +19,6 @@ use junto_client_core::protocol::call::{
 use junto_client_core::protocol::ids::{AccountId, CallInvitationId, ChannelId};
 use junto_client_core::protocol::roles::UpdateWorkspaceRole;
 use junto_client_core::protocol::structure::ChannelKind;
-use junto_client_core::settings::Panel;
 use junto_media::calls::{CallTarget, EndReason, Outcome, Phase};
 use junto_media::share::{CaptureRequest, PictureSource, ShareQuality, SoundChoice};
 
@@ -215,7 +213,7 @@ impl Scene {
         assert!(!self.window.shows("profile-card"));
         self.window.press("shift-f10");
         assert!(self.window.shows("menu-invite"));
-        self.window.press("down enter");
+        choose_in_person_menu(&mut self.window, "menu-invite");
         assert!(
             !self.window.shows("profile-card"),
             "the menu must choose its invitation action"
@@ -288,33 +286,11 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         voice.locked && voice.closed == Some(Closed::Locked)
     });
 
-    // The box that asks to enter belongs to the room that the person chose. In the narrowest
-    // channel column its text takes the most lines, and the whole box stays in view.
-    assert!(!scene.window.shows("entry-box"));
-    scene
-        .window
-        .state
-        .update(&mut scene.window.cx, |state, cx| {
-            state.set_panel_width(Panel::Channels, 200.0, cx);
-        });
+    // The header of the locked room offers "Ask to join" in the place of "Join call"; the
+    // channel list holds no box.
+    assert!(!scene.window.shows("ask-to-enter"));
     scene.window.click_channel(ROOM);
-    assert!(scene.window.shows("entry-box") && scene.window.shows("ask-to-enter"));
-    let area = scene
-        .window
-        .cx
-        .debug_bounds("channel-entry-notices")
-        .unwrap();
-    let entry = scene.window.cx.debug_bounds("entry-box").unwrap();
-    assert!(
-        entry.top() >= area.top() && entry.bottom() <= area.bottom(),
-        "entry box {entry:?} outside its area {area:?}"
-    );
-    // A join is refused, and the refusal is told.
-    scene.window.click("join-call");
-    scene
-        .window
-        .until("the refusal is told", |window| window.shows("call-notice"));
-    scene.window.click("dismiss-call-notice");
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
 
     // The people inside deny the request.
     scene.window.click("ask-to-enter");
@@ -322,6 +298,7 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         voice_of(window).entry == Some(EntryState::Waiting)
     });
     assert!(scene.window.shows("withdraw-entry") && !scene.window.shows("ask-to-enter"));
+    assert!(scene.window.shows("entry-request"));
     let request = scene.entry_request();
     assert_eq!(request.account_id, scene.luca);
     scene
@@ -382,7 +359,7 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
     scene
         .window
         .until("the person is in the locked room", connected);
-    assert!(!scene.window.shows("entry-box"));
+    assert!(!scene.window.shows("ask-to-enter") && !scene.window.shows("entry-request"));
     scene.window.until("the room shows its lock", |window| {
         room_view(window).is_some_and(|room| room.locked && room.inside == 2)
     });
@@ -439,15 +416,13 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         room_view(window).is_some_and(|room| !room.locked)
     });
 
-    // The settings of the room, in the settings of the application at "Call", need "manage
-    // channel": without it the switches take no click, and a request is refused by the server
-    // and told.
+    // The settings of the room, in the window of "Room settings" on the call bar, need
+    // "manage channel": without it the switches take no click, and a request is refused by
+    // the server and told.
     let room = room_view(&mut scene.window).unwrap();
     assert!(room.allowed.lock && !room.allowed.manage);
-    scene
-        .window
-        .in_shell(|shell, window, cx| shell.open(Open::RoomSettings, window, cx));
-    assert!(scene.window.shows("room-no-manage"));
+    scene.window.click("room-settings-open");
+    assert!(scene.window.shows("room-settings"));
     scene.window.click("room-hide");
     scene.window.click("room-limit-raise");
     let state = scene.window.state.clone();
@@ -471,12 +446,10 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
     scene.allow_everyone(&[WorkspacePermission::ManageChannel]);
     scene
         .window
-        .in_shell(|shell, window, cx| shell.open(Open::RoomSettings, window, cx));
-    scene
-        .window
         .until("the person may manage the room", |window| {
-            !window.shows("room-no-manage")
+            room_view(window).is_some_and(|room| room.allowed.manage)
         });
+    scene.window.click("room-settings-open");
     // The first limit is the number of people inside, and a limit of one that is lowered
     // is removed.
     scene.window.click("room-limit-raise");
@@ -498,8 +471,8 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
                 .is_some_and(|room| room.hides_occupants && room.hide_waits_for_next_call)
         });
 
-    // The person leaves. The call that runs still shows who is inside, and it is full: a
-    // full room that shows who is inside tells it under its row.
+    // The person leaves. The call that runs still shows who is inside, and it is full: the
+    // header of the room asks to join, and other channels show nothing of it but its row.
     scene.window.press("escape");
     scene.window.click("leave-call");
     scene
@@ -520,9 +493,9 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         .find(|row| row.kind == ChannelKind::Text)
         .unwrap();
     scene.window.click_channel(&other.name);
-    assert!(!scene.window.shows("entry-box"));
-    assert!(scene.window.shows_named(format!("full-note:{voice}")));
+    assert!(!scene.window.shows("ask-to-enter"));
     scene.window.click_channel(ROOM);
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
 
     // The next call of the room hides who is inside: the people outside see that it is in
     // use, and learn from a join that it is full.
@@ -545,7 +518,7 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         .until("the refusal tells that it is full", |window| {
             window.shows("call-notice") && voice_of(window).closed == Some(Closed::Full)
         });
-    assert!(scene.window.shows("entry-box"));
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
     // The request to enter passes the limit. The person reads who is inside from the
     // moment at which the server has seen the device in the room.
     scene.window.click("ask-to-enter");
@@ -770,8 +743,8 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     });
     assert!(!scene.window.shows("meeting-allow"));
     scene.window.right_click_named(format!("occupant:{ada}"));
-    assert!(scene.window.shows("menu-allow-speak"));
-    assert!(!scene.window.shows("menu-mute"));
+    assert!(scene.window.shows("call-menu-allow-speak"));
+    assert!(!scene.window.shows("call-menu-block-microphone"));
     scene.window.press("escape");
     // Ada raises a hand, and the person allows her to speak.
     scene.world.run(api.raise_hand()).unwrap();
@@ -933,16 +906,10 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
                 .any(|member| member.account_id == ada)
         })
     });
-    scene.window.click("invite-open");
-    assert!(
-        scene
-            .window
-            .in_shell(|shell, _, _| shell.member_picker_is_open())
-    );
-    assert!(scene.window.shows("member-picker"));
-    scene
-        .window
-        .right_click_named(format!("invite-choice:{ada}"));
+    // The row of a person outside the call has "Invite"; the list has no picker.
+    assert!(scene.window.shows_named(format!("invite:{ada}")));
+    assert!(!scene.window.shows("invite-open") && !scene.window.shows("member-picker"));
+    scene.window.right_click_named(format!("call-member:{ada}"));
     scene.window.click_named(format!("account-copy-id:{ada}"));
     assert_eq!(
         scene
@@ -954,7 +921,6 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
             .unwrap(),
         ada.to_string()
     );
-    assert!(scene.window.shows("member-picker"));
 
     scene.window.click_named(format!("invite:{ada}"));
     let invitation = scene.invitation_for_ada();
@@ -974,11 +940,8 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     scene.window.until("the refusal is told", |window| {
         window.shows("call-told") && window.shows_named(format!("invite:{ada}"))
     });
-    // A press outside the list of the members closes it.
     scene.window.click("dismiss-call-told");
-    assert!(!scene.window.shows("member-picker"));
     // The person invites again and withdraws the invitation.
-    scene.window.click("invite-open");
     scene.window.click_named(format!("invite:{ada}"));
     scene.invitation_for_ada();
     // The invitation reaches Ada and the window of the person on two paths: the click
@@ -1016,25 +979,24 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     scene.window.until("Ada is in the call", |window| {
         ada_in(window, voice) && !window.shows_named(format!("invite:{ada}"))
     });
-    // Escape closes the list of the members.
-    scene.window.press("escape");
-    assert!(
-        !scene
-            .window
-            .in_shell(|shell, _, _| shell.member_picker_is_open())
-    );
 
     // A member without moderation gets volume and identity actions. The own row has
-    // identity actions without the moderation menu.
+    // identity actions without the moderation menu. The row of a person in the call opens
+    // the menu that the tile and the list of the call open (ADR 0735).
     scene.window.right_click_named(ada_row());
-    assert!(scene.window.shows("person-menu") && scene.window.shows("menu-volume"));
-    for absent in ["menu-invite", "menu-move", "menu-mute", "menu-disconnect"] {
+    assert!(scene.window.shows("account-menu") && scene.window.shows("call-menu-volume"));
+    for absent in [
+        "call-menu-invite",
+        "call-menu-move",
+        "call-menu-block-microphone",
+        "call-menu-disconnect",
+    ] {
         assert!(!scene.window.shows(absent), "{absent}");
     }
     scene.window.press("escape");
-    assert!(!scene.window.shows("person-menu"));
+    assert!(!scene.window.shows("account-menu"));
     scene.window.right_click_named(format!("occupant:{luca}"));
-    assert!(!scene.window.shows("person-menu"));
+    assert!(!scene.window.shows("person-menu") && !scene.window.shows("call-menu-volume"));
     scene.allow_everyone(&[
         WorkspacePermission::MuteMembers,
         WorkspacePermission::DeafenMembers,
@@ -1055,8 +1017,8 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
             .find(|occupant| occupant.account_id == ada)
     };
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-mute");
-    assert!(!scene.window.shows("person-menu"));
+    scene.window.click("call-menu-block-microphone");
+    assert!(!scene.window.shows("account-menu"));
     scene
         .window
         .until("the microphone of Ada is blocked", |window| {
@@ -1069,12 +1031,12 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
                 .is_some_and(|call| call.microphone_block.is_some())
         });
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-mute");
+    scene.window.click("call-menu-block-microphone");
     scene.window.until("the block is removed", |window| {
         ada_shown(window).is_some_and(|ada| matches!(ada.microphone, Microphone::Open { .. }))
     });
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-block-sound");
+    scene.window.click("call-menu-block-sound");
     scene.window.until("the sound of Ada is blocked", |window| {
         ada_shown(window).is_some_and(|ada| ada.sound_blocked)
             && calls
@@ -1083,7 +1045,7 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
                 .is_some_and(|call| call.sound_block.is_some())
     });
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-block-sound");
+    scene.window.click("call-menu-block-sound");
     scene.window.until("the sound block is removed", |window| {
         ada_shown(window).is_some_and(|ada| !ada.sound_blocked && !ada.sound_off)
     });
@@ -1091,27 +1053,27 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     // A moderator lowers the raised hand of Ada without meeting mode (ADR 0516). While no
     // hand is raised, the item is drawn and does nothing.
     scene.window.right_click_named(ada_row());
-    assert!(scene.window.shows("menu-lower-hand"));
-    scene.window.click("menu-lower-hand");
-    assert!(scene.window.shows("person-menu"));
+    assert!(scene.window.shows("call-menu-lower-hand"));
+    scene.window.click("call-menu-lower-hand");
+    assert!(scene.window.shows("account-menu"));
     scene.window.press("escape");
     scene.world.run(api.raise_hand()).unwrap();
     scene.window.until("the hand of Ada is raised", |window| {
         ada_shown(window).is_some_and(|ada| ada.hand_raised)
     });
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-lower-hand");
-    assert!(!scene.window.shows("person-menu"));
+    scene.window.click("call-menu-lower-hand");
+    assert!(!scene.window.shows("account-menu"));
     scene.window.until("the hand of Ada is lowered", |window| {
         ada_shown(window).is_some_and(|ada| !ada.hand_raised)
     });
 
     // The move: the menu lists the other voice channels, and Ada is in the chosen one.
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-move");
-    assert!(scene.window.shows("person-menu") && scene.window.shows("menu-back"));
+    scene.window.click("call-menu-move");
+    assert!(scene.window.shows("menu-back"));
     scene.window.click_named(format!("move-to:{}", other.id));
-    assert!(!scene.window.shows("person-menu"));
+    assert!(!scene.window.shows("menu-back"));
     scene
         .window
         .until("Ada is in the other voice channel", |window| {
@@ -1137,29 +1099,25 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     // The keyboard opens the menu of the row that holds the focus: Shift and F10, the
     // Menu key, Enter and Space. Escape closes the menu and returns the focus to the row.
     scene.window.click_named(ada_row());
-    assert!(!scene.window.shows("person-menu"));
+    assert!(!scene.window.shows("account-menu"));
     for keys in ["shift-f10", "enter", "space"] {
         scene.window.press(keys);
-        assert!(scene.window.shows("person-menu"), "{keys}");
+        assert!(scene.window.shows("account-menu"), "{keys}");
         assert!(
             scene
                 .window
                 .in_shell(|shell, window, cx| shell.layer_holds_focus(window, cx)),
             "{keys}"
         );
-        assert_eq!(
-            scene.window.in_shell(|shell, _, _| shell.person_menu_of()),
-            Some((voice, ada))
-        );
         scene.window.press("escape");
-        assert!(!scene.window.shows("person-menu"), "{keys}");
+        assert!(!scene.window.shows("account-menu"), "{keys}");
     }
     // Another key opens nothing.
     scene.window.press("f10");
-    assert!(!scene.window.shows("person-menu"));
+    assert!(!scene.window.shows("account-menu"));
     // The removal from the call.
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-disconnect");
+    scene.window.click("call-menu-disconnect");
     scene.window.until("Ada is removed", |window| {
         !ada_in(window, voice) && calls.view().call.is_none()
     });
@@ -1366,8 +1324,8 @@ fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
         .click_row_padding(crate::harness::selector(format!("occupant:{person}")));
     assert!(!scene.window.shows("profile-card"));
     scene.window.press("shift-f10");
-    assert!(scene.window.shows("menu-move"));
-    scene.window.press("down enter");
+    assert!(scene.window.shows("call-menu-move"));
+    choose_in_person_menu(&mut scene.window, "call-menu-move");
     assert!(scene.window.shows("menu-back"));
     scene.window.press("down down enter");
     scene
@@ -1700,9 +1658,9 @@ fn a_move_that_the_moved_device_cannot_join_is_told_to_the_mover(cx: &mut TestAp
     };
     assert_eq!(failures(proxy), 0);
 
-    // Luca moves Ada with the menu of her row.
+    // Luca moves Ada with the menu of her row, the menu of the call.
     scene.window.right_click_named(format!("occupant:{ada}"));
-    scene.window.click("menu-move");
+    scene.window.click("call-menu-move");
     scene.window.click_named(format!("move-to:{}", other.id));
     scene
         .window
@@ -1996,13 +1954,9 @@ fn a_double_click_on_a_locked_or_full_room_is_refused_and_the_request_enters_it(
         voice_of(window).closed == Some(Closed::Locked)
     });
     scene.window.double_click_channel(ROOM);
-    let at_double_click = refusal(&mut scene.window, "the refusal of the locked room");
+    refusal(&mut scene.window, "the refusal of the locked room");
     assert!(scene.window.view().call.is_none());
-    assert!(scene.window.shows("entry-box") && scene.window.shows("ask-to-enter"));
-    scene.window.click("dismiss-call-notice");
-    scene.window.click("join-call");
-    let at_button = refusal(&mut scene.window, "the refusal of the join button");
-    assert_eq!(at_double_click, at_button);
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
     scene.window.click("dismiss-call-notice");
     scene.window.click("ask-to-enter");
     let request = scene.entry_request();
@@ -2035,12 +1989,9 @@ fn a_double_click_on_a_locked_or_full_room_is_refused_and_the_request_enters_it(
         voice_of(window).closed == Some(Closed::Full)
     });
     scene.window.double_click_channel(ROOM);
-    let at_double_click = refusal(&mut scene.window, "the refusal of the full room");
+    refusal(&mut scene.window, "the refusal of the full room");
     assert!(scene.window.view().call.is_none());
-    scene.window.click("dismiss-call-notice");
-    scene.window.click("join-call");
-    let at_button = refusal(&mut scene.window, "the refusal of the join button");
-    assert_eq!(at_double_click, at_button);
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
     scene.window.click("dismiss-call-notice");
     scene.window.click("ask-to-enter");
     let request = scene.entry_request();
@@ -2145,8 +2096,8 @@ fn a_double_click_on_a_voice_channel_of_another_server_moves_the_call_there(
         })
     };
 
-    // A locked room of the second server refuses the double click as it refuses the join
-    // button, and the call on the first server goes on.
+    // A locked room of the second server refuses the double click, and the call on the
+    // first server goes on.
     show_server(&mut scene.window, second);
     let closed = |window: &mut Window| {
         window
@@ -2160,17 +2111,14 @@ fn a_double_click_on_a_voice_channel_of_another_server_moves_the_call_there(
         closed(window) == Some(Closed::Locked)
     });
     scene.window.double_click_channel("Review");
-    let at_double_click = refusal(&mut scene.window, "the refusal of the locked room");
+    refusal(&mut scene.window, "the refusal of the locked room");
     assert!(in_first(&mut scene.window));
-    scene.window.click("dismiss-call-notice");
-    scene.window.click("join-call");
-    let at_button = refusal(&mut scene.window, "the refusal of the join button");
-    assert_eq!(at_double_click, at_button);
-    assert!(in_first(&mut scene.window));
+    // The header of the closed room asks to join in the place of "Join call".
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
     scene.window.click("dismiss-call-notice");
 
-    // A full room of the second server refuses the double click as it refuses the join
-    // button, and the call on the first server goes on.
+    // A full room of the second server refuses the double click, and the call on the
+    // first server goes on.
     scene.world.run(bea_api.unlock_call(review)).unwrap();
     scene
         .world
@@ -2186,13 +2134,10 @@ fn a_double_click_on_a_voice_channel_of_another_server_moves_the_call_there(
         closed(window) == Some(Closed::Full)
     });
     scene.window.double_click_channel("Review");
-    let at_double_click = refusal(&mut scene.window, "the refusal of the full room");
+    refusal(&mut scene.window, "the refusal of the full room");
     assert!(in_first(&mut scene.window));
-    scene.window.click("dismiss-call-notice");
-    scene.window.click("join-call");
-    let at_button = refusal(&mut scene.window, "the refusal of the join button");
-    assert_eq!(at_double_click, at_button);
-    assert!(in_first(&mut scene.window));
+    // The header of the closed room asks to join in the place of "Join call".
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
     scene.window.click("dismiss-call-notice");
 
     // The open room is entered: the device leaves the call of the first server.
@@ -2644,8 +2589,9 @@ fn voice_person_menus_copy_identities_and_open_directs_without_leaving_the_call(
             .iter()
             .any(|person| person.account_id == ada && person.name.as_deref() == Some("Ada"))
     });
+    // The row of a person in the drawn call opens the menu of the call (ADR 0735).
     scene.window.right_click_named(format!("occupant:{ada}"));
-    scene.window.click("person-copy-name");
+    scene.window.click_named(format!("account-copy-name:{ada}"));
     assert_eq!(
         scene
             .window
@@ -2658,7 +2604,7 @@ fn voice_person_menus_copy_identities_and_open_directs_without_leaving_the_call(
     );
     assert!(scene.window.shows("copied-confirmation"));
     scene.window.right_click_named(format!("occupant:{ada}"));
-    scene.window.click("person-copy-id");
+    scene.window.click_named(format!("account-copy-id:{ada}"));
     assert_eq!(
         scene
             .window
@@ -2684,7 +2630,7 @@ fn voice_person_menus_copy_identities_and_open_directs_without_leaving_the_call(
         own.to_string()
     );
     scene.window.right_click_named(format!("occupant:{ada}"));
-    scene.window.click("person-message");
+    scene.window.click_named(format!("account-message:{ada}"));
     scene
         .window
         .until("the person's direct conversation is open", |window| {
@@ -3387,4 +3333,32 @@ fn an_early_entry_answer_still_notifies_after_the_request_response(cx: &mut Test
         )
         .unwrap();
     scene.world.run(scene.caller.calls.leave());
+}
+
+/// Chooses an item of the open menu of a person with the keyboard: the menu of a channel row
+/// (`menu-…`) or the menu of a person in the call (`call-menu-…`), whose order is the same.
+/// The volume comes first, then the pin of a person in the call, the moderation items that
+/// the person may use, "Move to" and the invitation (ADR 0735).
+fn choose_in_person_menu(window: &mut crate::harness::Window, item: &'static str) {
+    let order: [&[&'static str]; 10] = [
+        &["menu-volume", "call-menu-volume"],
+        &["call-person-pin", "call-person-unpin"],
+        &["menu-allow-speak", "call-menu-allow-speak"],
+        &["menu-mute", "call-menu-block-microphone"],
+        &["menu-lower-hand", "call-menu-lower-hand"],
+        &["menu-block-sound", "call-menu-block-sound"],
+        &["menu-move", "call-menu-move"],
+        &["menu-disconnect", "call-menu-disconnect"],
+        &["menu-invite", "call-menu-invite"],
+        &["call-menu-withdraw-invitation"],
+    ];
+    let target = order
+        .iter()
+        .position(|names| names.contains(&item))
+        .unwrap();
+    let before = order[..target]
+        .iter()
+        .filter(|names| names.iter().any(|name| window.shows(name)))
+        .count();
+    window.press(&format!("{}enter", "down ".repeat(before + 1)));
 }

@@ -415,6 +415,7 @@ mod tests {
                 problems: vec![FileProblem::PictureBlank, FileProblem::Unknown],
                 silent: true,
                 recovered: false,
+                missing_sound: None,
             }),
         };
         let lines = segment_lines(&segment);

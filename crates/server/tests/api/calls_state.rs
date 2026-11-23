@@ -1,4 +1,4 @@
-//! Blocks and own state, meeting mode, screen share, speaking marks, direct-message calls and
+//! Blocks and own state, meeting mode, screen share, direct-message calls and
 //! the events of a call (ADR 0502, ADR 0503, ADR 0505, ADR 0507).
 
 use std::time::{Duration as Wait, Instant};
@@ -14,7 +14,6 @@ use junto_protocol::events::{Event, Level};
 use junto_protocol::ids::{AccountId, ChannelId};
 use junto_protocol::{WorkspacePermission, WorkspacePermission as W};
 use junto_server::calls::admission::Outcome;
-use junto_server::calls::speaking;
 use junto_server::media::{ParticipantKind, Publishing, TrackKind, TrackSource};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -1349,122 +1348,6 @@ async fn a_block_that_is_set_while_meeting_mode_ends_stays_as_a_block_of_the_mod
     assert!(speaks(server, &listener));
 }
 
-async fn say(server: &TestServer, member: &Member, speaking: bool) -> Reply {
-    let body = json!({ "speaking": speaking, "level": 0.8 });
-    server.put(member, "/api/v1/call/speaking", &body).await
-}
-
-#[tokio::test]
-async fn speaking_marks_reach_the_people_outside_at_a_bounded_rate() {
-    let scene = Scene::start().await;
-    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
-    let voice = scene.voice.id;
-    server.enter_call(ann, voice).await;
-    server.enter_call(ben, voice).await;
-    let mut to_owner = server.full_stream(owner).await;
-    let publish = || async { speaking::publish(&server.state).await.unwrap() };
-    let spoken = |events: Vec<Event>| -> Vec<Vec<AccountId>> {
-        events
-            .into_iter()
-            .map(|event| match event {
-                Event::CallSpeaking { account_ids, .. } => account_ids,
-                other => panic!("{other:?}"),
-            })
-            .collect()
-    };
-
-    say(server, owner, true).await.error(ErrorCode::NotInCall);
-    assert_eq!(publish().await, 0);
-    say(server, ann, true).await.empty(StatusCode::NO_CONTENT);
-    assert_eq!(publish().await, 1);
-    let raw_before = to_owner.raw.len();
-    assert_eq!(
-        spoken(server.call_events(owner, &mut to_owner).await),
-        [vec![ann.account_id]]
-    );
-    assert!(!to_owner.raw[raw_before..].join("").contains("level"));
-
-    say(server, ben, true).await.empty(StatusCode::NO_CONTENT);
-    assert_eq!(publish().await, 0);
-    server.clock.advance(Duration::milliseconds(999));
-    assert_eq!(publish().await, 0);
-    server.clock.advance(Duration::milliseconds(1));
-    say(server, ann, true).await.empty(StatusCode::NO_CONTENT);
-    assert_eq!(publish().await, 1);
-    assert_eq!(publish().await, 0);
-    assert_eq!(
-        spoken(server.call_events(owner, &mut to_owner).await),
-        [vec![ann.account_id, ben.account_id]]
-    );
-
-    server.clock.advance(Duration::seconds(1));
-    say(server, ann, false).await.empty(StatusCode::NO_CONTENT);
-    assert_eq!(publish().await, 1);
-    server.clock.advance(Duration::seconds(4));
-    assert_eq!(publish().await, 1);
-    assert_eq!(
-        spoken(server.call_events(owner, &mut to_owner).await),
-        [vec![ben.account_id], vec![]]
-    );
-
-    report_state(server, ann, true, false)
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    let block = block_path(voice, ben.account_id, "microphone-block");
-    server
-        .put_empty(owner, &block)
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    server.call_events(owner, &mut to_owner).await;
-    server.clock.advance(Duration::seconds(2));
-    say(server, ann, true).await.empty(StatusCode::NO_CONTENT);
-    say(server, ben, true).await.empty(StatusCode::NO_CONTENT);
-    publish().await;
-    assert!(
-        spoken(server.call_events(owner, &mut to_owner).await)
-            .iter()
-            .all(Vec::is_empty)
-    );
-
-    // The call that begins after the setting hides who is inside (ADR 0517): it has no
-    // speaking mark.
-    server
-        .call_settings(owner, voice, json!({ "hides_occupants": true }))
-        .await;
-    server.leave_call(ann).await;
-    server.leave_call(ben).await;
-    server.check().await;
-    let seat = server.enter_call(ann, voice).await;
-    server.call_events(owner, &mut to_owner).await;
-    report_state(server, ann, false, false)
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    server.clock.advance(Duration::seconds(10));
-    publish().await;
-    server.clock.advance(Duration::seconds(2));
-    say(server, ann, true).await.empty(StatusCode::NO_CONTENT);
-    assert_eq!(publish().await, 0);
-    let mut to_ben = server.full_stream(ben).await;
-    server.clock.advance(Duration::seconds(2));
-    say(server, ann, false).await.empty(StatusCode::NO_CONTENT);
-    assert_eq!(publish().await, 0);
-    assert!(server.call_events(owner, &mut to_owner).await.is_empty());
-    assert!(server.call_events(ben, &mut to_ben).await.is_empty());
-    let _ = seat;
-
-    let mut limited = false;
-    for _ in 0..25 {
-        let reply = say(server, ann, true).await;
-        if reply.status != StatusCode::NO_CONTENT {
-            reply.error(ErrorCode::RateLimited);
-            assert!(reply.retry_after.is_some());
-            limited = true;
-            break;
-        }
-    }
-    assert!(limited);
-}
-
 async fn call(server: &TestServer, caller: &Member, callee: AccountId) -> Reply {
     let path = format!("/api/v1/direct-calls/{callee}/join");
     server.post(caller, &path, &Value::Null).await
@@ -1556,8 +1439,6 @@ async fn a_direct_message_call_reaches_its_two_participants_and_nobody_else() {
     report_state(server, ben, true, false)
         .await
         .empty(StatusCode::NO_CONTENT);
-    say(server, ann, true).await.empty(StatusCode::NO_CONTENT);
-    assert_eq!(speaking::publish(&server.state).await.unwrap(), 0);
     assert_eq!(
         names(&server.call_events(ben, &mut to_ben).await),
         ["call_participant_updated", "call_participant_updated"]
@@ -1903,7 +1784,6 @@ async fn a_signed_notification_of_the_media_server_makes_the_check_run_at_once()
 async fn the_admission_check_runs_by_itself_at_its_interval() {
     let server = TestServer::start_with_tasks(|config| {
         config.limits.calls.check_interval = Duration::milliseconds(50);
-        config.limits.calls.speaking_interval = Duration::milliseconds(50);
     })
     .await;
     let scene = Scene::on(server).await;
@@ -1912,8 +1792,6 @@ async fn the_admission_check_runs_by_itself_at_its_interval() {
         server.state.calls.reachable() == Some(true)
     })
     .await;
-    let mut to_owner = server.full_stream(owner).await;
-
     let seat = server.connect(server.join_call(ann, scene.voice.id).await);
     until("the person is in the call", async || {
         server.occupants(owner, scene.voice.id).await == [ann.account_id]
@@ -1955,23 +1833,6 @@ async fn the_admission_check_runs_by_itself_at_its_interval() {
         server.occupants(owner, scene.voice.id).await == [ben.account_id]
     })
     .await;
-    server
-        .put(ben, "/api/v1/call/speaking", &json!({ "speaking": true }))
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    let mut spoke = false;
-    let started = Instant::now();
-    while !spoke {
-        assert!(
-            started.elapsed() < Wait::from_secs(30),
-            "no speaking mark arrived"
-        );
-        spoke = server
-            .call_events(owner, &mut to_owner)
-            .await
-            .iter()
-            .any(|event| matches!(event, Event::CallSpeaking { account_ids, .. } if account_ids == &[ben.account_id]));
-    }
     let _ = (ben_seat, WorkspacePermission::ViewChannel);
 }
 

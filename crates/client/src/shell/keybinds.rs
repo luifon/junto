@@ -178,7 +178,7 @@ impl Shell {
                     .workspace()
                     .is_some_and(|workspace| workspace.pins.is_some())
                 {
-                    self.state.update(cx, |state, cx| state.close_pins(cx));
+                    self.close_side_view(cx);
                 } else if let (Some(server_id), Some(channel_id)) = (shown.server, shown.channel) {
                     self.open_pins(server_id, channel_id, cx);
                 }

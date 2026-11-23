@@ -353,6 +353,8 @@ pub fn open_main_window(
         let shell = cx.new(|cx| {
             let mut shell = Shell::new(state, window, cx);
             shell.observe_placement(false, window, cx);
+            #[cfg(windows)]
+            crate::taskbar::watch_buttons(window, cx);
             shell
         });
         cx.new(|cx| Root::new(shell, window, cx))

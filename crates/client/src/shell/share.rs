@@ -98,15 +98,19 @@ pub(crate) enum Listed {
     Failed(CaptureError),
 }
 
-/// The dialog in which a person chooses what to share. Nothing is chosen at its start:
-/// the person chooses the picture and the sound of each share (ADR 0502).
+/// The dialog in which a person chooses what to share. "No sound" is chosen at its start,
+/// and the screen when the system lists one screen, so that one screen is shared with two
+/// clicks; a sound that can hold something private is chosen by the person (ADR 0502).
 pub(crate) struct SharePicker {
     pub access: ScreenAccess,
     pub listed: Listed,
     /// The tab that the dialog shows. It opens on the screens.
     pub tab: ShareTab,
     pub picture: Option<PictureSource>,
-    pub sound: Option<SoundKind>,
+    pub sound: SoundKind,
+    /// The person chose the sound. A sound that the dialog chose follows the picture: the
+    /// sound of a shared application, and "No sound" for every other picture.
+    pub sound_chosen: bool,
     /// The application whose sound is shared with a screen.
     pub application: Option<ApplicationId>,
     scroll: ScrollHandle,
@@ -127,7 +131,8 @@ impl SharePicker {
             listed,
             tab: ShareTab::Screen,
             picture: None,
-            sound: None,
+            sound: SoundKind::None,
+            sound_chosen: false,
             application: None,
             scroll: ScrollHandle::new(),
             read,
@@ -159,18 +164,46 @@ impl SharePicker {
     /// (ADR 0502). An application that is shared has the sound of that application when the
     /// person has chosen no sound yet.
     pub(crate) fn pick_picture(&mut self, picture: PictureSource) {
-        if self.picture != Some(picture) && self.sound == Some(SoundKind::Application) {
-            self.sound = None;
-            self.application = None;
+        if self.picture != Some(picture) && self.sound == SoundKind::Application {
+            self.forget_application_sound();
         }
         self.tab = ShareTab::of(picture);
         self.picture = Some(picture);
         // Junto itself has no sound to share, so its application gets none by default.
         if matches!(picture, PictureSource::Application(_))
-            && self.sound.is_none()
+            && !self.sound_chosen
             && !self.shows_the_client()
         {
-            self.sound = Some(SoundKind::Application);
+            self.sound = SoundKind::Application;
+        }
+    }
+
+    /// The sound of one application named the application of the picture that ends: the
+    /// dialog returns to "No sound" until the person chooses again.
+    fn forget_application_sound(&mut self) {
+        self.sound = SoundKind::None;
+        self.sound_chosen = false;
+        self.application = None;
+    }
+
+    /// The person chose a sound.
+    pub(crate) fn pick_sound(&mut self, sound: SoundKind) {
+        self.sound = sound;
+        self.sound_chosen = true;
+    }
+
+    /// Takes what the system listed, and chooses the screen when it lists one screen and
+    /// nothing else of the tab of the screens.
+    pub(crate) fn take_listed(&mut self, listed: Listed) {
+        self.listed = listed;
+        let only = self
+            .sources()
+            .and_then(|sources| match sources.displays.as_slice() {
+                [display] if sources.portal.is_empty() => Some(display.id),
+                _ => None,
+            });
+        if let (Some(id), None, ShareTab::Screen) = (only, self.picture, self.tab) {
+            self.pick_picture(PictureSource::Display(id));
         }
     }
 
@@ -193,9 +226,8 @@ impl SharePicker {
             .picture
             .is_some_and(|picture| ShareTab::of(picture) != tab)
         {
-            if self.sound == Some(SoundKind::Application) {
-                self.sound = None;
-                self.application = None;
+            if self.sound == SoundKind::Application {
+                self.forget_application_sound();
             }
             self.picture = None;
         }
@@ -236,23 +268,22 @@ impl SharePicker {
         let whole_application = matches!(self.picture, Some(PictureSource::Application(_)));
         let client = self.shows_the_client();
         match (self.sound, shared) {
-            (None | Some(SoundKind::Application), _) if client => {
+            (SoundKind::None | SoundKind::Application, _) if client => {
                 text::SOUND_OF_JUNTO_NOT_SHARED.into()
             }
-            (None, _) => text::SOUND_CHOICE_HELP.into(),
-            (Some(SoundKind::None), _) => text::SOUND_NONE_HELP.into(),
-            (Some(SoundKind::System), _) => text::SOUND_SYSTEM_HELP.into(),
-            (Some(SoundKind::Application), _) if sources.creators_unknown => {
+            (SoundKind::None, _) => text::SOUND_NONE_HELP.into(),
+            (SoundKind::System, _) => text::SOUND_SYSTEM_HELP.into(),
+            (SoundKind::Application, _) if sources.creators_unknown => {
                 text::SOUND_CREATORS_UNKNOWN.into()
             }
-            (Some(SoundKind::Application), Some((_, name))) if started_the_client => {
+            (SoundKind::Application, Some((_, name))) if started_the_client => {
                 text::sound_includes_junto(name).into()
             }
-            (Some(SoundKind::Application), Some((_, name))) if whole_application => {
+            (SoundKind::Application, Some((_, name))) if whole_application => {
                 text::sound_of_shared_application(name).into()
             }
-            (Some(SoundKind::Application), Some((_, name))) => text::sound_of_window(name).into(),
-            (Some(SoundKind::Application), None) => text::SOUND_APPLICATION_HELP.into(),
+            (SoundKind::Application, Some((_, name))) => text::sound_of_window(name).into(),
+            (SoundKind::Application, None) => text::SOUND_APPLICATION_HELP.into(),
         }
     }
 
@@ -300,7 +331,7 @@ impl SharePicker {
         if !listed || ShareTab::of(picture) != self.tab {
             return None;
         }
-        let sound = match (self.sound?, picture) {
+        let sound = match (self.sound, picture) {
             (SoundKind::None, _) => SoundChoice::None,
             (SoundKind::System, _) if sources.system_sound => SoundChoice::System,
             (SoundKind::System, _) => return None,
@@ -702,15 +733,19 @@ impl Shell {
                         } else {
                             another.into_any_element()
                         })
-                        .child(
-                            MenuItem::new("share-stop-all", text::STOP_ALL_SHARES)
-                                .icon(Icon::Stop)
-                                .selector("share-stop-all")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.state.update(cx, |state, _| state.stop_share(None));
-                                    this.close_layer(window, cx);
-                                })),
-                        )
+                        // "Stop all shares" only where it stops more than the item of the one
+                        // share does.
+                        .when(shares.len() > 1, |menu| {
+                            menu.child(
+                                MenuItem::new("share-stop-all", text::STOP_ALL_SHARES)
+                                    .icon(Icon::Stop)
+                                    .selector("share-stop-all")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.state.update(cx, |state, _| state.stop_share(None));
+                                        this.close_layer(window, cx);
+                                    })),
+                            )
+                        })
                         .child(div().h(u(4.0))),
                 ),
             ))
@@ -787,10 +822,10 @@ impl Shell {
                     if picker.read != read {
                         return false;
                     }
-                    picker.listed = match listed {
+                    picker.take_listed(match listed {
                         Ok(sources) => Listed::Sources(sources),
                         Err(error) => Listed::Failed(error),
-                    };
+                    });
                     picker.previews = wanted
                         .iter()
                         .map(|source| (*source, Preview::Loading))
@@ -961,7 +996,7 @@ impl Shell {
     /// Chooses the sound of the share in its dialog, as a click on its control does.
     pub fn pick_share_sound(&mut self, sound: SoundKind, cx: &mut Context<Self>) {
         if let Some(picker) = self.picker() {
-            picker.sound = Some(sound);
+            picker.pick_sound(sound);
             cx.notify();
         }
     }
@@ -1213,6 +1248,7 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
+        let quality = self.share_quality_controls("share-dialog", cx);
         let Layer::SharePicker(picker) = &self.layer else {
             return div().into_any_element();
         };
@@ -1575,7 +1611,7 @@ impl Shell {
             picker.sound_help(&sources)
         };
         let applications: Vec<AnyElement> =
-            if sound == Some(SoundKind::Application) && window_application.is_none() {
+            if sound == SoundKind::Application && window_application.is_none() {
                 let mut listed: Vec<AnyElement> = sources
                     .applications
                     .iter()
@@ -1664,18 +1700,14 @@ impl Shell {
             .child(
                 div().flex().child(
                     Segmented::new("share-sound", text::SHARE_SOUND, kinds)
-                        .selected(
-                            sound.and_then(|sound| {
-                                sound_kinds.iter().position(|kind| *kind == sound)
-                            }),
-                        )
+                        .selected(sound_kinds.iter().position(|kind| *kind == sound))
                         .selector("share-sound")
                         .on_select({
                             let select = cx.listener(|this, index: &usize, _, cx| {
                                 if let Some(picker) = this.picker()
                                     && let Some(kind) = picker.sound_kinds().get(*index).copied()
                                 {
-                                    picker.sound = Some(kind);
+                                    picker.pick_sound(kind);
                                     cx.notify();
                                 }
                             });
@@ -1693,6 +1725,20 @@ impl Shell {
             .when(!applications.is_empty(), |dialog| {
                 dialog.child(div().mt(u(8.0)).child(list_frame(applications)))
             })
+            // The quality of this share, which is the stored setting of the next share
+            // (Settings, "Your screen share").
+            .child(div().mt(u(14.0)).child(label(text::SHARE_QUALITY)))
+            .child(
+                div()
+                    .id("share-quality")
+                    .debug_selector(|| "share-quality".to_owned())
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(u(8.0))
+                    .child(quality.0)
+                    .child(quality.1),
+            )
             .child(dialog_footer([
                 cancel(cx),
                 Button::new("start-share")
@@ -1746,52 +1792,110 @@ impl Shell {
         (control.state.clone(), control.focus.clone())
     }
 
-    pub(super) fn share_mute_button(
-        &self,
+    /// The speaker control of the sound of the watched share of another person. A press
+    /// opens a menu under it with the mute of the share and its volume.
+    fn share_sound_control(
+        &mut self,
         share: &ShareCard,
-        selector: &'static str,
+        volume: Option<(Entity<SliderState>, FocusHandle)>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = share.id;
-        let muted = share.sound_setting.muted;
-        let level = format!("{}%", share.sound_setting.volume);
-        let label = if muted {
-            format!("{} · {level}", text::SHARE_MUTED)
+        let (muted, percent) = (share.sound_setting.muted, share.sound_setting.volume);
+        let title = if muted {
+            text::SHARE_SOUND_OFF_FOR_YOU
         } else {
-            level
+            text::SHARE_SOUND_TITLE
         };
-        let button = Button::new(format!("{selector}:{id:?}"))
+        let button = Button::new("share-sound-control")
             .icon(if muted {
                 Icon::PhonesOff
             } else {
                 Icon::Speaker
             })
-            .label(label)
-            .accessible_label(format!(
-                "{} at {}%",
-                if muted {
-                    text::UNMUTE_SHARE
-                } else {
-                    text::MUTE_SHARE
-                },
-                share.sound_setting.volume
-            ))
-            .selector(selector)
-            .tooltip(format!(
-                "{} · {}%",
-                if muted {
-                    text::SHARE_SOUND_OFF_FOR_YOU
-                } else {
-                    text::SHARE_SOUND_TITLE
-                },
-                share.sound_setting.volume
-            ))
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .accessible_label(format!("{title} · {percent}%"))
+            .tooltip(format!("{title} · {percent}%"))
+            .selector("share-sound-control")
+            .on_click(cx.listener(|this, _, window, cx| {
                 cx.stop_propagation();
-                this.state
-                    .update(cx, |state, cx| state.toggle_share_sound(id, cx));
+                this.open_own_menu(Layer::ShareSound, window, cx);
             }));
-        share_action_button(button)
+        let menu = matches!(self.layer, Layer::ShareSound).then(|| {
+            let mut items = vec![
+                crate::ui::MenuItem::new(
+                    "share-sound-mute",
+                    if muted {
+                        text::UNMUTE_SHARE
+                    } else {
+                        text::MUTE_SHARE
+                    },
+                )
+                .icon(if muted {
+                    Icon::Speaker
+                } else {
+                    Icon::PhonesOff
+                })
+                .selector("share-sound-mute")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state
+                        .update(cx, |state, cx| state.toggle_share_sound(id, cx));
+                }))
+                .into_any_element(),
+            ];
+            if let Some((state, focus)) = &volume {
+                items.push(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .px(u(12.0))
+                        .py(u(6.0))
+                        .child(
+                            VolumeSlider::new("share-volume", state, focus, text::SHARE_VOLUME)
+                                .in_menu()
+                                .selector("share-volume"),
+                        )
+                        .into_any_element(),
+                );
+            }
+            div()
+                .absolute()
+                .right_0()
+                .top(u(34.0))
+                // The line lies in the frame of the share, which opens the menu of the share
+                // at Enter and Space: a key on an item of this menu stays in it.
+                .on_key_down(|event: &gpui::KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                    }
+                })
+                .child(gpui::deferred(
+                    gpui::anchored()
+                        .anchor(gpui::Anchor::TopRight)
+                        .snap_to_window_with_margin(gpui::px(8.0))
+                        .child(
+                            crate::ui::Menu::new(
+                                "share-sound-menu",
+                                text::SHARE_SOUND_TITLE,
+                                self.layer_focus(),
+                            )
+                            .width(240.0)
+                            .selector("share-sound-menu")
+                            .on_close(Self::handler(cx, |this, window, cx| {
+                                this.own_menu_closed_by_press = !window.last_input_was_keyboard();
+                                this.close_layer(window, cx);
+                            }))
+                            .children(items)
+                            .child(div().h(u(4.0))),
+                        ),
+                ))
+        });
+        div()
+            .relative()
+            .flex_none()
+            .child(share_action_button(button))
+            .children(menu)
+            .into_any_element()
     }
 
     pub(super) fn render_share_bar(
@@ -1969,9 +2073,21 @@ impl Shell {
                                     }
                                 }),
                         )
-                        .when(id.person != Person::Own, |card| {
-                            card.child(self.share_mute_button(share, "share-mute-tile", cx))
-                        })
+                        // The sound of a share that is not watched is set in its menu; the
+                        // card shows only that it is muted (ADR 0738).
+                        .when(
+                            id.person != Person::Own && share.sound_setting.muted,
+                            |card| {
+                                card.child(
+                                    div()
+                                        .id("share-muted-mark")
+                                        .debug_selector(|| "share-muted-mark".to_owned())
+                                        .flex_none()
+                                        .tooltip(tooltip(text::SHARE_MUTED))
+                                        .child(icon(Icon::PhonesOff, 14.0, colors.bone_2)),
+                                )
+                            },
+                        )
                         .map(|frame| self.call_share_frame(frame, share, false, cx))
                 });
                 div()
@@ -2030,75 +2146,68 @@ impl Shell {
             .filter(|share| share.id.person != Person::Own && share.sound != Some(ShareAudio::None))
             .map(|_| self.share_volume_control(stage.volume, window, cx));
 
-        let header = watched.map(|share| {
-            let own = share.id.person == Person::Own;
-            let name: SharedString = share
-                .name
-                .clone()
-                .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
-                .into();
-            // The sentence about the share, with its strong part.
-            let (line, strong) = if several {
-                let title = title_of(share);
-                let line = text::watching_share(&title);
-                let range = line.len() - title.len()..line.len();
-                (line, range)
-            } else if own {
-                (text::YOU_ARE_SHARING.to_owned(), 0..3)
-            } else {
-                (text::is_sharing(&name), 0..name.len())
-            };
-            let muted = !own && (share.sound_setting.muted || share.sound_setting.volume == 0);
-            let sound: Option<(SharedString, bool)> = if share.sound_held {
-                Some((text::SHARE_SOUND_HELD.into(), false))
-            } else if muted {
-                Some((text::SHARE_SOUND_OFF_FOR_YOU.into(), false))
-            } else if several && !own {
-                text::watched_sound(share.sound).map(|heard| {
-                    (
-                        format!("{heard} {}", text::SOUND_FOLLOWS).into(),
-                        share.sound != Some(ShareAudio::None),
-                    )
-                })
-            } else {
-                text::share_sound(share.sound)
-                    .map(|sound| (sound.into(), share.sound != Some(ShareAudio::None)))
-            };
-            let measure = text::share_measure(
-                if several { None } else { share.kind },
-                share.size,
-                share.frame_rate,
-            );
-            div()
-                .id("share-header")
-                .role(Role::Status)
-                .aria_label(line.clone())
-                .debug_selector(|| "share-header".to_owned())
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(u(8.0))
-                .h(u(34.0))
-                .px(u(12.0))
-                .overflow_hidden()
-                .bg(Hsla::from(colors.basalt_2))
-                .border_b_1()
-                .border_color(Hsla::from(colors.basalt_rule))
-                .typeface(theme.types.control, theme)
-                .text_size(u(13.5))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .ink(colors.bone)
-                .whitespace_nowrap()
-                .child(super::people::avatar(&faces, share.account_id, 18.0).radius(2.0))
-                // The title of the share takes the room of its words before the sentence about
-                // its sound: with a basis of zero it got only what the sound left, and "You are
-                // watching Your screen" was cut to "You are watching You".
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_auto()
-                        .truncate()
-                        .child(super::people::person_element(
+        let header =
+            watched.map(|share| {
+                let own = share.id.person == Person::Own;
+                let name: SharedString = share
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
+                    .into();
+                // The sentence about the share, with its strong part.
+                let (line, strong) = if several {
+                    let title = title_of(share);
+                    let line = text::watching_share(&title);
+                    let range = line.len() - title.len()..line.len();
+                    (line, range)
+                } else if own {
+                    (text::YOU_ARE_SHARING.to_owned(), 0..3)
+                } else {
+                    (text::is_sharing(&name), 0..name.len())
+                };
+                let muted = !own && (share.sound_setting.muted || share.sound_setting.volume == 0);
+                let sound: Option<(SharedString, bool)> = if share.sound_held {
+                    Some((text::SHARE_SOUND_HELD.into(), false))
+                } else if muted {
+                    Some((text::SHARE_SOUND_OFF_FOR_YOU.into(), false))
+                } else if several && !own {
+                    text::watched_sound(share.sound)
+                        .map(|heard| (heard.into(), share.sound != Some(ShareAudio::None)))
+                } else {
+                    text::share_sound(share.sound)
+                        .map(|sound| (sound.into(), share.sound != Some(ShareAudio::None)))
+                };
+                let measure = text::share_measure(
+                    if several { None } else { share.kind },
+                    share.size,
+                    share.frame_rate,
+                );
+                div()
+                    .id("share-header")
+                    .role(Role::Status)
+                    .aria_label(line.clone())
+                    .debug_selector(|| "share-header".to_owned())
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(u(8.0))
+                    .h(u(34.0))
+                    .px(u(12.0))
+                    .overflow_hidden()
+                    .bg(Hsla::from(colors.basalt_2))
+                    .border_b_1()
+                    .border_color(Hsla::from(colors.basalt_rule))
+                    .typeface(theme.types.control, theme)
+                    .text_size(u(13.5))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .ink(colors.bone)
+                    .whitespace_nowrap()
+                    .child(super::people::avatar(&faces, share.account_id, 18.0).radius(2.0))
+                    // The title of the share takes the room of its words before the sentence
+                    // about its sound: with a basis of zero it got only what the sound left, and
+                    // "You are watching Your screen" was cut to "You are watching You".
+                    .child(div().min_w_0().flex_auto().truncate().child(
+                        super::people::person_element(
                             &faces,
                             share.account_id,
                             &name,
@@ -2113,92 +2222,97 @@ impl Shell {
                                     ..gpui::HighlightStyle::default()
                                 },
                             )]),
-                        )),
-                )
-                .when_some(sound, |header, (sentence, heard)| {
-                    let ink = if heard {
-                        colors.olive_bright
-                    } else {
-                        colors.bone_2
-                    };
-                    header.child(
-                        div()
-                            .id("share-sound")
-                            .debug_selector(|| "share-sound".to_owned())
-                            .flex()
-                            .min_w_0()
-                            .items_center()
-                            .gap(u(5.0))
-                            .ink(ink)
-                            .child(icon(Icon::Speaker, 14.0, ink))
-                            .child(div().min_w_0().truncate().child(sentence)),
-                    )
-                })
-                // The people who watch the share of this device (ADR 0502).
-                .when(own && !share.viewers.is_empty(), |header| {
-                    let names: Vec<String> = share
-                        .viewers
-                        .iter()
-                        .map(|(_, name)| {
-                            name.clone()
-                                .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
-                        })
-                        .collect();
-                    let named: SharedString = text::share_viewer_names(&names).into();
-                    header.child(
-                        div()
-                            .id("share-viewers")
-                            .debug_selector(|| "share-viewers".to_owned())
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(u(5.0))
-                            .aria_label(named.clone())
-                            .tooltip(crate::ui::tooltip(named))
-                            .ink(colors.bone_2)
-                            .child(icon(Icon::People, 14.0, colors.bone_2))
-                            .child(crate::ui::paint_text(
-                                text::share_viewers(names.len()).into(),
-                                None,
-                            )),
-                    )
-                })
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .typeface(theme.types.small, theme)
-                        .ink(colors.bone_2)
-                        .child(measure),
-                )
-                .when(!own, |header| {
-                    header.child(self.share_mute_button(share, "share-mute-header", cx))
-                })
-                .when_some(volume.clone(), |header, (state, focus)| {
-                    header.child(
-                        div().flex_none().w(u(110.0)).child(
-                            VolumeSlider::new("share-volume", &state, &focus, text::SHARE_VOLUME)
-                                // The mute button before it states the percentage.
-                                .without_value()
-                                .selector("share-volume"),
                         ),
+                    ))
+                    .when_some(sound, |header, (sentence, heard)| {
+                        let ink = if heard {
+                            colors.olive_bright
+                        } else {
+                            colors.bone_2
+                        };
+                        header.child(
+                            div()
+                                .id("share-sound")
+                                .debug_selector(|| "share-sound".to_owned())
+                                .flex()
+                                .min_w_0()
+                                .items_center()
+                                .gap(u(5.0))
+                                .ink(ink)
+                                .child(icon(Icon::Speaker, 14.0, ink))
+                                .child(div().min_w_0().truncate().child(sentence)),
+                        )
+                    })
+                    // The people who watch the share of this device (ADR 0502).
+                    .when(own && !share.viewers.is_empty(), |header| {
+                        let names: Vec<String> = share
+                            .viewers
+                            .iter()
+                            .map(|(_, name)| {
+                                name.clone()
+                                    .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
+                            })
+                            .collect();
+                        let named: SharedString = text::share_viewer_names(&names).into();
+                        header.child(
+                            div()
+                                .id("share-viewers")
+                                .debug_selector(|| "share-viewers".to_owned())
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(u(5.0))
+                                .aria_label(named.clone())
+                                .tooltip(crate::ui::tooltip(named))
+                                .ink(colors.bone_2)
+                                .child(icon(Icon::People, 14.0, colors.bone_2))
+                                .child(crate::ui::paint_text(
+                                    text::share_viewers(names.len()).into(),
+                                    None,
+                                )),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .typeface(theme.types.small, theme)
+                            .ink(colors.bone_2)
+                            .child(measure),
                     )
-                })
-                .child(share_action_button(
-                    Button::new("stop-watching")
-                        .label(text::STOP_WATCHING)
-                        .selector("stop-watching")
-                        .on_click(cx.listener({
-                            let id = share.id;
-                            move |this, _, _, cx| {
+                    // One control of the sound of the watched share: a speaker that opens its
+                    // mute and its volume (ADR 0738).
+                    .when(!own, |header| {
+                        header.child(self.share_sound_control(share, volume.clone(), cx))
+                    })
+                    // The own share has "Stop sharing", which ends the share; watching another
+                    // share ends with "Stop watching" (ADR 0738).
+                    .child(share_action_button(if own {
+                        let slot = share.id.slot;
+                        Button::new("stop-sharing")
+                            .kind(ButtonKind::CallLeave)
+                            .icon(Icon::ScreenOff)
+                            .label(text::STOP_SHARING)
+                            .selector("stop-sharing")
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 this.state
-                                    .update(cx, |state, _| state.stop_watching_share(id));
-                            }
-                        })),
-                ))
-                .map(|header| self.call_share_frame(header, share, true, cx))
-        });
+                                    .update(cx, |state, _| state.stop_share(Some(slot)));
+                            }))
+                    } else {
+                        Button::new("stop-watching")
+                            .label(text::STOP_WATCHING)
+                            .selector("stop-watching")
+                            .on_click(cx.listener({
+                                let id = share.id;
+                                move |this, _, _, cx| {
+                                    this.state
+                                        .update(cx, |state, _| state.stop_watching_share(id));
+                                }
+                            }))
+                    }))
+                    .map(|header| self.call_share_frame(header, share, true, cx))
+            });
 
         let shown = watched
             .filter(|share| !share.shows_the_client)
@@ -2557,26 +2671,54 @@ mod tests {
         assert!(!picker.belongs_to(&CallsView::default()));
     }
 
+    /// One screen and no portal: the dialog chooses the screen when the list arrives, so
+    /// "Share" is the second click. With two screens the person chooses.
     #[test]
-    fn a_share_needs_a_picture_and_a_sound_that_the_person_chose() {
+    fn the_only_screen_is_chosen_when_the_list_arrives() {
         let mut picker = picker();
-        // Nothing is chosen at the start, and nothing is chosen for the person.
-        assert_eq!(picker.chosen(), None);
-        picker.tab = ShareTab::of(PictureSource::Display(1));
-        picker.picture = Some(PictureSource::Display(1));
-        assert_eq!(picker.chosen(), None);
-        picker.sound = Some(SoundKind::None);
+        let listed = std::mem::replace(&mut picker.listed, Listed::Reading);
+        picker.take_listed(listed.clone());
+        assert_eq!(picker.picture, Some(PictureSource::Display(1)));
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Display(1), SoundChoice::None))
         );
-        picker.sound = Some(SoundKind::System);
+        let mut two = self::picker();
+        let Listed::Sources(mut sources) = listed else {
+            unreachable!()
+        };
+        sources.displays.push(DisplaySource {
+            id: 2,
+            width: 1280,
+            height: 720,
+        });
+        two.picture = None;
+        two.take_listed(Listed::Sources(sources));
+        assert_eq!((two.picture, two.chosen()), (None, None));
+    }
+
+    #[test]
+    fn a_share_needs_a_picture_and_starts_without_sound() {
+        let mut picker = picker();
+        // "No sound" is chosen at the start, and the picture is chosen by the person.
+        assert_eq!(
+            (picker.sound, picker.sound_chosen),
+            (SoundKind::None, false)
+        );
+        assert_eq!(picker.chosen(), None);
+        picker.tab = ShareTab::of(PictureSource::Display(1));
+        picker.picture = Some(PictureSource::Display(1));
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Display(1), SoundChoice::None))
+        );
+        picker.pick_sound(SoundKind::System);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Display(1), SoundChoice::System))
         );
         // The sound of one application with a screen needs the application.
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert_eq!(picker.chosen(), None);
         picker.application = Some(player());
         assert_eq!(
@@ -2599,7 +2741,7 @@ mod tests {
         let mut picker = picker();
         picker.tab = ShareTab::of(PictureSource::Window(11));
         picker.picture = Some(PictureSource::Window(11));
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert_eq!(
             picker.chosen(),
             Some((
@@ -2626,10 +2768,10 @@ mod tests {
         }
         picker.tab = ShareTab::of(PictureSource::Window(11));
         picker.picture = Some(PictureSource::Window(11));
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert_eq!(picker.chosen(), None);
         // The other choices of sound stay.
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Window(11), SoundChoice::System))
@@ -2644,9 +2786,9 @@ mod tests {
         }
         picker.tab = ShareTab::of(PictureSource::Window(11));
         picker.picture = Some(PictureSource::Window(11));
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert_eq!(picker.chosen(), None);
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Window(11), SoundChoice::System))
@@ -2669,26 +2811,32 @@ mod tests {
         // The person chose the sound of "Other" with the screen, and then picks a window
         // of "Player". The sound of "Player" was not chosen: the sound is asked again.
         picker.pick_picture(PictureSource::Display(1));
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         picker.application = Some(other);
         picker.pick_picture(PictureSource::Window(11));
-        assert_eq!((picker.sound, picker.application.clone()), (None, None));
-        assert_eq!(picker.chosen(), None);
+        assert_eq!(
+            (picker.sound, picker.application.clone()),
+            (SoundKind::None, None)
+        );
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Window(11), SoundChoice::None))
+        );
         // The same holds from a window to a screen.
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert!(picker.chosen().is_some());
         picker.pick_picture(PictureSource::Display(1));
-        assert_eq!(picker.sound, None);
+        assert_eq!(picker.sound, SoundKind::None);
         // The choices that name no application hold for every picture, and so does the
         // same picture picked again.
         for kind in [SoundKind::None, SoundKind::System] {
-            picker.sound = Some(kind);
+            picker.pick_sound(kind);
             picker.pick_picture(PictureSource::Window(11));
-            assert_eq!(picker.sound, Some(kind));
+            assert_eq!(picker.sound, kind);
         }
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         picker.pick_picture(PictureSource::Window(11));
-        assert_eq!(picker.sound, Some(SoundKind::Application));
+        assert_eq!(picker.sound, SoundKind::Application);
     }
     /// The dialog opens on the screens. A picture belongs to the tab that lists it: another
     /// tab ends the choice of the picture and of the sound of its application, and "Share"
@@ -2703,21 +2851,18 @@ mod tests {
         );
         picker.pick_picture(PictureSource::Window(11));
         assert_eq!(picker.tab, ShareTab::Window);
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert!(picker.chosen().is_some());
         picker.pick_tab(ShareTab::Window);
         assert!(picker.chosen().is_some());
         picker.pick_tab(ShareTab::Screen);
-        assert_eq!((picker.picture, picker.sound), (None, None));
+        assert_eq!((picker.picture, picker.sound), (None, SoundKind::None));
         assert_eq!(picker.chosen(), None);
         // A sound that names no application holds in every tab.
         picker.pick_picture(PictureSource::Display(1));
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         picker.pick_tab(ShareTab::Application);
-        assert_eq!(
-            (picker.picture, picker.sound),
-            (None, Some(SoundKind::System))
-        );
+        assert_eq!((picker.picture, picker.sound), (None, SoundKind::System));
 
         // A system without the capture of an application offers no Application tab.
         if let Listed::Sources(sources) = &mut picker.listed {
@@ -2725,7 +2870,7 @@ mod tests {
         }
         assert_eq!(picker.tabs(), [ShareTab::Screen, ShareTab::Window]);
         picker.pick_picture(PictureSource::Application(7));
-        picker.sound = Some(SoundKind::None);
+        picker.pick_sound(SoundKind::None);
         assert_eq!(picker.chosen(), None);
     }
 
@@ -2736,7 +2881,7 @@ mod tests {
         let mut picker = picker();
         picker.pick_tab(ShareTab::Application);
         picker.pick_picture(PictureSource::Application(7));
-        assert_eq!(picker.sound, Some(SoundKind::Application));
+        assert_eq!(picker.sound, SoundKind::Application);
         assert_eq!(
             picker.chosen(),
             Some((
@@ -2751,7 +2896,7 @@ mod tests {
         );
 
         let mut picker = self::picker();
-        picker.sound = Some(SoundKind::None);
+        picker.pick_sound(SoundKind::None);
         picker.pick_picture(PictureSource::Application(7));
         assert_eq!(
             picker.chosen(),
@@ -2765,9 +2910,9 @@ mod tests {
             sources.started_the_client.push(player());
         }
         picker.pick_picture(PictureSource::Application(7));
-        assert_eq!(picker.sound, Some(SoundKind::Application));
+        assert_eq!(picker.sound, SoundKind::Application);
         assert_eq!(picker.chosen(), None);
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Application(7), SoundChoice::System))
@@ -2823,41 +2968,42 @@ mod tests {
             picker.sound_help(&sources),
             SharedString::from(text::SOUND_OF_JUNTO_NOT_SHARED)
         );
-        assert_eq!(picker.chosen(), None);
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Window(12), SoundChoice::None))
+        );
         // A choice of "This application" from before is never shared.
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert_eq!(picker.chosen(), None);
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Window(12), SoundChoice::System))
         );
-        picker.sound = Some(SoundKind::None);
+        picker.pick_sound(SoundKind::None);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Window(12), SoundChoice::None))
         );
 
         // The application of Junto gets no sound by default; another application does.
-        picker.sound = None;
+        (picker.sound, picker.sound_chosen) = (SoundKind::None, false);
         picker.pick_picture(PictureSource::Application(100));
-        assert_eq!(picker.sound, None);
-        assert_eq!(picker.chosen(), None);
-        picker.sound = Some(SoundKind::None);
+        assert_eq!(picker.sound, SoundKind::None);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Application(100), SoundChoice::None))
         );
-        picker.sound = None;
+        (picker.sound, picker.sound_chosen) = (SoundKind::None, false);
         picker.pick_picture(PictureSource::Application(7));
         assert!(!picker.shows_the_client());
-        assert_eq!(picker.sound, Some(SoundKind::Application));
+        assert_eq!(picker.sound, SoundKind::Application);
         assert_eq!(picker.sound_kinds(), every_kind);
 
         // The application of Junto is never among the applications whose sound goes with a
         // screen: the list of the system leaves it out, and a choice of it is not shared.
         picker.pick_picture(PictureSource::Display(1));
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         picker.application = Some(junto);
         assert_eq!(picker.chosen(), None);
     }
@@ -2893,14 +3039,17 @@ mod tests {
             seat(),
         );
         picker.pick_picture(PictureSource::Portal(ShareKind::Window));
-        assert!(picker.chosen().is_none());
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Portal(ShareKind::Window), SoundChoice::None))
+        );
         assert_eq!(
             picker.sound_kinds(),
             [SoundKind::None, SoundKind::Application]
         );
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         assert!(picker.chosen().is_none());
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert!(picker.chosen().is_none());
         picker.application = Some(second.clone());
         assert_eq!(

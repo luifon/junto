@@ -1,5 +1,5 @@
-//! The settings section "Call": the settings of the room of the call of this device, apart
-//! from the personal settings at "Voice and video" (ADR 0735, ADR 0739).
+//! "Room settings" on the call bar: the settings of the room of the call of this device in a
+//! window attached to the bar, apart from the personal settings of Settings (ADR 0739).
 
 use gpui::TestAppContext;
 use junto_client::shell::{Open, SettingsSection};
@@ -9,7 +9,7 @@ use junto_client_core::protocol::{call::CallPlace, ids::AccountId};
 
 use crate::harness::{Window, World, member};
 
-/// The room controls of the section; Members has none of them.
+/// The room controls of the window.
 const ROOM_CONTROLS: [&str; 5] = [
     "room-meeting",
     "room-lock",
@@ -17,10 +17,6 @@ const ROOM_CONTROLS: [&str; 5] = [
     "room-hide",
     "room-settings",
 ];
-
-fn page(section: SettingsSection) -> String {
-    format!("settings-page-{}", section.selector())
-}
 
 fn show_call(window: &mut Window, call: junto_media::calls::ActiveCall) {
     let calls = window
@@ -33,15 +29,6 @@ fn show_call(window: &mut Window, call: junto_media::calls::ActiveCall) {
     window.settle();
 }
 
-fn open_call_section(window: &mut Window) {
-    window.in_shell(|shell, window, cx| shell.open(Open::RoomSettings, window, cx));
-    window.settle();
-    assert!(
-        window.shows_named(page(SettingsSection::Call)),
-        "Open::RoomSettings opens the settings at Call"
-    );
-}
-
 /// The room of the call of this device as the view derives it.
 fn room(window: &mut Window) -> RoomView {
     match window.view().call_room {
@@ -50,30 +37,39 @@ fn room(window: &mut Window) -> RoomView {
     }
 }
 
-/// Outside a call the section states what it holds and has no control.
+/// Settings holds this device only: it has no section of the call, and outside a call no
+/// window of the room exists.
 #[gpui::test]
-fn outside_a_call_the_call_section_states_it_and_has_no_control(cx: &mut TestAppContext) {
+fn settings_have_no_call_section_and_outside_a_call_there_is_no_room_window(
+    cx: &mut TestAppContext,
+) {
     let world = World::new();
     let server = world.server("Harbor");
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
     window.click("app-settings");
-    window.click("settings-section-call");
-    assert!(window.shows_named(page(SettingsSection::Call)));
-    assert!(window.shows("call-section-statement:no-call"));
+    assert!(
+        SettingsSection::ALL
+            .iter()
+            .all(|section| section.selector() != "settings-section-call")
+    );
+    assert!(!window.shows("settings-section-call"));
+    window.press("escape");
+    assert!(!window.shows("room-settings-open"));
+    window.in_shell(|shell, window, cx| shell.open(Open::RoomSettings, window, cx));
+    window.settle();
     for control in ROOM_CONTROLS {
         assert!(!window.shows(control), "{control} outside a call");
     }
 }
 
-/// In the call of a voice channel the section names the channel of the call and has the room
-/// controls, also while the window shows another channel. A person without "manage channel"
-/// sees their state and the statement of the missing permission; with it the statement goes.
-/// Members lists people and no room control.
+/// In the call of a voice channel the call bar has "Room settings", also while the window
+/// shows another channel. Its window has the four settings of the room for everyone in the
+/// call: a person without "manage channel" sees them and cannot change the ones that need
+/// it; with it they change. A press on the button of the open window closes it, as Escape
+/// does. Members lists people and no room control.
 #[gpui::test]
-fn in_a_call_the_call_section_has_the_room_controls_with_and_without_the_permission(
-    cx: &mut TestAppContext,
-) {
+fn the_call_bar_opens_the_room_settings_with_and_without_the_permission(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Harbor");
     let admin = world.owner(&server);
@@ -90,21 +86,27 @@ fn in_a_call_the_call_section_has_the_room_controls_with_and_without_the_permiss
         assert!(!window.shows(control), "{control} in Members");
     }
 
-    // The window shows another channel: the section holds the room of the call.
+    // The window shows another channel: the call bar still opens the room of the call.
     window.click_channel("general");
-    open_call_section(&mut window);
-    window.until(
-        "the section names the voice channel of the call",
-        |window| window.shows_named("call-section-channel:Daily".to_owned()),
-    );
+    window.click("room-settings-open");
     for control in ROOM_CONTROLS {
-        assert!(window.shows(control), "{control} in the section");
+        assert!(window.shows(control), "{control} in the window");
     }
-    assert!(window.shows("room-no-manage"));
     let held = room(&mut window);
     assert_eq!(held.name, "Daily");
     assert!(held.ready && !held.allowed.manage);
     assert!(!held.locked && held.user_limit.is_none() && !held.hides_occupants);
+    // Without the permission the switch of the hide setting takes no click.
+    window.click("room-hide");
+    assert!(!room(&mut window).hides_occupants);
+    assert!(window.shows("room-settings"));
+    // The press on the button of the open window closes it and does not open it again.
+    window.click("room-settings-open");
+    assert!(!window.shows("room-settings"));
+    window.click("room-settings-open");
+    assert!(window.shows("room-settings"));
+    window.press("escape");
+    assert!(!window.shows("room-settings"));
 
     // "manage channel" for everyone in Daily: the person may change the room.
     let workspace_id = window.view().workspace().unwrap().id;
@@ -122,17 +124,17 @@ fn in_a_call_the_call_section_has_the_room_controls_with_and_without_the_permiss
         &[],
     );
     window.until("the room may be changed", |window| {
-        !window.shows("room-no-manage")
+        room(window).allowed.manage
     });
-    assert!(room(&mut window).allowed.manage);
+    window.click("room-settings-open");
     for control in ROOM_CONTROLS {
         assert!(window.shows(control), "{control} with the permission");
     }
 }
 
-/// A direct-message call has no room (ADR 0501): the section states it.
+/// A direct-message call has no room (ADR 0501): the call bar has no "Room settings".
 #[gpui::test]
-fn in_a_direct_call_the_call_section_states_that_it_has_no_room(cx: &mut TestAppContext) {
+fn a_direct_call_has_no_room_settings(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Harbor");
     let admin = world.owner(&server);
@@ -145,9 +147,10 @@ fn in_a_direct_call_the_call_section_states_that_it_has_no_room(cx: &mut TestApp
         high_account_id: low.max(high),
     };
     show_call(&mut window, call);
-    open_call_section(&mut window);
     assert_eq!(window.view().call_room, Some(CallRoom::Direct));
-    assert!(window.shows("call-section-statement:no-room"));
+    assert!(!window.shows("room-settings-open"));
+    window.in_shell(|shell, window, cx| shell.open(Open::RoomSettings, window, cx));
+    window.settle();
     for control in ROOM_CONTROLS {
         assert!(!window.shows(control), "{control} in a direct call");
     }

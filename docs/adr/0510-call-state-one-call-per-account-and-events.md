@@ -69,7 +69,7 @@ Events:
 | Event | Recipients |
 |---|---|
 | `call_started`, `call_ended` | Accounts that may see the voice channel; the two accounts of a direct message |
-| `call_participant_joined`, `call_participant_updated`, `call_participant_left`, `call_lock_changed`, `call_meeting_started`, `call_meeting_ended`, `call_speaking` | Accounts that may see who is inside (ADR 0514); the two accounts of a direct message |
+| `call_participant_joined`, `call_participant_updated`, `call_participant_left`, `call_lock_changed`, `call_meeting_started`, `call_meeting_ended` | Accounts that may see who is inside (ADR 0514); the two accounts of a direct message |
 | `call_entry_requested`, `call_entry_resolved` | The accounts inside the call, while the call exists (ADR 0517) |
 | `call_entry_requested` | Also the account that asked, while it may be at the place of the call, so that its other devices learn of the request that the snapshot carries |
 | `call_entry_answered` | The account that asked, while it may be at the place of the call |

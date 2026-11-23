@@ -82,6 +82,7 @@ fn segment(
             problems: Vec::new(),
             silent: false,
             recovered: false,
+            missing_sound: None,
         }),
     }
 }
@@ -664,13 +665,6 @@ fn draw_changes(studio: &mut Studio) -> Result<(), String> {
             shell.toggle_transcript_details(recording_id(), cx);
             let what = TranscriptChange::Speaker(2);
             shell.open_transcript_form(server_id(), recording_id(), what, None, window, cx);
-        },
-    )?;
-    studio.draw(
-        Screen::new("recording-parts", acme(Some(changed()), |_| {})),
-        |shell, window, cx| {
-            show(shell, |_| {}, cx);
-            shell.open_recording_parts(recording_id(), window, cx);
         },
     )?;
     let mut failed = open(RecordingState::Ready, TranscriptState::Failed);

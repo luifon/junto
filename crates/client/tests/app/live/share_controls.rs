@@ -99,38 +99,41 @@ fn stopping_a_share_returns_to_people_and_either_window_can_watch_again(cx: &mut
 pub(super) fn share_sound_keyboard_paths(window: &mut Window) {
     let panel_was_open = window.shows("close-call-panel");
     for key in ["enter", "space"] {
-        window.tab_to("share-mute-tile");
+        window.tab_to("share-sound-control");
         window.press(key);
+        assert!(window.shows("share-sound-menu"));
+        window.tab_to("share-sound-mute");
+        window.press("enter");
         window.until(
-            "the tile key mutes the share and keeps the picture",
+            "the key on the sound control mutes the share and keeps the picture",
             |window| {
                 window.shows("share-picture") && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
             },
         );
         assert!(!window.shows("account-menu"));
-        let members = if window.shows("open-call-members") {
-            "open-call-members"
-        } else {
-            "call-tab-members"
-        };
-        window.click(members);
-        window.tab_to("member-share-sound");
+        window.tab_to("share-sound-control");
         window.press(key);
-        window.until("the Members key restores share sound", |window| {
+        window.tab_to("share-sound-mute");
+        window.press("enter");
+        window.until("the key restores share sound", |window| {
             heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
         });
         assert!(!window.shows("account-menu"));
     }
-    window.click("close-call-panel");
+    if window.shows("close-call-panel") {
+        window.click("close-call-panel");
+    }
     let share = stage(window).unwrap().shares[0].clone();
     let before = share.sound_setting.volume;
     let server = window.view().call.unwrap().server_id;
     let microphone = window.state.read_with(&window.cx, |state, _| {
         state.voice().volume(server, share.account_id)
     });
-    window.tab_to("share-mute-header");
-    window.press("shift-f10");
-    window.tab_to("call-menu-volume");
+    // The volume is in the menu of the speaker of the watched share: the slider after the
+    // mute.
+    window.tab_to("share-sound-control");
+    window.press("enter");
+    window.tab_to("share-volume");
     window.press("left");
     window.until("the share volume responds to its menu key", |window| {
         stage(window).is_some_and(|stage| stage.shares[0].sound_setting.volume == before - 10)
@@ -147,7 +150,7 @@ pub(super) fn share_sound_keyboard_paths(window: &mut Window) {
         stage(window).is_some_and(|stage| stage.shares[0].sound_setting.volume == before)
     });
     window.press("escape");
-    assert!(!window.shows("account-menu"));
+    assert!(!window.shows("share-sound-menu"));
     if panel_was_open {
         window.click("open-call-members");
     }

@@ -1028,6 +1028,24 @@ impl Window {
 
     /// Clicks the element with this name when it is drawn now. A test uses it for an
     /// element that a reload of the state takes away for a moment.
+    /// Opens the devices from the row of own controls of a call: its button, or its item
+    /// in "⋮" where a narrow stage moved it there (ADR 0735).
+    /// Opens the devices from the row of own controls, or from its "⋮" on a narrow stage. In
+    /// a narrow call window an open panel lies over the call: the first press closes it, and
+    /// the stage that it leaves can be wide enough for the row to hold the control.
+    pub fn open_call_devices(&mut self) {
+        for _ in 0..3 {
+            if self.click_if_shown("own-devices") {
+                return;
+            }
+            if self.click_if_shown("more-devices") {
+                return;
+            }
+            self.click("own-more");
+        }
+        self.click("more-devices");
+    }
+
     pub fn click_if_shown(&mut self, selector: &'static str) -> bool {
         self.reveal_nav_row(selector);
         self.settle();

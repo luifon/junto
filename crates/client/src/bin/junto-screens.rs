@@ -481,13 +481,6 @@ fn acme_model_of(
             })
             .collect(),
     );
-    for channel in &mut studio.channels {
-        if let Some(call) = &mut channel.call
-            && channel.channel.name == "Daily"
-        {
-            call.speaking = vec![person("Ana")];
-        }
-    }
     Arc::new(model)
 }
 
@@ -1084,6 +1077,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
         access: Some(MicrophoneAccess::Allowed),
         now: Some(at() + time::Duration::seconds(42 * 60 + 17)),
         can_share: true,
+        muted_speech: Default::default(),
     }
 }
 
@@ -2235,14 +2229,6 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
             .servers(vec![inviting(), harbor()]),
         show_daily_tab(CallTab::Members),
     )?;
-    studio.draw(
-        Screen::call("call-members-invite-picker", in_call(Phase::Connected))
-            .servers(vec![inviting(), harbor()]),
-        |shell, window, cx| {
-            select_channel(shell, "Daily", cx);
-            shell.open(Open::MemberPicker, window, cx);
-        },
-    )?;
     // A person outside asks to enter the call of this device.
     let asked = || {
         let mut server = acme_with_rules(MEMBER, locked);
@@ -2482,6 +2468,21 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
         Screen::call("call-own-microphone-and-sound-off", muted),
         show_daily_tab(CallTab::Members),
     )?;
+    // Speech while muted: the notice above the call bar, and the moment after its check box
+    // was unchecked (ADR 0735).
+    for (name, turned_off) in [
+        ("call-muted-speech", false),
+        ("call-muted-speech-turned-off", true),
+    ] {
+        let mut speaking = in_call(Phase::Connected);
+        speaking.calls.muted = true;
+        speaking.muted_speech = junto_client::state::view::MutedSpeechShown {
+            shown: true,
+            turned_off,
+            fading: false,
+        };
+        studio.draw(Screen::call(name, speaking), show_daily)?;
+    }
     studio.draw(
         Screen::call("call-reconnecting", in_call(Phase::Reconnecting)),
         show_daily,
@@ -2875,8 +2876,6 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
     for (name, section) in [
         ("settings-appearance", SettingsSection::Appearance),
         ("settings-voice", SettingsSection::VoiceAndVideo),
-        // Outside a call the section states what it holds (ADR 0739).
-        ("settings-call-without-a-call", SettingsSection::Call),
         ("settings-notifications", SettingsSection::Notifications),
         ("settings-devices", SettingsSection::Devices),
         ("settings-about", SettingsSection::About),

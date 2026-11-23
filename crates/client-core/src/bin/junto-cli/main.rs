@@ -140,7 +140,6 @@ actions of call:
   share <application|system|none>      report a screen share and its sound
   unshare
   hand <up|down>
-  speaking <yes|no>
   status <channel> <text>      set voice status (empty text clears it)
   clear-status <channel>       clear voice status, including from watch
   settings <channel> [--limit <n> | --no-limit] [--hide <yes|no>]

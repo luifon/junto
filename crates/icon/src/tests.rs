@@ -482,3 +482,15 @@ fn the_mention_mark_is_a_dot_at_the_upper_right_corner_in_each_state_and_style()
         }
     }
 }
+
+/// A line icon is drawn in the one colour that it is given, with a transparent ground: the
+/// glyph of a button of the taskbar preview (ADR 0755).
+#[test]
+fn a_glyph_is_drawn_in_its_colour_on_a_transparent_ground() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="6"><path d="M12 2v20" /></svg>"#;
+    let picture = glyph(svg, [0x20, 0x40, 0x60], 16).unwrap();
+    assert_eq!((picture.size, picture.rgba.len()), (16, 16 * 16 * 4));
+    assert_eq!(picture.pixel(8, 8), [0x20, 0x40, 0x60, 0xff]);
+    assert_eq!(picture.pixel(1, 8)[3], 0);
+    assert!(matches!(glyph(svg, [0; 3], 0), Err(Error::Size(0))));
+}

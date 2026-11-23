@@ -11,6 +11,8 @@
 
 #![allow(unsafe_code)]
 
+pub mod thumb;
+
 use std::os::windows::ffi::OsStringExt as _;
 use std::path::{Path, PathBuf};
 

@@ -294,6 +294,24 @@ impl super::Shell {
         self.cameras.len()
     }
 
+    /// Opens a menu or window of the controls of a call for the screens: "view", "more",
+    /// "room-settings" or "record-language".
+    pub fn open_call_layer_fixture(
+        &mut self,
+        name: &str,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let layer = match name {
+            "view" => super::Layer::ViewMenu,
+            "more" => super::Layer::OwnControlsMore,
+            "room-settings" => super::Layer::RoomSettings,
+            "record-language" => super::Layer::RecordLanguage,
+            _ => return,
+        };
+        self.open_layer(layer, window, cx);
+    }
+
     pub fn show_cameras_fixture(
         &mut self,
         pictures: std::collections::HashMap<

@@ -19,12 +19,6 @@ impl OpenAccountMenu {
                 .people
                 .iter()
                 .any(|person| person.account_id == account),
-            CallSurface::InviteChoice => panel.channel().is_some_and(|channel| {
-                channel
-                    .outside
-                    .iter()
-                    .any(|person| person.account_id == account)
-            }),
             CallSurface::Presenter => panel
                 .room()
                 .and_then(|room| room.meeting.as_ref())
@@ -99,27 +93,6 @@ impl Shell {
                                     .take(3)
                                     .any(|person| person.account_id == account)
                         })
-            }
-            CallSurface::InviteChoice => {
-                let wanted = self.invite_find.read(cx).value().trim().to_lowercase();
-                self.invite_open
-                    && self.call_tab == super::call::CallTab::Members
-                    && self.call_panel_shown(self.call_panel_overlay, cx)
-                    && view.lists().is_some_and(|lists| {
-                        lists.notices.is_none()
-                            && lists
-                                .call
-                                .as_ref()
-                                .and_then(|panel| panel.channel())
-                                .is_some_and(|channel| {
-                                    channel.room.ready
-                                        && channel.outside.iter().any(|person| {
-                                            person.account_id == account
-                                                && (wanted.is_empty()
-                                                    || person.name.to_lowercase().contains(&wanted))
-                                        })
-                                })
-                    })
             }
             CallSurface::Presenter | CallSurface::RaisedHand | CallSurface::MeetingWaiting => shown,
             _ => return None,

@@ -5,12 +5,12 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use junto_authz::{ChannelScope, Request, WorkspacePermission};
+use junto_authz::{ChannelScope, Request, ServerPermission, WorkspacePermission};
 use junto_protocol::error::ErrorCode;
 use junto_protocol::ids::{ChannelId, RecordingId, RecordingSegmentId, WorkspaceId};
 use junto_protocol::recording::{
-    Recording, RecordingDetail, RecordingPage, RecordingQuery, RecordingState, RecordingStopReason,
-    StartRecording,
+    Recording, RecordingDetail, RecordingPage, RecordingQuery, RecordingSettings, RecordingState,
+    RecordingStopReason, StartRecording,
 };
 use junto_protocol::structure::ChannelKind;
 use sqlx::PgConnection;
@@ -32,10 +32,26 @@ use crate::{read, transact};
 const DEFAULT_PAGE: u32 = 50;
 const LARGEST_PAGE: u32 = 200;
 
-/// The language of a recording: `auto`, or a code of two or three lower-case letters, which
-/// is the form that the transcription job accepts (ADR 0611).
-fn language(body: &StartRecording) -> ApiResult<String> {
-    let language = body.language.as_deref().unwrap_or("auto");
+/// The language that a start request asks for (ADR 0604).
+enum Asked {
+    Named(String),
+    /// The default language of the server.
+    Default,
+}
+
+/// The language of a start request: absent is `auto`, as clients of API version 1 before the
+/// default language send it; `default` takes the default language of the server.
+fn asked_language(language: Option<&str>) -> ApiResult<Asked> {
+    match language {
+        None => Ok(Asked::Named("auto".to_owned())),
+        Some(junto_protocol::recording::DEFAULT_LANGUAGE) => Ok(Asked::Default),
+        Some(language) => checked_language(language).map(Asked::Named),
+    }
+}
+
+/// A language of recordings: `auto`, or a code of two or three lower-case letters, which is
+/// the form that the transcription job accepts (ADR 0611).
+fn checked_language(language: &str) -> ApiResult<String> {
     let is_code =
         (2..=3).contains(&language.len()) && language.bytes().all(|byte| byte.is_ascii_lowercase());
     if language == "auto" || is_code {
@@ -45,6 +61,65 @@ fn language(body: &StartRecording) -> ApiResult<String> {
             "language is \"auto\" or a language code of two or three lower-case letters",
         ))
     }
+}
+
+async fn default_language(connection: &mut PgConnection) -> ApiResult<String> {
+    Ok(
+        sqlx::query_scalar("select recording_language from server_state where singleton")
+            .fetch_one(connection)
+            .await?,
+    )
+}
+
+/// The settings of the recordings of the server: the spoken language of a recording that
+/// names none. Every account of the server reads them.
+#[utoipa::path(
+    get,
+    path = "/api/v1/server/recording-settings",
+    tag = "recordings",
+    security(("session" = [])),
+    responses((status = 200, body = RecordingSettings), ApiError)
+)]
+pub async fn get_recording_settings(
+    State(app): State<AppState>,
+    bearer: Bearer,
+) -> ApiResult<Json<RecordingSettings>> {
+    let now = app.now();
+    let language = read!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::OwnAccount)?;
+        default_language(connection).await
+    })?;
+    Ok(Json(RecordingSettings { language }))
+}
+
+/// Sets the spoken language of a recording that names none. The caller is an administrator
+/// of the server.
+#[utoipa::path(
+    put,
+    path = "/api/v1/server/recording-settings",
+    tag = "recordings",
+    request_body = RecordingSettings,
+    security(("session" = [])),
+    responses((status = 200, body = RecordingSettings), ApiError)
+)]
+pub async fn set_recording_settings(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiJson(body): ApiJson<RecordingSettings>,
+) -> ApiResult<Json<RecordingSettings>> {
+    let now = app.now();
+    let language = checked_language(&body.language)?;
+    let stored = transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::Server(ServerPermission::Administrator))?;
+        sqlx::query("update server_state set recording_language = $1 where singleton")
+            .bind(&language)
+            .execute(&mut *connection)
+            .await?;
+        Ok(language.clone())
+    })?;
+    Ok(Json(RecordingSettings { language: stored }))
 }
 
 /// A voice channel in whose call the caller is, with the permission to record calls there.
@@ -88,7 +163,7 @@ pub async fn start_recording(
 ) -> ApiResult<Json<Recording>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
-    let language = language(&body)?;
+    let asked = asked_language(body.language.as_deref())?;
     let new_id = RecordingId::generate();
     let limits = &app.config.limits.recordings;
     let free = app.recordings.free_bytes();
@@ -129,6 +204,11 @@ pub async fn start_recording(
             limits.reserve_bytes,
         )
         .await?;
+        // `default` takes the default language of the server (ADR 0604).
+        let language = match &asked {
+            Asked::Named(language) => language.clone(),
+            Asked::Default => default_language(connection).await?,
+        };
         let new = NewRecording {
             id: new_id,
             workspace_id: voice.record.channel.workspace_id,

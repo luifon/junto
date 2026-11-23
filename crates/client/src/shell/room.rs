@@ -19,14 +19,14 @@ use junto_client_core::protocol::ids::{AccountId, ChannelId, ServerId};
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::view::{
-    ChannelCall, ChannelRow, Closed, EntryState, MeetingStart, MeetingView, OutsideMember,
-    PersonMenu, Relation, RoomView, ShellView, VoiceState,
+    ChannelRow, Closed, EntryState, MeetingStart, MeetingView, PersonMenu, RoomView, ShellView,
+    VoiceState,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, SectionLabel, Stepper, StyleExt,
-    Toggle, VolumeSlider, float_shadow, icon, ledge, menu_label, menu_separator, tooltip,
+    Button, ButtonKind, Menu, MenuItem, Notice, SectionLabel, Stepper, StyleExt, Toggle,
+    VolumeSlider, icon, menu_label, menu_separator, tooltip,
 };
 
 /// The largest user limit of a voice channel (ADR 0514).
@@ -145,53 +145,73 @@ impl Shell {
         let colors = theme.colors;
         let (meeting_on, meeting_held, meeting_help) = meeting_switch(room);
         let locked = room.locked;
-        let mut controls = vec![
-            Button::new("meeting-toggle")
-                .icon(Icon::Hand)
-                .when(!compact, |button| button.label(text::MEETING_MODE))
-                .tag(on_off(meeting_on), meeting_on)
-                .tooltip(meeting_help.clone())
-                // The state, and why the person cannot change it, for a screen reader.
-                .accessible_label(match &meeting_held {
-                    Some(reason) => {
-                        format!("{} · {}. {reason}", text::MEETING_MODE, on_off(meeting_on))
-                    }
-                    None => format!("{} · {}", text::MEETING_MODE, on_off(meeting_on)),
-                })
-                .disabled(meeting_held.is_some())
-                .selector("meeting-toggle")
-                .on_click(self.call_listener(cx, move |this, _, _, cx| {
-                    this.state
-                        .update(cx, |state, cx| state.set_meeting(!meeting_on, cx));
-                }))
-                .into_any_element(),
-            Button::new("lock-toggle")
-                .icon(if locked { Icon::Lock } else { Icon::Unlock })
-                .when(!compact, |button| button.label(text::LOCK_ROOM))
-                .tag(on_off(locked), locked)
-                .tooltip(if room.allowed.lock {
-                    text::LOCK_ROOM_HELP
-                } else {
-                    text::LOCK_NO_PERMISSION
-                })
-                .accessible_label(if room.allowed.lock {
-                    format!("{} · {}", text::LOCK_ROOM, on_off(locked))
-                } else {
-                    format!(
-                        "{} · {}. {}",
-                        text::LOCK_ROOM,
-                        on_off(locked),
-                        text::LOCK_NO_PERMISSION
-                    )
-                })
-                .disabled(!room.allowed.lock)
-                .selector("lock-toggle")
-                .on_click(self.call_listener(cx, move |this, _, _, cx| {
-                    this.state
-                        .update(cx, |state, cx| state.set_locked(!locked, cx));
-                }))
-                .into_any_element(),
-        ];
+        // What everyone in the call shares (ADR 0735): a toggle for a person who may change
+        // the state, and for the others a mark while the state is on.
+        let may_run_meeting = room.allowed.run_meeting
+            || room.meeting.as_ref().is_some_and(|meeting| meeting.by_self);
+        let mark = |id: &'static str, shown: Icon, label: &'static str| {
+            div()
+                .id(id)
+                .role(Role::Status)
+                .aria_label(label)
+                .debug_selector(move || id.to_owned())
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(u(6.0))
+                .h(u(28.0))
+                .px(u(4.0))
+                .typeface(theme.types.control_strong, theme)
+                .ink(colors.ink)
+                .whitespace_nowrap()
+                .child(icon(shown, 15.0, colors.ink_2))
+                .when(!compact, |mark| mark.child(label))
+                .into_any_element()
+        };
+        let meeting = if may_run_meeting {
+            Some(
+                Button::new("meeting-toggle")
+                    .icon(Icon::Presentation)
+                    .when(!compact, |button| button.label(text::MEETING_MODE))
+                    .tag(on_off(meeting_on), meeting_on)
+                    .tooltip(meeting_help.clone())
+                    // The state, and why the person cannot change it, for a screen reader.
+                    .accessible_label(match &meeting_held {
+                        Some(reason) => {
+                            format!("{} · {}. {reason}", text::MEETING_MODE, on_off(meeting_on))
+                        }
+                        None => format!("{} · {}", text::MEETING_MODE, on_off(meeting_on)),
+                    })
+                    .disabled(meeting_held.is_some())
+                    .selector("meeting-toggle")
+                    .on_click(self.call_listener(cx, move |this, _, _, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.set_meeting(!meeting_on, cx));
+                    }))
+                    .into_any_element(),
+            )
+        } else {
+            meeting_on.then(|| mark("meeting-mark", Icon::Presentation, text::MEETING_MODE))
+        };
+        let lock = if room.allowed.lock {
+            Some(
+                Button::new("lock-toggle")
+                    .icon(if locked { Icon::Lock } else { Icon::Unlock })
+                    .when(!compact, |button| button.label(text::LOCK_ROOM))
+                    .tag(on_off(locked), locked)
+                    .tooltip(text::LOCK_ROOM_HELP)
+                    .accessible_label(format!("{} · {}", text::LOCK_ROOM, on_off(locked)))
+                    .selector("lock-toggle")
+                    .on_click(self.call_listener(cx, move |this, _, _, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.set_locked(!locked, cx));
+                    }))
+                    .into_any_element(),
+            )
+        } else {
+            locked.then(|| mark("lock-mark", Icon::Lock, text::LOCKED_MARK))
+        };
+        let mut controls: Vec<AnyElement> = meeting.into_iter().chain(lock).collect();
         if let Some(limit) = room.user_limit {
             let count = text::occupancy(room.inside, limit, false);
             controls.push(
@@ -498,8 +518,8 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The settings of the room of a call, in the settings section "Call": meeting mode, the
-    /// lock, the user limit, and the setting that hides who is inside.
+    /// The settings of the room of a call, in the window of "Room settings" on the call bar:
+    /// meeting mode, the lock, the user limit, and the setting that hides who is inside.
     pub(crate) fn render_room_settings(
         &mut self,
         room: &RoomView,
@@ -526,7 +546,7 @@ impl Shell {
         let step = |up: bool| stepped_limit(limit, inside, up).filter(|_| sets_limit);
         let lower = step(false).map(|next| self.limit_listener(next, cx));
         let raise = step(true).map(|next| self.limit_listener(next, cx));
-        let mut rows = vec![
+        let rows = vec![
             option_row(
                 text::MEETING_MODE,
                 text::MEETING_MODE_HELP,
@@ -616,20 +636,6 @@ impl Shell {
             .px_0()
             .into_any_element(),
         ];
-        if !manage {
-            rows.push(
-                div()
-                    .id("room-no-manage")
-                    .debug_selector(|| "room-no-manage".to_owned())
-                    .flex_none()
-                    .pb(u(4.0))
-                    .typeface(theme.types.small, theme)
-                    .line_height(u(17.0))
-                    .ink(colors.ink_2)
-                    .child(text::MANAGE_NO_PERMISSION)
-                    .into_any_element(),
-            );
-        }
         rows
     }
 
@@ -652,429 +658,90 @@ impl Shell {
         })
     }
 
-    pub(crate) fn toggle_member_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // A click on the button of the open list closes the list: the press closed it,
-        // and the click does not open it again.
-        if std::mem::take(&mut self.invite_closed_by_press) {
-            return;
-        }
-        self.invite_open = !self.invite_open;
-        if self.invite_open {
-            self.invite_find
-                .update(cx, |find, cx| find.set_value("", window, cx));
-            self.focus_field(&self.invite_find.clone(), window, cx);
-        }
-        cx.notify();
-    }
-
-    /// True while the list of the members who can be invited is open.
-    pub fn member_picker_is_open(&self) -> bool {
-        self.invite_open
-    }
-
-    /// The part under the member list of a call that invites a member (ADR 0514): the
-    /// button, what an invitation does, and the list of the members outside the call.
-    pub(crate) fn render_invite_area(
-        &mut self,
-        panel: &ChannelCall,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme.colors;
-        let picker = self
-            .invite_open
-            .then_some(panel.room.ready)
-            .filter(|ready| *ready)
-            .map(|_| self.render_member_picker(panel, theme, cx));
-        div()
-            .id("invite-area")
-            .relative()
-            .flex_none()
-            .pt(u(10.0))
-            .px(u(12.0))
-            .pb(u(12.0))
-            .border_t_1()
-            .border_color(Hsla::from(colors.rule))
-            .bg(Hsla::from(colors.limestone))
-            .children(picker)
-            .child(
-                Button::new("invite-open")
-                    .kind(ButtonKind::Primary)
-                    .icon(Icon::Invite)
-                    .label(text::INVITE_A_MEMBER)
-                    .selector("invite-open")
-                    .disabled(!panel.room.ready)
-                    .w_full()
-                    .h(u(32.0))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_member_picker(window, cx);
-                    })),
-            )
-            .child(
-                div()
-                    .mt(u(7.0))
-                    .typeface(theme.types.small, theme)
-                    .line_height(u(17.0))
-                    .ink(colors.ink_2)
-                    .child(text::invite_help(&panel.room.name)),
-            )
-            .into_any_element()
-    }
-
-    fn render_member_picker(
-        &mut self,
-        panel: &ChannelCall,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme.colors;
-        let faces = self.shown_faces();
-        let wanted = self.invite_find.read(cx).value().trim().to_lowercase();
-        let listed: Vec<&OutsideMember> = panel
-            .outside
-            .iter()
-            .filter(|member| wanted.is_empty() || member.name.to_lowercase().contains(&wanted))
-            .collect();
-        let rows: Vec<AnyElement> = listed
-            .iter()
-            .enumerate()
-            .map(|(index, member)| {
-                let account_id = member.account_id;
-                let action: AnyElement = match member.invitation {
-                    Some(invitation_id) => div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(u(2.0))
-                        .child(
-                            Button::new(("invited", index))
-                                .label(text::INVITED)
-                                .disabled(true)
-                                .h(u(26.0)),
-                        )
-                        .child(
-                            div()
-                                .debug_selector(move || format!("withdraw-invitation:{account_id}"))
-                                .child(
-                                    Button::new(("withdraw-invitation", index))
-                                        .kind(ButtonKind::Ghost)
-                                        .icon(Icon::X)
-                                        .tooltip(text::WITHDRAW_INVITATION)
-                                        .on_click(self.call_listener(cx, move |this, _, _, cx| {
-                                            this.state.update(cx, |state, cx| {
-                                                state.withdraw_invitation(invitation_id, cx);
-                                            });
-                                        })),
-                                ),
-                        )
-                        .into_any_element(),
-                    None => div()
-                        .flex_none()
-                        .debug_selector(move || format!("invite:{account_id}"))
-                        .child(
-                            Button::new(("invite", index))
-                                .label(text::INVITE)
-                                .h(u(26.0))
-                                .on_click(self.call_listener(cx, move |this, _, _, cx| {
-                                    this.state
-                                        .update(cx, |state, cx| state.invite(account_id, cx));
-                                })),
-                        )
-                        .into_any_element(),
-                };
-                let identity = div()
-                    .flex()
-                    .flex_1()
-                    .min_w_0()
-                    .items_center()
-                    .gap(u(9.0))
-                    .child(super::people::avatar(&faces, account_id, 26.0).radius(2.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .typeface(theme.types.control, theme)
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .line_height(u(18.0))
-                                    .ink(colors.ink)
-                                    .child(super::people::person_name(
-                                        &faces,
-                                        member.account_id,
-                                        member.name.clone(),
-                                        "invite-member-name",
-                                    )),
-                            )
-                            .when_some(member.place.as_ref(), |column, place| {
-                                column.child(
-                                    div()
-                                        .truncate()
-                                        .typeface(theme.types.small, theme)
-                                        .line_height(u(16.0))
-                                        .ink(colors.ink_2)
-                                        .child(text::in_channel(place)),
-                                )
-                            }),
-                    );
-                let identity = self.call_identity_target(
-                    format!("invite-person:{account_id}").into(),
-                    account_id,
-                    member.name.clone(),
-                    super::account_menus::CallSurface::InviteChoice,
-                    div()
-                        .debug_selector(move || format!("invite-choice:{account_id}"))
-                        .flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child(identity),
-                    cx,
-                );
-                div()
-                    .id(("invite-row", account_id.as_uuid().as_u128() as u64))
-                    .role(Role::ListItem)
-                    .aria_label(member.name.clone())
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(u(9.0))
-                    .py(u(5.0))
-                    .px(u(10.0))
-                    .when(index > 0, |row| {
-                        row.border_t_1().border_color(Hsla::from(colors.rule_soft))
-                    })
-                    .child(identity)
-                    .child(action)
-                    .into_any_element()
-            })
-            .collect();
-        let empty = rows.is_empty().then(|| {
-            div()
-                .px(u(10.0))
-                .pb(u(6.0))
-                .typeface(theme.types.small, theme)
-                .line_height(u(17.0))
-                .ink(colors.ink_2)
-                .child(if panel.outside.is_empty() {
-                    text::NO_MEMBER_TO_INVITE
-                } else {
-                    text::NO_MEMBER_FOUND
-                })
-        });
-        div()
-            .absolute()
-            .left(u(12.0))
-            .right(u(12.0))
-            .bottom(u(90.0))
-            .child(
-                div()
-                    .id("member-picker")
-                    .role(Role::Dialog)
-                    .aria_label(text::invite_to(&panel.room.name))
-                    .debug_selector(|| "member-picker".to_owned())
-                    .occlude()
-                    .pt(u(8.0))
-                    .pb(u(4.0))
-                    .rounded(u(theme.metrics.radius_menu))
-                    .border_1()
-                    .border_color(Hsla::from(colors.rule))
-                    .bg(Hsla::from(colors.travertine_hi))
-                    .shadow(float_shadow(colors.shadow, 8.0, 22.0))
-                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
-                        if matches!(&this.layer, super::Layer::AccountMenu(open) if matches!(open.source, Some(super::account_menus::AccountSource::CallOccupant { surface: super::account_menus::CallSurface::InviteChoice, .. }))) && crate::ui::over_focused_menu(event.position, window, cx) { return; }
-                        this.invite_open = false;
-                        this.invite_closed_by_press = true;
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .px(u(10.0))
-                            .pb(u(7.0))
-                            .typeface(theme.types.control, theme)
-                            .text_size(u(13.5))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .ink(colors.ink)
-                            .child(text::invite_to(&panel.room.name)),
-                    )
-                    .child(
-                        div().mx(u(10.0)).mb(u(6.0)).child(
-                            Field::new(&self.invite_find, text::FIND_A_MEMBER)
-                                .kind(FieldKind::Find)
-                                .selector("invite-find"),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .id("member-picker-list")
-                            .role(Role::List)
-                            .aria_label(text::invite_to(&panel.room.name))
-                            .flex()
-                            .flex_col()
-                            .max_h(u(232.0))
-                            .overflow_y_scroll()
-                            .children(rows)
-                            .children(empty),
-                    )
-                    .child(
-                        div()
-                            .pt(u(6.0))
-                            .px(u(10.0))
-                            .pb(u(4.0))
-                            .border_t_1()
-                            .border_color(Hsla::from(colors.rule_soft))
-                            .typeface(theme.types.small, theme)
-                            .line_height(u(17.0))
-                            .ink(colors.ink_2)
-                            .child(text::invite_footer(&panel.room.name)),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    /// What the channel list shows under a voice channel that the person cannot enter
-    /// without help (ADR 0514): for the selected channel the box that asks the people
-    /// inside, with the state of the request; for another full channel a line.
-    pub(crate) fn render_entry_box(
+    /// What the header of a voice channel that the person cannot enter without help
+    /// shows in the place of "Join call" (ADR 0739): "Ask to join", and the state of the
+    /// request where it was made.
+    pub(crate) fn render_entry_request(
         &mut self,
         server_id: ServerId,
         channel: &ChannelRow,
         voice: &VoiceState,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let colors = theme.colors;
-        if voice.relation != Relation::Outside {
-            return None;
-        }
+    ) -> Vec<AnyElement> {
         let channel_id = channel.id;
-        let boxed = voice.entry.is_some() || (channel.selected && voice.closed.is_some());
-        if !boxed {
-            return (voice.closed == Some(Closed::Full)).then(|| {
-                div()
-                    .id(("full-note", channel_id.as_uuid().as_u128() as usize))
-                    .debug_selector(move || format!("full-note:{channel_id}"))
-                    .flex_none()
-                    .pl(u(37.0))
-                    .pr(u(10.0))
-                    .pb(u(3.0))
-                    .typeface(theme.types.small, theme)
-                    .line_height(u(17.0))
-                    .ink(colors.ink_2)
-                    .child(format!("{}: {}", channel.name, text::FULL_NOTE))
-                    .into_any_element()
-            });
-        }
         let closed = voice.closed.unwrap_or(Closed::Locked);
-        let (shown, title, sentence): (Icon, SharedString, &'static str) = match voice.entry {
-            None | Some(EntryState::Asking) => (
-                match closed {
-                    Closed::Locked => Icon::Lock,
-                    Closed::Full => Icon::People,
-                },
-                text::closed_title(&channel.name, closed).into(),
-                text::closed_help(closed),
-            ),
-            Some(EntryState::Waiting) => (
-                Icon::Clock,
-                text::ENTRY_WAITING_TITLE.into(),
-                text::ENTRY_WAITING,
-            ),
-            Some(EntryState::Denied) => {
-                (Icon::X, text::ENTRY_DENIED_TITLE.into(), text::ENTRY_DENIED)
-            }
-            Some(EntryState::Expired) => (
-                Icon::Clock,
-                text::ENTRY_EXPIRED_TITLE.into(),
-                text::ENTRY_EXPIRED,
-            ),
-        };
         // A request to enter needs "connect" (ADR 0790).
         let connect = channel.allowed.connect;
-        if !connect && voice.entry.is_none() {
-            return None;
-        }
         let ask = |label: &'static str, disabled: bool, cx: &mut Context<Self>| {
             Button::new("ask-to-enter")
+                .kind(ButtonKind::Green)
+                .icon(match closed {
+                    Closed::Locked => Icon::Lock,
+                    Closed::Full => Icon::People,
+                })
                 .label(label)
                 .tooltip(text::ASK_TO_ENTER_HELP)
                 .accessible_label(text::ASK_TO_ENTER)
                 .disabled(disabled)
                 .selector("ask-to-enter")
-                .flex_1()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {
                         state.ask_to_enter(server_id, channel_id, cx);
                     });
                 }))
+                .into_any_element()
         };
         let withdraw = |label: &'static str, cx: &mut Context<Self>| {
             Button::new("withdraw-entry")
                 .label(label)
                 .selector("withdraw-entry")
-                .flex_1()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {
                         state.withdraw_entry_at(server_id, channel_id, cx);
                     });
                 }))
+                .into_any_element()
         };
-        let actions = div().flex().gap(u(6.0)).mt(u(7.0));
-        let actions = match voice.entry {
-            None => actions.when(connect, |actions| {
-                actions.child(ask(text::ASK_TO_ENTER, false, cx))
-            }),
-            Some(EntryState::Asking) => actions.child(ask(text::ENTRY_ASKING, true, cx)),
-            Some(EntryState::Waiting) => actions.child(withdraw(text::WITHDRAW_REQUEST, cx)),
-            Some(EntryState::Denied | EntryState::Expired) => actions
-                .when(connect, |actions| {
-                    actions.child(ask(text::ASK_AGAIN, false, cx))
-                })
-                .child(withdraw(text::DISMISS, cx)),
-        };
-        Some(
+        let state = |shown: Icon, title: &'static str, sentence: &'static str| {
             div()
-                .id("entry-box")
-                .role(Role::Group)
+                .id("entry-request")
+                .role(Role::Status)
                 .aria_label(format!("{title}. {sentence}"))
-                .debug_selector(|| "entry-box".to_owned())
+                .debug_selector(|| "entry-request".to_owned())
                 .flex_none()
-                .mt(u(3.0))
-                .mr(u(10.0))
-                .mb(u(5.0))
-                .ml(u(37.0))
-                .pt(u(7.0))
-                .px(u(9.0))
-                .pb(u(9.0))
-                .rounded(u(theme.metrics.radius))
-                .border_1()
-                .border_color(Hsla::from(colors.rule))
-                .bg(Hsla::from(colors.travertine_hi))
-                .shadow(ledge(colors.rule))
-                .typeface(theme.types.small, theme)
-                .line_height(u(17.0))
-                .ink(colors.ink_2)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(u(6.0))
-                        .mb(u(2.0))
-                        .text_size(u(13.5))
-                        .line_height(u(18.0))
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .ink(colors.ink)
-                        .child(icon(shown, 13.0, colors.bronze))
-                        .child(div().min_w_0().child(title)),
-                )
-                .child(div().truncate().child(channel.name.clone()))
-                .child(sentence)
-                .child(actions)
-                .into_any_element(),
-        )
+                .tooltip(tooltip(sentence))
+                .child(crate::ui::Flag::new(crate::ui::FlagKind::Warning, title).icon(shown))
+                .into_any_element()
+        };
+        let _ = theme;
+        match voice.entry {
+            None if connect => vec![ask(text::ASK_TO_ENTER, false, cx)],
+            None => Vec::new(),
+            Some(EntryState::Asking) => vec![ask(text::ENTRY_ASKING, true, cx)],
+            Some(EntryState::Waiting) => vec![
+                state(Icon::Clock, text::ENTRY_WAITING_TITLE, text::ENTRY_WAITING),
+                withdraw(text::WITHDRAW_REQUEST, cx),
+            ],
+            Some(ended @ (EntryState::Denied | EntryState::Expired)) => {
+                let (shown, title, sentence) = if ended == EntryState::Denied {
+                    (Icon::X, text::ENTRY_DENIED_TITLE, text::ENTRY_DENIED)
+                } else {
+                    (Icon::Clock, text::ENTRY_EXPIRED_TITLE, text::ENTRY_EXPIRED)
+                };
+                let mut parts = vec![state(shown, title, sentence)];
+                if connect {
+                    parts.push(ask(text::ASK_AGAIN, false, cx));
+                }
+                parts.push(withdraw(text::DISMISS, cx));
+                parts
+            }
+        }
     }
 
-    /// Opens the menu of a person in a voice channel of the workspace that is shown.
+    /// Opens the menu of a person in a voice channel of the workspace that is shown. A person
+    /// in the call of this device gets the menu that the tile and the list of the call open:
+    /// one menu of a person in a call (ADR 0735).
     pub fn open_person_menu(
         &mut self,
         channel_id: ChannelId,
@@ -1082,6 +749,32 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let inside = self
+            .view
+            .as_ref()
+            .and_then(|view| view.lists())
+            .and_then(|lists| lists.call.as_ref())
+            .is_some_and(|panel| {
+                panel
+                    .people
+                    .iter()
+                    .any(|person| person.account_id == account_id && !person.is_self)
+            });
+        if inside {
+            let name = self
+                .view
+                .as_ref()
+                .and_then(|view| view.person_menu(channel_id, account_id))
+                .and_then(|menu| menu.name)
+                .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned());
+            if let Some(mut open) =
+                self.call_account_menu(account_id, name, super::account_menus::CallSurface::Row, cx)
+            {
+                open.position = window.mouse_position();
+                self.open_account_menu(open, window, cx);
+                return;
+            }
+        }
         self.open_layer(
             Layer::PersonMenu(PersonMenuOpen {
                 channel_id,
@@ -1237,38 +930,32 @@ impl Shell {
                 );
             }
         } else {
-            if let Some(channel) = &menu.invite_to {
-                items.push(
-                    MenuItem::new("menu-invite", text::INVITE_TO_MY_ROOM)
-                        .icon(Icon::Invite)
-                        .detail(text::invite_prompt(&name, channel))
-                        .selector("menu-invite")
-                        .on_click(self.call_listener(cx, move |this, _, window, cx| {
-                            this.state
-                                .update(cx, |state, cx| state.invite(account_id, cx));
-                            this.close_layer(window, cx);
-                        }))
-                        .into_any_element(),
-                );
-            }
-            if !menu.destinations.is_empty() {
-                items.push(
-                    MenuItem::new("menu-move", text::MOVE_TO)
-                        .icon(Icon::ArrowLeftRight)
-                        .end_icon(Icon::ChevronRight)
-                        .selector("menu-move")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Layer::PersonMenu(open) = &mut this.layer {
-                                open.moving = true;
-                            }
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                );
-            }
-            if !items.is_empty() {
-                items.push(menu_separator(cx).into_any_element());
-            }
+            // The order of the menu of a person in a call (ADR 0735): the volume, the
+            // moderation group, then the invitation and the identity actions.
+            let invite = menu.invite_to.as_ref().map(|_| {
+                MenuItem::new("menu-invite", text::INVITE_TO_MY_ROOM)
+                    .icon(Icon::Invite)
+                    .selector("menu-invite")
+                    .on_click(self.call_listener(cx, move |this, _, window, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.invite(account_id, cx));
+                        this.close_layer(window, cx);
+                    }))
+                    .into_any_element()
+            });
+            let move_to = (!menu.destinations.is_empty()).then(|| {
+                MenuItem::new("menu-move", text::MOVE_TO)
+                    .icon(Icon::ArrowLeftRight)
+                    .end_icon(Icon::ChevronRight)
+                    .selector("menu-move")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Layer::PersonMenu(open) = &mut this.layer {
+                            open.moving = true;
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            });
             let (volume, focus) =
                 self.volume_control(menu.server_id, account_id, menu.volume, window, cx);
             items.push(
@@ -1304,6 +991,7 @@ impl Shell {
                     .ink(colors.ink_2)
                     .child(
                         VolumeSlider::new("menu-volume", &volume, &focus, text::volume_for(&name))
+                            .in_menu()
                             .selector("menu-volume"),
                     )
                     .into_any_element(),
@@ -1312,10 +1000,10 @@ impl Shell {
                 || menu.microphone_blocked.is_some()
                 || menu.hand_raised.is_some()
                 || menu.sound_blocked.is_some()
-                || menu.disconnect;
+                || menu.disconnect
+                || move_to.is_some();
             if moderates {
                 items.push(menu_separator(cx).into_any_element());
-                items.push(menu_label(text::MODERATION, false, cx).into_any_element());
             }
             if menu.allow_to_speak {
                 items.push(
@@ -1398,6 +1086,7 @@ impl Shell {
                     .into_any_element(),
                 );
             }
+            items.extend(move_to);
             if menu.disconnect {
                 items.push(
                     MenuItem::new("menu-disconnect", text::DISCONNECT)
@@ -1410,6 +1099,10 @@ impl Shell {
                         }))
                         .into_any_element(),
                 );
+            }
+            if let Some(invite) = invite {
+                items.push(menu_separator(cx).into_any_element());
+                items.push(invite);
             }
         }
         if !moving {

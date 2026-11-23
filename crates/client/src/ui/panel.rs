@@ -189,6 +189,8 @@ pub struct Notice {
     action: Option<AnyElement>,
     stacked: bool,
     selector: Option<&'static str>,
+    /// Rows under the statement and its action, apart from them.
+    below: Vec<AnyElement>,
 }
 
 impl Notice {
@@ -200,6 +202,7 @@ impl Notice {
             action: None,
             stacked: false,
             selector: None,
+            below: Vec::new(),
         }
     }
 
@@ -211,6 +214,7 @@ impl Notice {
             action: None,
             stacked: false,
             selector: None,
+            below: Vec::new(),
         }
     }
 
@@ -231,6 +235,12 @@ impl Notice {
 
     pub fn selector(mut self, selector: &'static str) -> Self {
         self.selector = Some(selector);
+        self
+    }
+
+    /// A row under the statement and its action.
+    pub fn below(mut self, element: impl IntoElement) -> Self {
+        self.below.push(element.into_any_element());
         self
     }
 }
@@ -267,7 +277,9 @@ impl RenderOnce for Notice {
             })
             .flex()
             .flex_none()
-            .when(self.stacked, |notice| notice.flex_col())
+            .when(self.stacked || !self.below.is_empty(), |notice| {
+                notice.flex_col()
+            })
             .items_start()
             .gap(u(8.0))
             .py(u(8.0))
@@ -292,16 +304,34 @@ impl RenderOnce for Notice {
                     .rounded_l(u(theme.metrics.radius))
                     .bg(Hsla::from(edge)),
             )
-            .when_some(self.icon, |notice, shown| {
-                notice.child(div().mt(u(2.0)).child(icon(shown, 15.0, mark)))
+            .map(|notice| {
+                let parts = (
+                    self.icon
+                        .map(|shown| div().mt(u(2.0)).child(icon(shown, 15.0, mark))),
+                    div()
+                        .when(!self.stacked, |label| label.flex_1())
+                        .min_w_0()
+                        .child(self.text),
+                    self.action,
+                );
+                if self.below.is_empty() {
+                    notice.children(parts.0).child(parts.1).children(parts.2)
+                } else {
+                    notice
+                        .child(
+                            div()
+                                .flex()
+                                .when(self.stacked, |row| row.flex_col())
+                                .items_start()
+                                .gap(u(8.0))
+                                .w_full()
+                                .children(parts.0)
+                                .child(parts.1)
+                                .children(parts.2),
+                        )
+                        .children(self.below)
+                }
             })
-            .child(
-                div()
-                    .when(!self.stacked, |label| label.flex_1())
-                    .min_w_0()
-                    .child(self.text),
-            )
-            .children(self.action)
     }
 }
 

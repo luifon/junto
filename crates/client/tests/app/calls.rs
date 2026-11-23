@@ -1143,7 +1143,8 @@ fn a_very_wide_share_fits_the_stage_at_each_size_of_the_window(cx: &mut TestAppC
     window.click("detach-call");
     let mut detached = window.call_window();
     watched_share_fits(&mut detached, size, "the call window");
-    detached.click("call-fullscreen");
+    detached.click("own-more");
+    detached.click("more-fullscreen");
     for (width, height) in [
         (3440.0, 1440.0),
         (1200.0, 800.0),

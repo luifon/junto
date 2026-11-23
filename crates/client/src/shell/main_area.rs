@@ -520,8 +520,6 @@ impl Shell {
             if narrow || !self.call_panel_shown(false, cx) {
                 after.extend(self.render_call_panel_buttons(cx));
             }
-            // The settings of the application at "Voice and video", in every width.
-            after.push(self.render_call_settings_button(cx));
         } else {
             if permanent {
                 after.push(Self::render_permanent_marker(theme));
@@ -804,7 +802,8 @@ impl Shell {
         let labelled = |button: Button, label: &'static str| {
             if compact { button } else { button.label(label) }
         };
-        // "Record" opens the languages of the speech; a choice starts the recording
+        // "Record" starts at once in the spoken language that the server sets for its
+        // recordings; the arrow beside it opens the languages for this recording
         // (ADR 0616).
         let offers_record = control.may_record
             && matches!(
@@ -821,6 +820,7 @@ impl Shell {
                 .relative()
                 .flex()
                 .flex_none()
+                .gap(px(1.0))
                 .child(
                     labelled(Button::new("start-recording"), text::RECORD)
                         .icon(Icon::Record)
@@ -829,6 +829,26 @@ impl Shell {
                         .accessible_label(title)
                         .disabled(control.busy)
                         .selector("start-recording")
+                        .on_click(self.call_listener(cx, |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.start_recording(
+                                    Some(
+                                        junto_client_core::protocol::recording::DEFAULT_LANGUAGE
+                                            .to_owned(),
+                                    ),
+                                    cx,
+                                )
+                            });
+                        })),
+                )
+                .child(
+                    Button::new("record-language")
+                        .icon(Icon::ChevronDown)
+                        .tooltip(text::transcripts::RECORD_IN_ANOTHER_LANGUAGE)
+                        .accessible_label(text::transcripts::RECORD_IN_ANOTHER_LANGUAGE)
+                        .disabled(control.busy)
+                        .selector("record-language")
+                        .px(u(6.0))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_record_languages(window, cx);
                         })),
@@ -859,24 +879,24 @@ impl Shell {
                     compact,
                     theme,
                 )];
-                if control.may_record {
-                    shown.push(
-                        labelled(
-                            Button::new("cancel-recording"),
-                            text::transcripts::CANCEL_RECORDING,
-                        )
-                        .icon(Icon::Stop)
-                        .icon_colour(colors.cinnabar)
-                        .tooltip(text::transcripts::CANCEL_RECORDING_HELP)
-                        .accessible_label(text::transcripts::CANCEL_RECORDING_HELP)
-                        .disabled(control.busy)
-                        .selector("cancel-recording")
-                        .on_click(self.call_listener(cx, |this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.stop_recording(cx));
-                        }))
-                        .into_any_element(),
-                    );
-                }
+                // The control looks the same for everyone in the call and acts for a
+                // person with "record calls" (ADR 0735).
+                shown.push(
+                    labelled(
+                        Button::new("cancel-recording"),
+                        text::transcripts::CANCEL_RECORDING,
+                    )
+                    .icon(Icon::Stop)
+                    .icon_colour(colors.cinnabar)
+                    .tooltip(text::transcripts::CANCEL_RECORDING_HELP)
+                    .accessible_label(text::transcripts::CANCEL_RECORDING_HELP)
+                    .disabled(control.busy || !control.may_record)
+                    .selector("cancel-recording")
+                    .on_click(self.call_listener(cx, |this, _, _, cx| {
+                        this.state.update(cx, |state, cx| state.stop_recording(cx));
+                    }))
+                    .into_any_element(),
+                );
                 shown
             }
             RecordingShown::Running { elapsed, stopping } => {
@@ -885,22 +905,20 @@ impl Shell {
                     None => text::RECORDING_MARK.into(),
                 };
                 let mut shown = vec![recording_mark_reserved(mark, compact, theme)];
-                if control.may_record {
-                    let (label, help) = stop_action(*stopping);
-                    shown.push(
-                        labelled(Button::new("stop-recording"), label)
-                            .icon(Icon::Stop)
-                            .icon_colour(colors.cinnabar)
-                            .tooltip(help)
-                            .accessible_label(help)
-                            .disabled(*stopping || control.busy)
-                            .selector("stop-recording")
-                            .on_click(self.call_listener(cx, |this, _, _, cx| {
-                                this.state.update(cx, |state, cx| state.stop_recording(cx));
-                            }))
-                            .into_any_element(),
-                    );
-                }
+                let (label, help) = stop_action(*stopping);
+                shown.push(
+                    labelled(Button::new("stop-recording"), label)
+                        .icon(Icon::Stop)
+                        .icon_colour(colors.cinnabar)
+                        .tooltip(help)
+                        .accessible_label(help)
+                        .disabled(*stopping || control.busy || !control.may_record)
+                        .selector("stop-recording")
+                        .on_click(self.call_listener(cx, |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| state.stop_recording(cx));
+                        }))
+                        .into_any_element(),
+                );
                 shown
             }
             RecordingShown::Failed(problem) => {
@@ -2206,6 +2224,9 @@ impl Shell {
         }
         self.recording_details_open = false;
         self.open_layer(Layer::RecordLanguage, window, cx);
+        let find = self.record_language_find.clone();
+        find.update(cx, |find, cx| find.set_value("", window, cx));
+        self.focus_field(&find, window, cx);
     }
 
     /// The languages of the speech of a new recording (ADR 0603): the detection of the
@@ -2240,7 +2261,7 @@ impl Shell {
         items.push(choice(
             ("record-language", 0),
             text::transcripts::DETECT,
-            None,
+            Some("auto"),
             "record-language:auto".to_owned(),
             self,
             cx,
@@ -2248,8 +2269,32 @@ impl Shell {
         items.push(
             crate::ui::menu_label(text::transcripts::ONE_LANGUAGE, false, cx).into_any_element(),
         );
+        items.push(
+            div()
+                .flex_none()
+                .px(u(10.0))
+                .pb(u(6.0))
+                .child(
+                    crate::ui::Field::new(
+                        &self.record_language_find,
+                        text::transcripts::FIND_LANGUAGE,
+                    )
+                    .kind(crate::ui::FieldKind::Find)
+                    .selector("record-language-find"),
+                )
+                .into_any_element(),
+        );
+        let wanted = self
+            .record_language_find
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
         let mut languages: Vec<AnyElement> = Vec::new();
         for (index, (code, name)) in text::transcripts::LANGUAGES.iter().enumerate() {
+            if !wanted.is_empty() && !name.to_lowercase().contains(&wanted) {
+                continue;
+            }
             languages.push(choice(
                 ("record-language", index + 1),
                 name,

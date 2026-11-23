@@ -204,14 +204,6 @@ async fn an_idle_move_rechecks_the_seat_and_destination_and_refuses_every_publis
         )
         .await
         .error(ErrorCode::Forbidden);
-    server
-        .put(
-            &scene.ann,
-            "/api/v1/call/speaking",
-            &json!({"speaking":true}),
-        )
-        .await
-        .error(ErrorCode::Forbidden);
     let idle = json!({"call_id":destination.join.call.id,"identity":destination.identity,"system_idle_seconds":900,"microphone_silent_seconds":900});
     server
         .post(&scene.ann, "/api/v1/call/idle", &idle)

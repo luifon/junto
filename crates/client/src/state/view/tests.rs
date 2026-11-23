@@ -606,11 +606,6 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
             role_ids: Vec::new(),
         },
     ]);
-    for held in &mut workspace.channels {
-        if let Some(call) = &mut held.call {
-            call.speaking = vec![ana];
-        }
-    }
     let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
     let mut known = Known::default();
     known.people.read_name(server.id, carla, "Carla");
@@ -642,8 +637,9 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
     assert_eq!(
         people,
         [
-            // From the members of the workspace.
-            (Some("Ana"), open(true), false, false, false, false),
+            // From the members of the workspace. Outside the call of this device nobody
+            // is shown as speaking.
+            (Some("Ana"), open(false), false, false, false, false),
             (Some("Bruno"), Microphone::Closed, false, false, true, false),
             // From the profile route, because the member list does not hold the account.
             (
@@ -1421,25 +1417,11 @@ pub(super) mod calls {
             daily,
             vec![participant(ana), participant(ben), participant(own)],
         );
-        let mut model = scene.model();
-        // The server marks Ben as speaking. In the call of this device the sound decides.
-        let place = CallPlace::Channel {
-            workspace_id: scene.studio,
-            channel_id: daily,
-        };
-        let mut speaking = model.call_at(&place).unwrap().clone();
-        speaking.speaking = vec![ben];
-        let workspace = Arc::make_mut(&mut model.workspaces[1]);
-        workspace
-            .channels
-            .iter_mut()
-            .find(|channel| channel.channel.id == daily)
-            .unwrap()
-            .call = Some(speaking);
+        let model = scene.model();
         let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
         let servers = std::slice::from_ref(&server);
 
-        // Outside the call: the marks of the server, and no measured level.
+        // Outside the call: no speaking mark and no measured level.
         let outside = derive(
             servers,
             &selected(&server, &scene, daily),
@@ -1448,7 +1430,7 @@ pub(super) mod calls {
         let row = voice(outside.workspace().unwrap(), "Daily");
         assert_eq!(row.relation, Relation::Outside);
         let shown = occupant(&outside, "Daily", ben);
-        assert_eq!(shown.microphone, Microphone::Open { speaking: true });
+        assert_eq!(shown.microphone, Microphone::Open { speaking: false });
         assert_eq!((shown.level, shown.volume), (None, 100));
         assert!(outside.lists().unwrap().call.is_none());
         assert_eq!(
@@ -1570,7 +1552,7 @@ pub(super) mod calls {
     }
 
     #[test]
-    fn the_chat_of_the_call_of_this_device_has_no_thread_and_its_threads_cannot_be_opened() {
+    fn the_thread_the_pins_and_a_transcript_of_the_channel_of_the_call_are_shown_in_the_call() {
         use junto_client_core::model::Named;
         use junto_client_core::protocol::message::{MessagePlace, ThreadState};
 
@@ -1610,30 +1592,32 @@ pub(super) mod calls {
             row.threads[0].clone()
         };
 
-        // Outside the call the thread of the voice channel is shown and can be opened.
+        // Outside the call the thread of the voice channel is shown.
         let outside = derive(servers, &selection, &Known::default());
         assert!(outside.workspace().unwrap().thread.is_some());
-        assert!(entry(&outside).available);
+        assert!(entry(&outside).open);
 
-        // In the call the side panel is the panel of the call: no thread and no pin list
-        // is shown, and the row of the thread says that it cannot be opened.
+        // In the call the thread and the pin list of its channel are shown too: they open
+        // in the right column of the call, over its chat (ADR 0741).
         let known = in_call(active(target(&server, &scene, daily)));
         let inside = derive(servers, &selection, &known);
         assert!(inside.lists().unwrap().call.is_some());
-        let workspace = inside.workspace().unwrap();
-        assert!(workspace.thread.is_none() && workspace.pins.is_none());
-        assert_eq!(inside.shown().thread, None);
-        assert!(!entry(&inside).available);
+        assert!(inside.workspace().unwrap().thread.is_some());
+        assert!(entry(&inside).open && entry(&inside).available);
         selection.thread = None;
         selection.pins = Some((server.id, daily));
         let inside = derive(servers, &selection, &known);
-        assert!(inside.workspace().unwrap().pins.is_none());
-
-        // Another channel is shown: a selection of the voice channel shows the call, so
-        // its thread still cannot be opened.
-        let general = scene.general;
-        let elsewhere = derive(servers, &selected(&server, &scene, general), &known);
-        assert!(!entry(&elsewhere).available);
+        assert!(inside.workspace().unwrap().pins.is_some());
+        // The transcript of a finished recording of the channel opens during the call too.
+        selection.pins = None;
+        selection.transcript = Some((
+            server.id,
+            daily,
+            junto_client_core::protocol::ids::RecordingId::generate(),
+        ));
+        let inside = derive(servers, &selection, &known);
+        assert!(inside.lists().unwrap().call.is_some());
+        assert!(inside.workspace().unwrap().transcript.is_some());
     }
 
     #[test]
@@ -3558,7 +3542,7 @@ fn role_appearance_covers_a_roster_larger_than_the_profile_cache_without_images(
 }
 
 #[test]
-fn a_muted_speech_notice_requires_local_input_an_explicit_mute_and_a_connected_call() {
+fn a_muted_speech_notice_requires_its_speech_an_explicit_mute_and_a_connected_call() {
     let mut controls = Controls {
         microphone: MicrophoneButton::Muted,
         seat: Some(junto_media::calls::Seat {
@@ -3570,19 +3554,25 @@ fn a_muted_speech_notice_requires_local_input_an_explicit_mute_and_a_connected_c
         }),
         ..Default::default()
     };
-    controls.show_muted_speech(0, true);
-    assert!(!controls.muted_speech);
-    controls.show_muted_speech(20, true);
-    assert!(controls.muted_speech);
-    controls.show_muted_speech(20, false);
-    assert!(!controls.muted_speech);
+    let shown = MutedSpeechShown {
+        shown: true,
+        ..Default::default()
+    };
+    controls.show_muted_speech(MutedSpeechShown::default(), true);
+    assert_eq!(controls.muted_speech, None);
+    controls.show_muted_speech(shown, true);
+    assert_eq!(controls.muted_speech, Some(shown));
+    controls.show_muted_speech(shown, false);
+    assert_eq!(controls.muted_speech, None);
     controls.microphone = MicrophoneButton::Open;
-    controls.show_muted_speech(20, true);
-    assert!(!controls.muted_speech);
+    controls.show_muted_speech(shown, true);
+    assert_eq!(controls.muted_speech, None);
     controls.microphone = MicrophoneButton::Muted;
     controls.warning = Some(SoundWarning::NoMicrophoneAccess);
-    controls.show_muted_speech(20, true);
-    assert!(!controls.muted_speech);
+    controls.show_muted_speech(shown, true);
+    assert_eq!(controls.muted_speech, None);
+    // The input level decides at the threshold of speech.
+    assert!(!speech_heard(0) && speech_heard(20));
 }
 
 /// The revision of the `hello` of the stream decides; while the stream has not greeted, the

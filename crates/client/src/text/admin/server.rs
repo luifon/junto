@@ -54,6 +54,11 @@ pub const fn invalid_logo(invalid: InvalidAvatar) -> &'static str {
     }
 }
 
+pub const RECORDINGS: &str = "Recordings";
+pub const RECORDING_LANGUAGE_HELP: &str = "The spoken language of a recording that starts with Record. A person can choose another language for one recording.";
+pub const CHANGE_LANGUAGE: &str = "Change";
+pub const LANGUAGE_NOT_READ: &str = "Reading…";
+
 #[cfg(test)]
 mod tests {
     use junto_client_core::api::{ApiError, Rejection};

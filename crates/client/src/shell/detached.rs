@@ -4,7 +4,7 @@ use crate::{
     state::AppState,
     text,
     theme::{theme, u},
-    ui::{Button, ButtonKind},
+    ui::Button,
 };
 use gpui::{
     App, AppContext as _, Context, Entity, Hsla, InteractiveElement, IntoElement, ParentElement,
@@ -33,6 +33,10 @@ const RECORDING_LINE_HEIGHT: f32 = 40.0;
 /// (ADR 0772). The controls and the buttons take 284 of them; the rest holds the mark of
 /// a running recording with its words and the action after it.
 const RECORDING_BESIDE_CONTROLS: f32 = 600.0;
+
+/// The width of the call window from which the shared controls of its header carry their
+/// labels, in design pixels.
+const SHARED_LABELS_FROM: f32 = 520.0;
 
 /// The narrowest stage that the call window draws beside the panel of the call, in pixels
 /// of the design. A narrower window draws the panel over the stage.
@@ -130,6 +134,31 @@ impl Shell {
                 }
             }))
     }
+    /// Keeps the call window above the other windows, or stops it (ADR 0507). Where the
+    /// window manager is not asked, the window is opened again with the other kind, and the
+    /// text that its composer holds goes to the new window.
+    pub(crate) fn toggle_call_on_top(
+        &mut self,
+        top: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.clone();
+        if ASKS_WINDOW_MANAGER {
+            state.update(cx, |state, cx| state.set_call_on_top(!top, cx));
+            crate::window_level::keep_above(window, !top, cx);
+            return;
+        }
+        self.hand_over_drafts(super::composer::HandTo::CallWindow, cx);
+        cx.defer(move |cx| {
+            state.update(cx, |state, cx| {
+                state.set_call_on_top(!top, cx);
+                state.return_call(cx);
+            });
+            open(state, cx);
+        });
+    }
+
     pub(crate) fn render_detached(
         &mut self,
         window: &mut Window,
@@ -163,52 +192,14 @@ impl Shell {
             .flex_col()
             .size_full()
             .bg(Hsla::from(theme.colors.basalt));
-        let state = self.state.clone();
-        let top = self.state.read(cx).call_window_settings().keep_on_top;
+        // The window controls Keep on top and Full screen are in "⋮" of the row of own
+        // controls (ADR 0772); the header keeps the return to the main window.
         let controls = div()
             .flex()
             .flex_none()
             .items_center()
             .gap(u(6.0))
-            // The choice is offered only where the system can keep a window above the
-            // others (ADR 0507).
-            .children(crate::window_level::offered(cx).then(|| {
-                Button::new("call-on-top")
-                    .icon(crate::assets::Icon::Pin)
-                    .tooltip(text::KEEP_ON_TOP)
-                    .kind(if top {
-                        ButtonKind::Primary
-                    } else {
-                        ButtonKind::Default
-                    })
-                    .selector("call-on-top")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let state = state.clone();
-                        if ASKS_WINDOW_MANAGER {
-                            state.update(cx, |state, cx| state.set_call_on_top(!top, cx));
-                            crate::window_level::keep_above(window, !top, cx);
-                            return;
-                        }
-                        // The window is opened again with the other kind. The text that
-                        // its composer holds goes to the new window.
-                        this.hand_over_drafts(super::composer::HandTo::CallWindow, cx);
-                        cx.defer(move |cx| {
-                            state.update(cx, |state, cx| {
-                                state.set_call_on_top(!top, cx);
-                                state.return_call(cx);
-                            });
-                            open(state, cx);
-                        });
-                    }))
-            }))
-            .child(self.return_call_button(cx))
-            .child(
-                Button::new("call-fullscreen")
-                    .selector("call-fullscreen")
-                    .icon(crate::assets::Icon::FullScreen)
-                    .tooltip(text::FULLSCREEN)
-                    .on_click(cx.listener(|_, _, window, _| window.toggle_fullscreen())),
-            );
+            .child(self.return_call_button(cx));
         // The call of a voice channel has a recording control. It lies between the window
         // controls and the buttons of the panel in a wide window, and on a second line of
         // its own in a narrow one. The form depends on the width and on the kind of the
@@ -218,6 +209,9 @@ impl Shell {
             .as_ref()
             .is_some_and(|strip| strip.channel_id.is_some());
         let recording_beside = super::logical_width(window) >= RECORDING_BESIDE_CONTROLS;
+        // The shared controls keep their labels, as in the main window, unless the window
+        // is too narrow for them even on a line of their own.
+        let compact = super::logical_width(window) < SHARED_LABELS_FROM;
         let recording = records.then(|| {
             div()
                 .flex()
@@ -230,7 +224,19 @@ impl Shell {
                     panel
                         .and_then(|panel| panel.channel())
                         .map(|channel| {
-                            self.render_recording_control(&channel.recording, &theme, true, cx)
+                            let mut shared = self.render_recording_control(
+                                &channel.recording,
+                                &theme,
+                                compact,
+                                cx,
+                            );
+                            shared.extend(self.render_room_controls(
+                                &channel.room,
+                                &theme,
+                                compact,
+                                cx,
+                            ));
+                            shared
                         })
                         .into_iter()
                         .flatten(),
@@ -267,7 +273,6 @@ impl Shell {
                     .when(panel.is_some(), |buttons| {
                         buttons.children(self.render_call_panel_buttons(cx))
                     })
-                    .child(self.render_call_settings_button(cx))
                     .child(self.render_call_notices_button(&view, cx)),
             );
         body = body.child(header);
@@ -358,80 +363,6 @@ impl Shell {
                     }),
             )
             .children(self.edge_drag_tracking(cx));
-        let controls = div()
-            .flex()
-            .flex_wrap()
-            .gap(u(8.0))
-            .p(u(8.0))
-            .child(
-                match view.controls.microphone {
-                    crate::state::view::MicrophoneButton::Open => {
-                        Button::new("detached-microphone")
-                            .kind(ButtonKind::CallOn)
-                            .icon(crate::assets::Icon::Microphone)
-                            .tooltip(text::CLOSE_MICROPHONE)
-                    }
-                    crate::state::view::MicrophoneButton::Muted => {
-                        Button::new("detached-microphone")
-                            .kind(ButtonKind::Call)
-                            .icon(crate::assets::Icon::MicrophoneOff)
-                            .tooltip(text::OPEN_MICROPHONE)
-                    }
-                    crate::state::view::MicrophoneButton::Held => {
-                        Button::new("detached-microphone")
-                            .kind(ButtonKind::SquareHeld)
-                            .icon(crate::assets::Icon::MicrophoneHeld)
-                            .tooltip(text::MICROPHONE_HELD)
-                    }
-                    crate::state::view::MicrophoneButton::NotPermitted => {
-                        Button::new("detached-microphone")
-                            .kind(ButtonKind::SquareHeld)
-                            .icon(crate::assets::Icon::MicrophoneHeld)
-                            .tooltip(text::MICROPHONE_CLOSED_IN_CALL)
-                            .disabled(true)
-                    }
-                }
-                .selector("detached-microphone")
-                .on_click({
-                    // The control does what it shows now, also when the call
-                    // is another one at the click (ADR 0788).
-                    let action = view.controls.microphone_action.clone();
-                    cx.listener(move |this, _, _, cx| {
-                        this.state
-                            .update(cx, |state, _| state.use_microphone(&action));
-                    })
-                }),
-            )
-            .child(
-                Button::new("detached-sound")
-                    .kind(if view.controls.sound_off {
-                        ButtonKind::Call
-                    } else {
-                        ButtonKind::CallOn
-                    })
-                    .tooltip(if view.controls.sound_off {
-                        text::SOUND_OUTPUT_OFF
-                    } else {
-                        text::SOUND_OUTPUT_ON
-                    })
-                    .icon(if view.controls.sound_off {
-                        crate::assets::Icon::PhonesOff
-                    } else {
-                        crate::assets::Icon::Phones
-                    })
-                    .selector("detached-sound")
-                    .on_click({
-                        let off = !view.controls.sound_off;
-                        cx.listener(move |this, _, _, cx| {
-                            this.state.update(cx, |state, _| state.set_sound_off(off));
-                        })
-                    }),
-            );
-        let controls = match panel.and_then(|panel| panel.room()) {
-            Some(room) => controls.children(self.render_room_controls(room, &theme, false, cx)),
-            None => controls,
-        };
-        body = body.child(controls);
         if let Some(strip) = &view.call {
             body = body.child(self.render_call_strip(strip, &theme, cx));
         }
