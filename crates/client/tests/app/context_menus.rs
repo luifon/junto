@@ -1310,6 +1310,33 @@ fn thread_menu_actions_read_and_follow_their_target_without_opening_its_panel(
     });
     assert!(!window.shows("thread-panel"));
     assert_eq!(window.selected_channel(), channel);
+    // The menu of the preview of a read thread under its root offers "Mark as unread" alone;
+    // its press marks the thread unread on the server and opens nothing.
+    window.right_click_named(format!("thread-chip:{root}"));
+    assert!(window.shows("thread-unread") && !window.shows("thread-read"));
+    window.click("thread-unread");
+    window.until("the preview marks the thread unread", |window| {
+        world
+            .run(window.handle().api().thread_state(root))
+            .unwrap()
+            .unread
+            == 1
+    });
+    assert!(!window.shows("thread-panel"));
+    assert_eq!(window.selected_channel(), channel);
+    // The unread thread has its row again, whose menu marks it read.
+    window.until("the unread thread has its row", |window| {
+        window.shows_named(format!("thread-row:{root}"))
+    });
+    window.right_click_named(format!("thread-row:{root}"));
+    window.click("thread-read");
+    window.until("the thread is read again", |window| {
+        world
+            .run(window.handle().api().thread_state(root))
+            .unwrap()
+            .unread
+            == 0
+    });
     // The menu of the thread header offers "Mark as unread" alone for a read thread; its
     // press marks the thread unread from its newest reply.
     let server_id = window.view().selected.as_ref().unwrap().id;
