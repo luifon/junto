@@ -241,9 +241,54 @@ pub struct Drift {
     points: Vec<(OffsetDateTime, Duration)>,
 }
 
+/// A measured point further than this from the line that fits the points is a wrong
+/// match of the envelopes, such as a phrase matched with the next one: the drift between
+/// two windows is a few milliseconds (ADR 0606).
+const DRIFT_OUTLIER: Duration = Duration::seconds(1);
+
 impl Drift {
     pub fn of(mut points: Vec<(OffsetDateTime, Duration)>) -> Self {
         points.sort_by_key(|(at, _)| *at);
+        // The drift is close to a straight line over a recording: the point furthest from the
+        // line that fits the points is dropped while it is further than [`DRIFT_OUTLIER`],
+        // one at a time, so that a wrong point does not move the line for the others.
+        while points.len() >= 3 {
+            let origin = points[0].0;
+            let x = |at: OffsetDateTime| (at - origin).as_seconds_f64();
+            let count = points.len() as f64;
+            let mean_x = points.iter().map(|(at, _)| x(*at)).sum::<f64>() / count;
+            let mean_y = points
+                .iter()
+                .map(|(_, shift)| shift.as_seconds_f64())
+                .sum::<f64>()
+                / count;
+            let (mut covariance, mut variance) = (0.0, 0.0);
+            for (at, shift) in &points {
+                let dx = x(*at) - mean_x;
+                covariance += dx * (shift.as_seconds_f64() - mean_y);
+                variance += dx * dx;
+            }
+            let slope = if variance > f64::EPSILON {
+                covariance / variance
+            } else {
+                0.0
+            };
+            let residual = |(at, shift): &(OffsetDateTime, Duration)| {
+                (shift.as_seconds_f64() - (mean_y + slope * (x(*at) - mean_x))).abs()
+            };
+            let Some((worst, off)) = points
+                .iter()
+                .enumerate()
+                .map(|(index, point)| (index, residual(point)))
+                .max_by(|first, second| first.1.total_cmp(&second.1))
+            else {
+                break;
+            };
+            if off <= DRIFT_OUTLIER.as_seconds_f64() {
+                break;
+            }
+            points.remove(worst);
+        }
         Self { points }
     }
 
@@ -612,6 +657,30 @@ mod tests {
             missing_stretch(&heard(0.0, 60.0, &patchy), &heard(0.0, 60.0, &[])),
             None
         );
+    }
+
+    /// A window whose envelopes matched the wrong phrase gives a point far from the line of
+    /// its neighbours; the drift does not follow it.
+    #[test]
+    fn a_wrong_match_of_one_window_is_not_followed() {
+        let start = OffsetDateTime::UNIX_EPOCH;
+        let at = |seconds: i64| start + Duration::seconds(seconds);
+        let shift = |millis: i64| Duration::milliseconds(millis);
+        // A drift of 35 ms per second, measured every 15 seconds; the window at 97 s matched
+        // the next phrase, 6 seconds away.
+        let drift = Drift::of(vec![
+            (at(7), shift(118)),
+            (at(22), shift(1_701)),
+            (at(37), shift(2_144)),
+            (at(52), shift(2_676)),
+            (at(67), shift(3_235)),
+            (at(82), shift(3_702)),
+            (at(97), shift(-2_051)),
+            (at(112), shift(4_718)),
+        ]);
+        let at_97 = drift.at(at(97));
+        assert!(at_97 > shift(3_900) && at_97 < shift(4_500), "{at_97:?}");
+        assert_eq!(drift.at(at(112)), shift(4_718));
     }
 
     /// A recording of an hour whose microphone file drifts by 90 parts per million and has

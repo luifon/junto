@@ -236,7 +236,8 @@ impl ServerApi {
 
     /// Starts a recording of the call that the caller is in. The answer has the state
     /// `starting`; what follows arrives as events. `language`: the language of the speech
-    /// for the transcript, or nothing when it is to be detected.
+    /// for the transcript, `default` for the default language of the server, or nothing
+    /// when it is to be detected.
     pub async fn start_recording(
         &self,
         channel_id: ChannelId,

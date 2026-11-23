@@ -23169,7 +23169,7 @@
               "string",
               "null"
             ],
-            "description": "The language of the speech, as a Whisper language code of two or three lower-case\nletters, or `auto`: the language of each speech clip is detected (ADR 0603). Absent:\nthe default language of the recordings of the server ([`RecordingSettings`])."
+            "description": "The language of the speech, as a Whisper language code of two or three lower-case\nletters, `auto`: the language of each speech clip is detected (ADR 0603), or\n[`DEFAULT_LANGUAGE`]: the default language of the recordings of the server\n([`RecordingSettings`]). Absent: `auto`, as a client of API version 1 before the\ndefault language sends it (ADR 0604)."
           }
         }
       },

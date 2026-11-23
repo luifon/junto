@@ -207,6 +207,78 @@ pub fn soundless_composite() -> Pieces {
     once!(Pieces, pieces_of(PICTURE, None, "1"))
 }
 
+/// The length of [`drifting_track`] and of the drifting composites, in seconds.
+pub const DRIFT_SECONDS: u32 = 120;
+
+/// The share by which the sound of a drifting composite is slower than [`drifting_track`]:
+/// far more than the 90 parts per million of a measured recorder, so that two minutes drift
+/// by about four seconds (ADR 0606).
+pub const DRIFT: f64 = 0.035;
+
+/// The stretch that [`cut_drifting_composite`] lacks, in seconds of the composite: inside the
+/// long phrase of the track.
+pub const CUT: (f64, f64) = (59.5, 62.5);
+
+/// The phrases of [`drifting_track`]: a start and a length in seconds, with pauses of 2.3
+/// to 3 seconds between them, and one long phrase in the middle.
+const PHRASES: [(f64, f64); 18] = [
+    (0.5, 3.2),
+    (6.0, 4.1),
+    (12.4, 3.0),
+    (18.1, 4.5),
+    (25.0, 3.4),
+    (31.2, 4.0),
+    (37.9, 3.1),
+    (43.6, 4.4),
+    (50.3, 3.3),
+    (56.0, 8.0),
+    (66.5, 3.6),
+    (72.8, 4.2),
+    (79.6, 3.0),
+    (85.3, 4.6),
+    (92.4, 3.2),
+    (98.6, 4.0),
+    (105.1, 3.5),
+    (111.4, 4.3),
+];
+
+/// A tone in [`PHRASES`], slower by `scale`, and silent in `cut` when there is one.
+fn phrase_source(scale: f64, cut: Option<(f64, f64)>) -> String {
+    let on: Vec<String> = PHRASES
+        .iter()
+        .map(|(start, length)| format!("between(t/{scale},{start},{})", start + length))
+        .collect();
+    let mut expression = format!("0.5*sin(440*2*PI*t)*({})", on.join("+"));
+    if let Some((from, until)) = cut {
+        expression = format!("{expression}*not(between(t,{from},{until}))");
+    }
+    format!("aevalsrc='{expression}':d={DRIFT_SECONDS}:s=48000")
+}
+
+/// An audio track of two minutes of phrases with pauses, as a person who speaks gives it.
+pub fn drifting_track() -> Arc<Vec<u8>> {
+    once!(Arc<Vec<u8>>, track_of(&phrase_source(1.0, None), &[]))
+}
+
+fn drifting_pieces(cut: Option<(f64, f64)>) -> Pieces {
+    pieces_of(
+        &format!("testsrc2=size=320x180:rate=10:duration={DRIFT_SECONDS}"),
+        Some(&phrase_source(1.0 + DRIFT, cut)),
+        "10",
+    )
+}
+
+/// A composite of two minutes whose sound is the sound of [`drifting_track`], slower by
+/// [`DRIFT`]: the pauses of the two files drift apart.
+pub fn drifting_composite() -> Pieces {
+    once!(Pieces, drifting_pieces(None))
+}
+
+/// [`drifting_composite`] without its sound in [`CUT`].
+pub fn cut_drifting_composite() -> Pieces {
+    once!(Pieces, drifting_pieces(Some(CUT)))
+}
+
 /// Short bursts of a tone at irregular times in twelve seconds, `late` seconds late.
 fn burst_source(late: f64) -> String {
     let bursts: Vec<String> = [0.4, 1.3, 2.9, 4.1, 6.6, 7.2, 9.5]

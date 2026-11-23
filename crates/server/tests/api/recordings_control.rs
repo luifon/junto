@@ -189,6 +189,42 @@ async fn a_lost_recorder_is_found_by_the_participants_of_the_room_and_new_jobs_s
     assert_eq!(done.recording.failed_segments, 3);
 }
 
+/// Review finding: a recorder that is killed while its jobs record loses what they recorded.
+/// The jobs that replace them do not make the recording whole: the recording is saved in
+/// part, although each source has a later good file (ADR 0606).
+#[tokio::test]
+async fn a_killed_recorder_that_lost_recorded_files_leaves_the_recording_saved_in_part() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, owner) = (&scene.server, &scene.owner);
+    let started = studio.record().await;
+    server.clock.advance(Duration::seconds(30));
+    server.recorder().kill();
+    server.recorder().participants_gone();
+    server.recorder().restart();
+    server.tend().await;
+    let detail = server.recording(owner, started.id).await;
+    assert_eq!(lost(&detail), (1, 2));
+    assert!(
+        detail
+            .segments
+            .iter()
+            .filter(|segment| segment.failure == Some(SegmentFailure::RecorderLost))
+            .all(|segment| segment.started_at.is_some())
+    );
+
+    server.clock.advance(Duration::seconds(5));
+    studio.stop(started.id).await;
+    assert_eq!(server.process().await, 1);
+    let done = server.recording(owner, started.id).await;
+    assert_eq!(
+        done.recording.state,
+        RecordingState::PartlyFailed,
+        "{done:?}"
+    );
+    assert_eq!(done.recording.failed_segments, 3);
+}
+
 /// A composite is a picture of the people of the call. While nobody of the call is in the
 /// room, a lost composite gets no new job, which would record the empty room (ADR 0604); with
 /// a member in the room it gets one

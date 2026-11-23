@@ -119,7 +119,7 @@ async fn a_processed_recording_is_handed_to_the_worker_and_its_transcript_is_sto
     let job = worker.job();
     assert_eq!(job["format_version"], 1);
     assert_eq!(job["recording_id"], json!(id));
-    assert_eq!(job["language"], "en");
+    assert_eq!(job["language"], "auto");
     assert_eq!(job["glossary"], json!(["Quorvex", "Lumitrax"]));
     assert_eq!(job["separate_speakers"], false);
     let segments = job["segments"].as_array().unwrap();
@@ -204,7 +204,7 @@ async fn a_processed_recording_is_handed_to_the_worker_and_its_transcript_is_sto
     assert_eq!(transcript.recording_id, id);
     assert_eq!(transcript.state, TranscriptState::Ready);
     assert_eq!(transcript.failure, None);
-    assert_eq!(transcript.language, "en");
+    assert_eq!(transcript.language, "auto");
     assert_eq!(transcript.lines, 2);
     assert_eq!(transcript.glossary.used, ["Quorvex"]);
     assert_eq!(transcript.glossary.cut, ["Lumitrax"]);
@@ -1275,7 +1275,7 @@ async fn a_server_without_a_worker_builds_no_transcript() {
     let transcript = server.transcript(ann, id).await;
     assert_eq!(transcript.state, TranscriptState::None);
     assert_eq!((transcript.lines, transcript.segments.len()), (0, 0));
-    assert_eq!(transcript.language, "en");
+    assert_eq!(transcript.language, "auto");
     let lines: TranscriptLinePage = server
         .get(ann, &path(id, "/lines"))
         .await

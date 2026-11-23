@@ -830,8 +830,15 @@ impl Shell {
                         .disabled(control.busy)
                         .selector("start-recording")
                         .on_click(self.call_listener(cx, |this, _, _, cx| {
-                            this.state
-                                .update(cx, |state, cx| state.start_recording(None, cx));
+                            this.state.update(cx, |state, cx| {
+                                state.start_recording(
+                                    Some(
+                                        junto_client_core::protocol::recording::DEFAULT_LANGUAGE
+                                            .to_owned(),
+                                    ),
+                                    cx,
+                                )
+                            });
                         })),
                 )
                 .child(

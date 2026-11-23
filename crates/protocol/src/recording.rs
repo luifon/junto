@@ -286,11 +286,16 @@ pub struct RecordingDetail {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct StartRecording {
     /// The language of the speech, as a Whisper language code of two or three lower-case
-    /// letters, or `auto`: the language of each speech clip is detected (ADR 0603). Absent:
-    /// the default language of the recordings of the server ([`RecordingSettings`]).
+    /// letters, `auto`: the language of each speech clip is detected (ADR 0603), or
+    /// [`DEFAULT_LANGUAGE`]: the default language of the recordings of the server
+    /// ([`RecordingSettings`]). Absent: `auto`, as a client of API version 1 before the
+    /// default language sends it (ADR 0604).
     #[serde(default)]
     pub language: Option<String>,
 }
+
+/// The language of [`StartRecording`] that names the default language of the server.
+pub const DEFAULT_LANGUAGE: &str = "default";
 
 /// The settings of the recordings of a server (ADR 0604).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

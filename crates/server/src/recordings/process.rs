@@ -37,9 +37,6 @@ const PLACED_BY: Duration = Duration::seconds(60);
 const SEARCHED: Duration = Duration::seconds(6);
 /// Less common sound than this places nothing.
 const LEAST_COMMON_SOUND: Duration = Duration::seconds(4);
-/// The distance between two windows in which the drift between the composite and a
-/// microphone file is measured (ADR 0606).
-const DRIFT_EVERY: Duration = Duration::minutes(5);
 
 /// A step that did not run to its end: a program did not start or reached its time limit,
 /// or the file system refused. The attempt is repeated.
@@ -298,12 +295,13 @@ async fn shift_by_sound(
 }
 
 /// How far the sound of a microphone file lies in the composite from where the timeline
-/// places it, measured in a window every [`DRIFT_EVERY`] along the time that both files
-/// cover (ADR 0606). A window whose two envelopes do not agree clearly gives no point.
+/// places it, measured in a window of up to 60 seconds every `every` along the time that both
+/// files cover (ADR 0606). A window whose two envelopes do not agree clearly gives no point.
 async fn drift_by_sound(
     tools: &Tools,
     composite: (&Source<'_>, OffsetDateTime, i64),
     reference: (&Source<'_>, OffsetDateTime, i64),
+    every: Duration,
 ) -> Result<check::Drift, Unfinished> {
     let (video, video_start, video_ms) = composite;
     let (track, track_start, track_ms) = reference;
@@ -313,7 +311,7 @@ async fn drift_by_sound(
     let mut points = Vec::new();
     let mut at = from;
     while at + LEAST_COMMON_SOUND <= until {
-        let length = PLACED_BY.min(until - at);
+        let length = PLACED_BY.min(every).min(until - at);
         let loudness = |source: &Source<'_>, file, start: OffsetDateTime| {
             let offset = (at - start).as_seconds_f64();
             tools.loudness(file, source.container, offset, length.as_seconds_f64())
@@ -337,7 +335,7 @@ async fn drift_by_sound(
             }
             _ => {}
         }
-        at += DRIFT_EVERY;
+        at += every;
     }
     Ok(check::Drift::of(points))
 }
@@ -350,7 +348,12 @@ struct Examined {
 }
 
 /// Finds, joins, places and checks the files of a recording. Nothing is stored.
-async fn examine(backend: &Backend, recording: &RecordingRow, segments: &[SegmentRow]) -> Examined {
+async fn examine(
+    backend: &Backend,
+    recording: &RecordingRow,
+    segments: &[SegmentRow],
+    drift_every: Duration,
+) -> Examined {
     let root = &backend.settings.directory;
     let tools = &backend.tools;
     let mut measured: Vec<Option<Measured>> = Vec::with_capacity(segments.len());
@@ -466,6 +469,7 @@ async fn examine(backend: &Backend, recording: &RecordingRow, segments: &[Segmen
                     tools,
                     (&video, composite.from, video_ms),
                     (&track, reference.from, track_ms),
+                    drift_every,
                 )
                 .await;
                 let drift = match drift {
@@ -533,12 +537,15 @@ async fn unchecked(
 
 /// The state that follows from the files of a recording: `ready` when every segment ended
 /// and has a file that passed its check, `failed` without any file, and `partly_failed`
-/// otherwise. A start attempt that the recorder lost and a later job of the same source
-/// replaced is not a failure: the later segment holds the file of that source (ADR 0606).
+/// otherwise. A start attempt that the recorder lost before it recorded, and that a later job
+/// of the same source replaced, is not a failure: the later segment holds the file of that
+/// source (ADR 0606). A lost job that had recorded lost its content and counts.
 fn final_state(segments: &[SegmentRow], files: &[Option<FileRow>]) -> RecordingState {
     let replaced = |index: usize, segment: &SegmentRow| {
         segment.state == SegmentState::Failed
             && segment.failure == Some(SegmentFailure::RecorderLost)
+            && segment.started_at.is_none()
+            && files[index].is_none()
             && segments
                 .iter()
                 .zip(files)
@@ -633,7 +640,12 @@ pub async fn process(app: &AppState, id: RecordingId) -> ApiResult<()> {
     } else {
         // While the files are examined, this process states that it still holds the
         // attempt. An attempt that another process took is given up.
-        let examining = examine(backend, &recording, &segments);
+        let examining = examine(
+            backend,
+            &recording,
+            &segments,
+            app.config.limits.recordings.drift_every,
+        );
         tokio::pin!(examining);
         let mut heartbeat = tokio::time::interval(limits.processing_heartbeat.unsigned_abs());
         heartbeat.tick().await;
@@ -924,8 +936,9 @@ mod tests {
         assert_eq!(state(&[], &[]), RecordingState::Failed);
     }
 
-    /// A composite job that the recorder lost and a later job replaced leaves the recording
-    /// ready when the later job ended with a good file; without it the loss counts.
+    /// A composite job that the recorder lost before it recorded, and that a later job
+    /// replaced, leaves the recording ready when the later job ended with a good file;
+    /// without it, or when the lost job had recorded, the loss counts.
     #[test]
     fn a_replaced_start_attempt_is_not_a_failure() {
         let mut lost = segment(SegmentState::Failed);
@@ -946,6 +959,16 @@ mod tests {
             final_state(
                 &segments,
                 &[None, file(&[FileProblem::SoundMissing]), good.clone()]
+            ),
+            RecordingState::PartlyFailed
+        );
+        // A lost job that had recorded lost what it recorded, also with a later job.
+        let mut recorded = lost.clone();
+        recorded.started_at = Some(lost.requested_at + Duration::seconds(5));
+        assert_eq!(
+            final_state(
+                &[recorded, later.clone(), track.clone()],
+                &[None, good.clone(), good.clone()]
             ),
             RecordingState::PartlyFailed
         );

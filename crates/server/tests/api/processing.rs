@@ -4,7 +4,8 @@
 
 use junto_protocol::events::Event;
 use junto_protocol::recording::{
-    FileCheck, FileProblem, RecordingFailure, RecordingState, SegmentSource, SegmentState,
+    FileCheck, FileProblem, RecordingDetail, RecordingFailure, RecordingState, SegmentSource,
+    SegmentState,
 };
 use junto_protocol::transcript::TranscriptState;
 use junto_server::media::{TrackKind, TrackSource};
@@ -225,6 +226,79 @@ async fn a_composite_that_is_silent_while_a_microphone_has_sound_fails_the_check
     server.recorder().set_pieces(samples::mute_composite());
     let done = studio.finished_after(length()).await;
     assert_eq!(done.recording.state, RecordingState::Ready, "{done:?}");
+}
+
+/// A studio whose processing measures the drift of the sound every 15 seconds, or every
+/// `every`, and whose recorder gives the drifting files of two minutes (ADR 0606).
+async fn drifting(every: Duration, pieces: samples::Pieces) -> RecordingDetail {
+    let server = TestServer::start_for_calls_with(move |config| {
+        config.limits.recordings.drift_every = every;
+    })
+    .await;
+    let studio = Studio::on(server).await;
+    let server = &studio.scene.server;
+    server.recorder().set_track(samples::drifting_track());
+    server.recorder().set_pieces(pieces);
+    studio
+        .finished_after(Duration::seconds(i64::from(samples::DRIFT_SECONDS)))
+        .await
+}
+
+/// The sound of a composite drifts from the microphone files by 3.5 %, and both have many
+/// pauses: measured every 15 seconds, the sound of each microphone is followed through the
+/// composite, and the recording is ready.
+#[tokio::test]
+async fn a_composite_that_drifts_from_its_microphones_is_followed_and_passes() {
+    let done = drifting(Duration::seconds(15), samples::drifting_composite()).await;
+    let (composite, _) = parts(&done);
+    assert!(problems(composite).is_empty(), "{composite:?}");
+    assert_eq!(done.recording.state, RecordingState::Ready, "{done:?}");
+}
+
+/// The same files with one offset, measured at the start alone: the drift moves the pauses
+/// of the composite onto speech of the microphones, and the check finds sound missing near
+/// the end where none is. The measurement along the drift is what passes the files above.
+#[tokio::test]
+async fn one_offset_for_drifting_files_finds_sound_missing_where_none_is() {
+    let done = drifting(Duration::hours(1), samples::drifting_composite()).await;
+    let (composite, _) = parts(&done);
+    assert_eq!(problems(composite), [FileProblem::SoundMissing]);
+    let file = composite.file.as_ref().unwrap();
+    let (gap, start) = (
+        file.missing_sound.as_ref().unwrap(),
+        file.starts_at.unwrap(),
+    );
+    assert!(
+        gap.from - start > Duration::seconds(90),
+        "{gap:?} from {start}"
+    );
+}
+
+/// A stretch of 3 seconds removed from the sound of the drifting composite is found, at its
+/// place in the recording, while the drift around it is followed.
+#[tokio::test]
+async fn a_stretch_removed_from_a_drifting_composite_is_found_at_its_place() {
+    let done = drifting(Duration::seconds(15), samples::cut_drifting_composite()).await;
+    assert_eq!(done.recording.state, RecordingState::PartlyFailed);
+    let (composite, tracks) = parts(&done);
+    assert_eq!(problems(composite), [FileProblem::SoundMissing]);
+    assert!(tracks.iter().all(|track| problems(track).is_empty()));
+    let file = composite.file.as_ref().unwrap();
+    let (gap, start) = (
+        file.missing_sound.as_ref().unwrap(),
+        file.starts_at.unwrap(),
+    );
+    let (from, until) = samples::CUT;
+    let place = (gap.from - start).as_seconds_f64();
+    let length = (gap.until - gap.from).as_seconds_f64();
+    assert!(
+        (place - from).abs() < 0.6,
+        "the stretch starts at {place} s, not {from} s"
+    );
+    assert!(
+        (length - (until - from)).abs() < 0.6,
+        "the stretch is {length} s long"
+    );
 }
 
 #[tokio::test]

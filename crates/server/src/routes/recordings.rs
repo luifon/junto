@@ -32,6 +32,23 @@ use crate::{read, transact};
 const DEFAULT_PAGE: u32 = 50;
 const LARGEST_PAGE: u32 = 200;
 
+/// The language that a start request asks for (ADR 0604).
+enum Asked {
+    Named(String),
+    /// The default language of the server.
+    Default,
+}
+
+/// The language of a start request: absent is `auto`, as clients of API version 1 before the
+/// default language send it; `default` takes the default language of the server.
+fn asked_language(language: Option<&str>) -> ApiResult<Asked> {
+    match language {
+        None => Ok(Asked::Named("auto".to_owned())),
+        Some(junto_protocol::recording::DEFAULT_LANGUAGE) => Ok(Asked::Default),
+        Some(language) => checked_language(language).map(Asked::Named),
+    }
+}
+
 /// A language of recordings: `auto`, or a code of two or three lower-case letters, which is
 /// the form that the transcription job accepts (ADR 0611).
 fn checked_language(language: &str) -> ApiResult<String> {
@@ -146,7 +163,7 @@ pub async fn start_recording(
 ) -> ApiResult<Json<Recording>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
-    let named = body.language.as_deref().map(checked_language).transpose()?;
+    let asked = asked_language(body.language.as_deref())?;
     let new_id = RecordingId::generate();
     let limits = &app.config.limits.recordings;
     let free = app.recordings.free_bytes();
@@ -187,10 +204,10 @@ pub async fn start_recording(
             limits.reserve_bytes,
         )
         .await?;
-        // A request that names no language takes the default of the server (ADR 0604).
-        let language = match &named {
-            Some(language) => language.clone(),
-            None => default_language(connection).await?,
+        // `default` takes the default language of the server (ADR 0604).
+        let language = match &asked {
+            Asked::Named(language) => language.clone(),
+            Asked::Default => default_language(connection).await?,
         };
         let new = NewRecording {
             id: new_id,
