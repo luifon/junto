@@ -240,7 +240,6 @@ impl Layer {
             | Layer::DirectMenu(..)
             | Layer::SearchFilter(..)
             | Layer::RecordingFiles(..)
-            | Layer::RecordingParts(..)
             | Layer::Presence(..)
             | Layer::RecordLanguage
             | Layer::JoinMenu(..)

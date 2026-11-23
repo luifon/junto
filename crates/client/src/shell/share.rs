@@ -1818,7 +1818,7 @@ impl Shell {
             .selector("share-sound-control")
             .on_click(cx.listener(|this, _, window, cx| {
                 cx.stop_propagation();
-                this.open_own_menu(Layer::ShareSound, window, cx);
+                this.open_own_controls_menu(Layer::ShareSound, window, cx);
             }));
         let menu = matches!(self.layer, Layer::ShareSound).then(|| {
             let mut items = vec![

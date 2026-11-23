@@ -128,7 +128,11 @@ fn a_section_ends_after_its_last_control_and_its_help(cx: &mut TestAppContext) {
         // The daily quiet time ends the section; without a server it states that.
         (SettingsSection::Notifications, "quiet-no-server", 2.0),
         // The switch of the last sound of the last group ends the section (ADR 0707).
-        (SettingsSection::Sounds, "sound-kind-recording-stopped-row", 2.0),
+        (
+            SettingsSection::Sounds,
+            "sound-kind-recording-stopped-row",
+            2.0,
+        ),
     ] {
         window.click(section.selector());
         let page = bounds(&mut window, selector(page(section)));

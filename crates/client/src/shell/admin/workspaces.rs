@@ -156,7 +156,7 @@ impl Shell {
         let workspace_id: WorkspaceId = row.id;
         let name = row.name.clone();
         let content: AnyElement = match self.admin.mode {
-            Some(Mode::RenameWorkspace(id)) if id == workspace_id && page.may_manage => self
+            Some(Mode::RenameWorkspace(id)) if id == workspace_id && manages => self
                 .render_form(
                     Form {
                         field: FormField::Name,
@@ -173,7 +173,7 @@ impl Shell {
                 )
                 .into_any_element(),
             Some(Mode::RemoveWorkspaceLogo(id))
-                if id == workspace_id && row.has_logo && page.may_manage =>
+                if id == workspace_id && row.has_logo && manages =>
             {
                 self.render_row_question(
                     Question {
@@ -194,7 +194,7 @@ impl Shell {
                 )
                 .into_any_element()
             }
-            Some(Mode::DeleteWorkspace(id)) if id == workspace_id && page.may_manage => self
+            Some(Mode::DeleteWorkspace(id)) if id == workspace_id && manages => self
                 .render_row_question(
                     Question {
                         sentence: text::admin::delete_workspace_question(&row.name).into(),

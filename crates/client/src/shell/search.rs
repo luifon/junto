@@ -697,22 +697,26 @@ impl Shell {
             _ if files => format!("{found} files").into(),
             _ => text::results_for(found, panel.more, &panel.text).into(),
         };
-        let header = SideHeader::new(if files { text::search::FILES } else { text::SEARCH })
-            .title_bar()
-            .icon(if files {
-                Icon::FolderOpen
-            } else {
-                Icon::Search
-            })
-            .note(note)
-            .trailing(
-                Button::new("close-search")
-                    .kind(ButtonKind::Ghost)
-                    .icon(Icon::X)
-                    .tooltip(text::CLOSE_SEARCH)
-                    .selector("close-search")
-                    .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
-            );
+        let header = SideHeader::new(if files {
+            text::search::FILES
+        } else {
+            text::SEARCH
+        })
+        .title_bar()
+        .icon(if files {
+            Icon::FolderOpen
+        } else {
+            Icon::Search
+        })
+        .note(note)
+        .trailing(
+            Button::new("close-search")
+                .kind(ButtonKind::Ghost)
+                .icon(Icon::X)
+                .tooltip(text::CLOSE_SEARCH)
+                .selector("close-search")
+                .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
+        );
         // The Files panel of a voice channel has the tabs Files and Recordings (ADR 0784).
         let voice_channel = panel
             .channel

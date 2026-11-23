@@ -2172,7 +2172,7 @@ impl Shell {
                     .accessible_label(text::VIEW)
                     .selector("own-view")
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_own_menu(Layer::ViewMenu, window, cx);
+                        this.open_own_controls_menu(Layer::ViewMenu, window, cx);
                     })),
             )
             .children(view_menu);
@@ -2235,7 +2235,7 @@ impl Shell {
                         .accessible_label(text::MORE_CALL_CONTROLS)
                         .selector("own-more")
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_own_menu(Layer::OwnControlsMore, window, cx);
+                            this.open_own_controls_menu(Layer::OwnControlsMore, window, cx);
                         })),
                 )
                 .children(menu)
@@ -2293,7 +2293,7 @@ impl Shell {
 
     /// Opens a menu of the row of own controls; a press on the button of the open menu
     /// closes it and does not open it again.
-    pub(super) fn open_own_menu(
+    pub(super) fn open_own_controls_menu(
         &mut self,
         layer: Layer,
         window: &mut Window,
