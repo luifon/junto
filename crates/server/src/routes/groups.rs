@@ -18,12 +18,15 @@ use junto_protocol::{
     },
 };
 
+/// Publishes the change of a group and gives the group as the reader's client reads it
+/// (ADR 0302).
 async fn changed(
     connection: &mut sqlx::PgConnection,
     app: &AppState,
+    reader: junto_protocol::ids::AccountId,
     id: ConversationId,
 ) -> ApiResult<GroupConversation> {
-    let group = groups::load(connection, id).await?;
+    let mut group = groups::load(connection, id).await?;
     events::publish(
         connection,
         app.now(),
@@ -32,6 +35,7 @@ async fn changed(
         },
     )
     .await?;
+    groups::named_for_reader(connection, reader, std::slice::from_mut(&mut group)).await?;
     Ok(group)
 }
 
@@ -75,7 +79,7 @@ pub async fn create_group(
             .await?
             .ensure(connection)
             .await?;
-        changed(connection, &app, id).await
+        changed(connection, &app, access.account_id, id).await
     })?;
     Ok((StatusCode::CREATED, Json(group)))
 }
@@ -87,7 +91,9 @@ pub async fn list_groups(
 ) -> ApiResult<Json<Vec<GroupConversation>>> {
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        groups::list(connection, &access).await
+        let mut listed = groups::list(connection, &access).await?;
+        groups::named_for_reader(connection, access.account_id, &mut listed).await?;
+        Ok(listed)
     })
     .map(Json)
 }
@@ -107,7 +113,28 @@ pub async fn list_group_memberships(
         let rows: Vec<(ConversationId, String)> = sqlx::query_as(
             "select c.id,c.name from conversations c join conversation_members m on m.conversation_id=c.id
              where m.account_id=$1 and c.name is not null order by lower(c.name),c.id",
-        ).bind(access.account_id).fetch_all(connection).await?;
+        ).bind(access.account_id).fetch_all(&mut *connection).await?;
+        // A client of 0.2 receives a name for a group without one (ADR 0302).
+        if !groups::optional_names() && rows.iter().any(|(_, name)| name.is_empty()) {
+            let mut held = groups::list(connection, &access).await?;
+            groups::named_for_reader(connection, access.account_id, &mut held).await?;
+            return Ok(rows
+                .into_iter()
+                .map(|(id, name)| {
+                    let name = if name.is_empty() {
+                        held.iter()
+                            .find(|group| group.id == id)
+                            .map_or_else(
+                                || "Group conversation".to_owned(),
+                                |group| group.name.clone(),
+                            )
+                    } else {
+                        name
+                    };
+                    GroupMembership { id, name }
+                })
+                .collect());
+        }
         Ok(rows.into_iter().map(|(id,name)| GroupMembership { id,name }).collect())
     }).map(Json)
 }
@@ -130,7 +157,7 @@ pub async fn rename_group(
             .bind(&name)
             .execute(&mut *connection)
             .await?;
-        changed(connection, &app, id).await
+        changed(connection, &app, access.account_id, id).await
     })
     .map(Json)
 }
@@ -171,7 +198,7 @@ pub async fn add_group_member(
             .execute(&mut *connection)
             .await?;
         }
-        changed(connection, &app, id).await
+        changed(connection, &app, access.account_id, id).await
     })
     .map(Json)
 }
@@ -216,7 +243,7 @@ pub async fn leave_group(
             },
         )
         .await?;
-        changed(connection, &app, id).await?;
+        changed(connection, &app, access.account_id, id).await?;
         Ok(())
     })?;
     app.calls.poke();

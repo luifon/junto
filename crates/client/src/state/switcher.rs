@@ -466,7 +466,7 @@ impl AppState {
             for group in &model.group_conversations {
                 view.rows.push(SwitchRow {
                     destination: Destination::Conversation(server.id, group.id),
-                    name: crate::text::conversations::group_name(&group.name, &[]),
+                    name: super::view::group_title(server.id, group, None, model, &self.known),
                     context: text::switcher::server_context(&server.name, &server.address),
                     unread: unreads.at(PlaceId::Direct(group.id)).unread(),
                     voice: false,

@@ -450,6 +450,18 @@ fn an_unnamed_group_shows_its_people_and_its_header_offers_call_and_people(
         window.shows("group-people-panel")
             && window.shows_named(format!("group-member-{}", logged_in(&reader)))
     });
+    // Search names the group by its people as the conversation list does (ADR 0302).
+    window.search_here_for("plan");
+    let panel = window.until_searched();
+    assert!(
+        panel
+            .conversations
+            .iter()
+            .any(|(id, name)| *id == group.id && name.contains("Reader") && name.contains("Third")),
+        "{:?}",
+        panel.conversations
+    );
+    window.press("escape");
 
     // A conversation of two has the profile of the other person in place of People.
     let pair = world
@@ -469,4 +481,77 @@ fn an_unnamed_group_shows_its_people_and_its_header_offers_call_and_people(
     window.until("the conversation is hidden", |window| {
         !window.shows_named(format!("direct-row:{}", pair.id))
     });
+}
+
+/// The side panel "People" stays open when another group is shown, and then belongs to that
+/// group: its name field, its leave confirmation and its Save act on the shown group only
+/// (ADR 0741).
+#[gpui::test]
+fn the_people_panel_belongs_to_the_group_that_is_shown(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let code = invite(&world, &admin.handle, Vec::new());
+    let (_reader_device, reader) = joined(&world, &server, &code, "Reader");
+    let code = invite(&world, &admin.handle, Vec::new());
+    let (_third_device, third) = joined(&world, &server, &code, "Third");
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Writer");
+    let writer = window.own_account();
+    let group = |name: &str| {
+        world
+            .run(
+                reader
+                    .api()
+                    .create_group(name.to_owned(), vec![writer, logged_in(&third)]),
+            )
+            .unwrap()
+    };
+    let (first, second) = (group("First"), group("Second"));
+    for id in [first.id, second.id] {
+        window.until("the group is listed", |window| {
+            window.shows_named(format!("direct-row:{id}"))
+        });
+    }
+    window.click_named(format!("direct-row:{}", first.id));
+    window.until("the first group is shown", |window| {
+        window.shows("conversation-people")
+    });
+    window.click("conversation-people");
+    window.until("the panel of the first group", |window| {
+        window.shows("group-people-panel")
+    });
+    window.type_into("group-name", " changed");
+    window.click("group-leave");
+    assert!(window.shows("group-leave-confirm"));
+
+    window.click_named(format!("direct-row:{}", second.id));
+    window.until("the panel belongs to the second group", |window| {
+        window.shows("group-people-panel")
+            && window.in_shell(|shell, _, cx| shell.group_name_field(cx)) == "Second"
+    });
+    assert!(!window.shows("group-leave-confirm"));
+    // Save renames the shown group with its own name, and the first group keeps its name.
+    window.type_into("group-name", " plans");
+    window.click("group-rename");
+    window.until("the second group has its new name", |window| {
+        window.view().lists().is_some_and(|lists| {
+            lists
+                .directs
+                .iter()
+                .any(|row| row.id == second.id && row.name.as_deref() == Some("Second plans"))
+        })
+    });
+    let groups = world.run(reader.api().groups()).unwrap();
+    let name_of = |id| {
+        groups
+            .iter()
+            .find(|held| held.id == id)
+            .map(|held| held.name.clone())
+    };
+    assert_eq!(name_of(first.id).as_deref(), Some("First"));
+    assert!(
+        groups
+            .iter()
+            .any(|held| held.id == first.id && held.account_ids.contains(&writer))
+    );
 }

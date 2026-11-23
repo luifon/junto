@@ -2126,6 +2126,42 @@ fn target_of(
 
 /// The name of an account: from the member list of the shown workspace, when there is one,
 /// and from the profiles that were read otherwise.
+/// The name of a group as the window shows it on every surface (ADR 0302): its name, or the
+/// names of its present members other than the own account.
+pub(crate) fn group_title(
+    server_id: ServerId,
+    group: &junto_client_core::protocol::message::GroupConversation,
+    workspace: Option<&WorkspaceModel>,
+    model: &ServerModel,
+    known: &Known,
+) -> String {
+    crate::text::conversations::group_title(
+        &group.name,
+        &group.account_ids,
+        model.account.id,
+        |id| {
+            known
+                .people
+                .departure(server_id, id)
+                .is_none()
+                .then(|| name_of(server_id, id, workspace, model, known))
+                .flatten()
+        },
+    )
+}
+
+impl super::AppState {
+    /// [`group_title`] for a part of the window outside the derived view.
+    pub(crate) fn group_title(
+        &self,
+        server_id: ServerId,
+        model: &ServerModel,
+        group: &junto_client_core::protocol::message::GroupConversation,
+    ) -> String {
+        group_title(server_id, group, None, model, &self.known)
+    }
+}
+
 fn name_of(
     server_id: ServerId,
     account_id: AccountId,
@@ -2840,8 +2876,7 @@ fn directs(
             .collect();
         // A group without a name shows the names of its members, computed when shown
         // (ADR 0302).
-        let names: Vec<String> = members.iter().map(|(_, name)| name.clone()).collect();
-        let name = crate::text::conversations::group_name(&group.name, &names);
+        let name = group_title(server_id, group, workspace, model, known);
         DirectRow {
             id: group.id,
             account_id: None,

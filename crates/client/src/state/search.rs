@@ -428,7 +428,12 @@ fn place_of(
     {
         return (
             Whereabouts::Direct {
-                name: Some(text::conversations::group_name(&group.name, &[])),
+                name: Some(text::conversations::group_title(
+                    &group.name,
+                    &group.account_ids,
+                    model.account.id,
+                    |id| accounts.get(&id).cloned(),
+                )),
             },
             None,
         );
@@ -681,15 +686,9 @@ fn panel(
             (conversation.id, name_of(other))
         })
         .chain(model.group_conversations.iter().map(|group| {
-            let members: Vec<String> = group
-                .account_ids
-                .iter()
-                .filter(|id| **id != own)
-                .map(|id| name_of(*id))
-                .collect();
             (
                 group.id,
-                text::conversations::group_name(&group.name, &members),
+                super::view::group_title(server_id, group, workspace, model, known),
             )
         }))
         .collect();

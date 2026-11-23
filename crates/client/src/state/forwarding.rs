@@ -112,12 +112,12 @@ impl AppState {
                     place: PlaceId::Direct(group.id),
                     label: format!(
                         "{name} · {}",
-                        text::conversations::group_name(&group.name, &[])
+                        super::view::group_title(server_id, group, None, &model, &self.known)
                     ),
                 });
             }
-            // The open threads, the unread threads and the followed threads of the shown
-            // channel (ADR 0740).
+            // The open threads, the unread threads, the followed threads of the shown
+            // channel and of its workspace (ADR 0740).
             let followed = self
                 .known
                 .followed
@@ -239,7 +239,10 @@ impl AppState {
                 else {
                     return Preview::Unavailable;
                 };
-                (None, text::conversations::group_name(&group.name, &[]))
+                (
+                    None,
+                    super::view::group_title(server.id(), group, None, &model, &self.known),
+                )
             }
             MessagePlace::Direct {
                 conversation_id, ..

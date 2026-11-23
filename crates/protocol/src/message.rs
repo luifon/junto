@@ -1,6 +1,14 @@
 //! Text messages and attachment uploads (ADR 0408).
 
+/// The header with which a client tells the group conversations that it reads. A client
+/// that sends `GROUPS_WITH_REQUIRED_NAMES` receives a name for a group without a name
+/// (ADR 0302).
 pub const GROUPS_HEADER: &str = "junto-group-conversations";
+/// The value of `GROUPS_HEADER` of a client that reads group conversations and requires
+/// each group to have a name: the clients of 0.2.
+pub const GROUPS_WITH_REQUIRED_NAMES: &str = "1";
+/// The value of `GROUPS_HEADER` of a client that reads group conversations without a name.
+pub const GROUPS_WITH_OPTIONAL_NAMES: &str = "2";
 use crate::ids::{
     AccountId, AttachmentId, ChannelId, ConversationId, MessageId, RecordingId, WorkspaceId,
     WorkspaceRoleId,

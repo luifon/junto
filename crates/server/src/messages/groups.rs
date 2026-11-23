@@ -11,30 +11,134 @@ use junto_protocol::{
 use sqlx::PgConnection;
 use std::collections::{HashMap, HashSet};
 
-tokio::task_local! { static SUPPORTED: bool; }
-
-pub fn supported() -> bool {
-    SUPPORTED.try_with(|value| *value).unwrap_or(true)
+/// What the client of a request reads of group conversations (ADR 0302).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Support {
+    /// The client reads group places on the routes that existed before them.
+    pub groups: bool,
+    /// The client reads a group without a name. A client of 0.2 drops such a group, so it
+    /// receives a name made of the names of the other members, which is not stored.
+    pub optional_names: bool,
 }
 
-pub async fn with_support<T>(on: bool, future: impl std::future::Future<Output = T>) -> T {
-    SUPPORTED.scope(on, future).await
+impl Support {
+    const ALL: Self = Self {
+        groups: true,
+        optional_names: true,
+    };
+}
+
+tokio::task_local! { static SUPPORTED: Support; }
+
+pub fn supported() -> bool {
+    support().groups
+}
+
+pub fn optional_names() -> bool {
+    support().optional_names
+}
+
+pub fn support() -> Support {
+    SUPPORTED.try_with(|value| *value).unwrap_or(Support::ALL)
+}
+
+pub async fn with_support<T>(support: Support, future: impl std::future::Future<Output = T>) -> T {
+    SUPPORTED.scope(support, future).await
 }
 
 pub async fn negotiate(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let on = !request.uri().path().starts_with("/api/v1/")
-        || request
-            .uri()
-            .path()
-            .starts_with("/api/v1/group-conversations")
-        || request
-            .headers()
-            .get(junto_protocol::message::GROUPS_HEADER)
-            .is_some_and(|value| value == "1");
-    with_support(on, next.run(request)).await
+    use junto_protocol::message::{GROUPS_WITH_OPTIONAL_NAMES, GROUPS_WITH_REQUIRED_NAMES};
+    let value = request
+        .headers()
+        .get(junto_protocol::message::GROUPS_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let support = Support {
+        groups: !request.uri().path().starts_with("/api/v1/")
+            || request
+                .uri()
+                .path()
+                .starts_with("/api/v1/group-conversations")
+            || matches!(
+                value,
+                Some(GROUPS_WITH_REQUIRED_NAMES | GROUPS_WITH_OPTIONAL_NAMES)
+            ),
+        optional_names: value != Some(GROUPS_WITH_REQUIRED_NAMES),
+    };
+    with_support(support, next.run(request)).await
+}
+
+/// The name that a client of 0.2 receives for a group without a name: the names of the
+/// members other than the reader in the order of their names, at most 80 characters, which
+/// that client requires (ADR 0302).
+fn name_of_members(
+    group: &GroupConversation,
+    reader: Option<AccountId>,
+    names: &HashMap<AccountId, String>,
+) -> String {
+    let mut others: Vec<&str> = group
+        .account_ids
+        .iter()
+        .filter(|id| Some(**id) != reader)
+        .filter_map(|id| names.get(id).map(String::as_str))
+        .collect();
+    others.sort_by_key(|name| name.to_lowercase());
+    let joined = others.join(", ");
+    if joined.is_empty() {
+        return "Group conversation".to_owned();
+    }
+    if joined.chars().count() <= 80 {
+        return joined;
+    }
+    let mut short: String = joined.chars().take(79).collect();
+    short.push('…');
+    short
+}
+
+/// Gives each group without a name the name of [`name_of_members`] when the client of the
+/// request requires a name. The stored name stays empty.
+pub async fn named_for_reader(
+    connection: &mut PgConnection,
+    reader: AccountId,
+    groups: &mut [GroupConversation],
+) -> ApiResult<()> {
+    if optional_names() {
+        return Ok(());
+    }
+    name_unnamed(connection, Some(reader), groups).await
+}
+
+/// Gives each group without a name the names of its members other than the reader, for a
+/// text that the server writes itself, such as the title of an export.
+pub async fn name_unnamed(
+    connection: &mut PgConnection,
+    reader: Option<AccountId>,
+    groups: &mut [GroupConversation],
+) -> ApiResult<()> {
+    if groups.iter().all(|group| !group.name.is_empty()) {
+        return Ok(());
+    }
+    let mut members: Vec<AccountId> = groups
+        .iter()
+        .filter(|group| group.name.is_empty())
+        .flat_map(|group| group.account_ids.iter().copied())
+        .filter(|id| Some(*id) != reader)
+        .collect();
+    members.sort_unstable();
+    members.dedup();
+    let names: HashMap<AccountId, String> =
+        sqlx::query_as("select id,name from accounts where id=any($1) and name is not null")
+            .bind(&members)
+            .fetch_all(connection)
+            .await?
+            .into_iter()
+            .collect();
+    for group in groups.iter_mut().filter(|group| group.name.is_empty()) {
+        group.name = name_of_members(group, reader, &names);
+    }
+    Ok(())
 }
 
 /// The name of a group conversation: at most 80 characters without controls. An empty

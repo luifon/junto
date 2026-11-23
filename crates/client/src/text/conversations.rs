@@ -24,6 +24,25 @@ pub fn group_name(name: &str, members: &[String]) -> String {
     }
     members.join(", ")
 }
+/// The name of a group conversation from its members: every surface that names a group uses
+/// it, so that a group without a name has the same name everywhere (ADR 0302). `name_of`
+/// gives the name of a present member and nothing for a member who left.
+pub fn group_title(
+    name: &str,
+    account_ids: &[junto_client_core::protocol::ids::AccountId],
+    own: junto_client_core::protocol::ids::AccountId,
+    name_of: impl Fn(junto_client_core::protocol::ids::AccountId) -> Option<String>,
+) -> String {
+    if !name.trim().is_empty() {
+        return group_name(name, &[]);
+    }
+    let members: Vec<String> = account_ids
+        .iter()
+        .filter(|id| **id != own)
+        .filter_map(|id| name_of(*id))
+        .collect();
+    group_name(name, &members)
+}
 pub const NEW: &str = "New group conversation";
 pub const CREATE: &str = "Create group";
 pub const SAVE_NAME: &str = "Save name";

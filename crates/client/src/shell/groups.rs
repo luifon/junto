@@ -39,6 +39,9 @@ pub(crate) struct Groups {
     pub busy: bool,
     pub failed: Option<String>,
     pub leaving: bool,
+    /// The group whose side panel "People" the fields, the confirmation and the request
+    /// belong to (ADR 0741).
+    pub panel: Option<(Owner, ConversationId)>,
     generation: u64,
 }
 impl Groups {
@@ -50,6 +53,7 @@ impl Groups {
             busy: false,
             failed: None,
             leaving: false,
+            panel: None,
             generation: 0,
         }
     }
@@ -148,11 +152,7 @@ impl Shell {
         let Some(group) = self.shown_group(owner, id, cx) else {
             return;
         };
-        self.groups.reset();
-        self.groups.mode = Some(mode);
-        self.groups
-            .name
-            .update(cx, |field, cx| field.set_value(group.name, window, cx));
+        self.bind_group_people(owner, id, group.name, window, cx);
         if !matches!(self.layer, Layer::None) {
             self.close_layer(window, cx);
         }
@@ -314,18 +314,47 @@ impl Shell {
         .detach();
         cx.notify();
     }
+    /// The text of the name field of the side panel "People", for the window tests.
+    #[cfg(feature = "test-support")]
+    pub fn group_name_field(&self, cx: &gpui::App) -> String {
+        self.groups.name.read(cx).value().to_string()
+    }
+
+    /// Binds the side panel "People" to one group: its name field, its confirmation and its
+    /// request start again, and an answer to a request for the group before is dropped.
+    fn bind_group_people(
+        &mut self,
+        owner: Owner,
+        id: ConversationId,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.groups.reset();
+        self.groups.mode = Some(Mode::Details(owner, id));
+        self.groups.panel = Some((owner, id));
+        self.groups
+            .name
+            .update(cx, |field, cx| field.set_value(name, window, cx));
+    }
+
     /// The side panel "People" of a group conversation: its name, its people, "Add people"
     /// and "Leave conversation" (ADR 0741).
     pub(crate) fn render_group_people(
         &mut self,
         owner: Owner,
         id: ConversationId,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = crate::theme::theme(cx);
         let Some(group) = self.shown_group(owner, id, cx) else {
             return div().into_any_element();
         };
+        // The panel stays open when another group is shown: it then belongs to that group.
+        if self.groups.panel != Some((owner, id)) {
+            self.bind_group_people(owner, id, group.name.clone(), window, cx);
+        }
         let may_add = group.account_ids.len() < 10;
         let mut people = div().flex().flex_col().gap(u(6.0)).px(u(14.0)).pt(u(8.0));
         for account in group.account_ids {
@@ -400,6 +429,9 @@ impl Shell {
                                 .selector("group-rename")
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, window, cx| {
+                                    if this.groups.panel != Some((owner, id)) {
+                                        return;
+                                    }
                                     this.groups.mode = Some(details);
                                     this.save_group(false, window, cx)
                                 })),
@@ -444,6 +476,9 @@ impl Shell {
                                 .selector("group-leave-confirm")
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, window, cx| {
+                                    if this.groups.panel != Some((owner, id)) {
+                                        return;
+                                    }
                                     this.groups.mode = Some(details);
                                     this.save_group(true, window, cx)
                                 })),

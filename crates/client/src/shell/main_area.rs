@@ -100,8 +100,12 @@ impl Shell {
                     (None, None, None, Some(search)) => {
                         Some((Panel::Search, this.render_search_panel(search, window, cx)))
                     }
-                    _ => members_open
-                        .then(|| (Panel::Members, this.render_members(lists, &theme, cx))),
+                    _ => members_open.then(|| {
+                        (
+                            Panel::Members,
+                            this.render_members(lists, &theme, window, cx),
+                        )
+                    }),
                 }
             };
 
@@ -1597,6 +1601,7 @@ impl Shell {
         &mut self,
         lists: &ServerLists,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // A group conversation shows its own people (ADR 0741).
@@ -1611,7 +1616,7 @@ impl Shell {
                 .and_then(|server| self.state.read(cx).server(server.id))
                 .and_then(|server| server.owner())
         {
-            return self.render_group_people(owner, group.id, cx);
+            return self.render_group_people(owner, group.id, window, cx);
         }
         let workspace = lists.workspace.as_ref();
         let colors = theme.colors;
