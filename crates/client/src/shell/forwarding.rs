@@ -209,6 +209,8 @@ impl Shell {
             .map(|target| (target.server_id, target.place));
         let waiting = dialog.request.is_some();
         let error = dialog.error.clone();
+        let threads_failed = self.state.read(cx).forward_threads_failure()
+            == Some(crate::state::followed::ListFailure::Failed);
         let scroll = dialog.scroll.clone();
         let mut targets = self.state.read(cx).forward_destinations();
         if let Some(target) = selected_target
@@ -285,6 +287,21 @@ impl Shell {
                         gpui_base::input::Textarea::new(&comment),
                     )),
             )
+            // The followed threads that could not be read are told, with a read again, so
+            // that a missing destination is not silent (ADR 0740).
+            .children(threads_failed.then(|| {
+                Notice::error(text::FORWARD_THREADS_FAILED)
+                    .selector("forward-threads-failed")
+                    .action(
+                        Button::new("forward-threads-retry")
+                            .label(text::TRY_AGAIN)
+                            .selector("forward-threads-retry")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.retry_forward_threads(cx));
+                            })),
+                    )
+            }))
             .child(
                 crate::ui::notice_slot("forward-error-slot")
                     .centred()

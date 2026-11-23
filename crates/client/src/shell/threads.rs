@@ -1061,6 +1061,37 @@ impl Shell {
             ScrollArea::new("followed-threads", &self.followed_scroll, text::THREADS)
                 .selector("followed-threads")
                 .children(rows)
+                // A read that failed after rows arrived is told under them, with the read
+                // again (ADR 0796).
+                .when(
+                    panel.failure == Some(crate::state::followed::ListFailure::Failed),
+                    |list| {
+                        list.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(u(8.0))
+                                .px(u(14.0))
+                                .pt(u(8.0))
+                                .child(
+                                    crate::ui::Notice::error(text::FOLLOWED_THREADS_FAILED)
+                                        .selector("followed-failed"),
+                                )
+                                .child(
+                                    div().flex().child(
+                                        Button::new("followed-retry-more")
+                                            .label(text::TRY_AGAIN)
+                                            .selector("followed-retry")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.state.update(cx, |state, cx| {
+                                                    state.retry_followed_threads(cx)
+                                                });
+                                            })),
+                                    ),
+                                ),
+                        )
+                    },
+                )
                 .when(panel.more, |list| {
                     list.child(
                         div().flex().px(u(14.0)).py(u(8.0)).child(

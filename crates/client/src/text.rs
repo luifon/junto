@@ -3610,6 +3610,8 @@ pub const FORWARD_VERIFIED_ABOUT: &str =
     "This server made the copy from the original message, which has not changed it since.";
 pub const FORWARD_EDITED_ABOUT: &str = "The copy was edited after it was forwarded, so this server does not confirm that it matches the original message.";
 pub const FORWARD_REMOTE_ABOUT: &str = "The copy comes from another server, which this server does not ask: it does not confirm that the copy matches the original message.";
+pub const FORWARD_THREADS_FAILED: &str =
+    "The followed threads could not be read, so they are missing from the destinations.";
 pub const FORWARD_COMMENT: &str = "Comment (optional)";
 pub const FORWARD_MESSAGE: &str = "Forward message";
 pub const FORWARD_SEND: &str = "Forward";

@@ -343,6 +343,8 @@ pub struct FollowedList<K = ChannelId> {
     reads: u64,
     /// Why the list holds no answer, until a read succeeds or another key is shown.
     failure: Option<ListFailure>,
+    /// The read that failed was a further page: "Try again" reads that page again.
+    failed_further: bool,
 }
 
 /// The threads that a read of the list from its start asks for: as many pages as are
@@ -360,6 +362,7 @@ impl<K> Default for FollowedList<K> {
             seen: Seen::default(),
             reads: 0,
             failure: None,
+            failed_further: false,
         }
     }
 }
@@ -468,6 +471,11 @@ impl<K: Copy + PartialEq> FollowedList<K> {
         if self.channel.is_none() {
             return false;
         }
+        // "Show more" after a failed read asks again too.
+        if self.failure == Some(ListFailure::Failed) {
+            self.failure = None;
+            self.wanted |= !self.failed_further;
+        }
         self.wanted_further = self.more;
         true
     }
@@ -487,6 +495,7 @@ impl<K: Copy + PartialEq> FollowedList<K> {
         // A read that was sent for another key fails for nobody.
         if !reading.dropped {
             self.failure = Some(ListFailure::Failed);
+            self.failed_further = reading.further;
         }
         true
     }
@@ -502,13 +511,18 @@ impl<K: Copy + PartialEq> FollowedList<K> {
         true
     }
 
-    /// The person reads a list that failed again.
+    /// The person reads a list that failed again: the read that failed, the list from its
+    /// start or the further page.
     pub fn retry(&mut self) -> bool {
         if self.failure != Some(ListFailure::Failed) {
             return false;
         }
         self.failure = None;
-        self.wanted = true;
+        if self.failed_further {
+            self.wanted_further = self.more;
+        } else {
+            self.wanted = true;
+        }
         true
     }
 
@@ -2170,6 +2184,53 @@ mod tests {
         assert_eq!(refresh_limit(50), 50);
         assert_eq!(refresh_limit(51), 100);
         assert_eq!(refresh_limit(1000), 200);
+    }
+
+    #[test]
+    fn a_failed_further_page_is_told_and_read_again_by_try_again_or_show_more() {
+        let shown = channel();
+        let first = states(50);
+        let mut list = FollowedList::default();
+        list.show(Some(shown));
+        let read = list.next_read().unwrap();
+        list.answered(read.number, Some(page(first.clone(), Some("after-50"))));
+        list.expand();
+        let further = list.next_read().unwrap();
+        assert!(list.failed(further.number));
+        // The rows stay, the failure is told, and nothing reads by itself.
+        assert_eq!(list.threads, first);
+        assert_eq!(list.failure(), Some(ListFailure::Failed));
+        assert_eq!(list.next_read(), None);
+        // "Try again" reads the same page.
+        assert!(list.retry());
+        let again = list.next_read().unwrap();
+        assert_eq!(again.before.as_deref(), Some("after-50"));
+        assert!(list.failed(again.number));
+        // "Show more" reads it too.
+        assert!(list.expand());
+        assert_eq!(list.failure(), None);
+        let more = list.next_read().unwrap();
+        assert_eq!(more.before.as_deref(), Some("after-50"));
+        list.answered(more.number, Some(page(states(3), None)));
+        assert_eq!(list.threads.len(), 53);
+    }
+
+    #[test]
+    fn a_failed_read_from_the_start_is_read_again_by_try_again_with_the_rows_kept() {
+        let shown = channel();
+        let held = states(2);
+        let mut list = FollowedList::default();
+        list.show(Some(shown));
+        let read = list.next_read().unwrap();
+        list.answered(read.number, Some(page(held.clone(), None)));
+        list.trigger(shown.0);
+        let refresh = list.next_read().unwrap();
+        assert!(list.failed(refresh.number));
+        assert_eq!(list.threads, held);
+        assert_eq!(list.next_read(), None);
+        assert!(list.retry());
+        let again = list.next_read().unwrap();
+        assert_eq!(again.before, None);
     }
 
     #[test]

@@ -68,6 +68,18 @@ impl AppState {
 
     /// Reads the page of the followed threads of the workspace after the listed ones.
     /// Reads the followed threads of the side panel "Threads" again after a failed read.
+    /// Why the followed threads of the forward dialog are missing from its destinations.
+    pub(crate) fn forward_threads_failure(&self) -> Option<super::followed::ListFailure> {
+        self.known.followed.forward.failure()
+    }
+
+    /// The person reads the followed threads of the forward dialog again.
+    pub(crate) fn retry_forward_threads(&mut self, cx: &mut Context<Self>) {
+        if self.known.followed.forward.retry() {
+            self.changed(cx);
+        }
+    }
+
     pub fn retry_followed_threads(&mut self, cx: &mut Context<Self>) {
         if self.known.followed.workspace.retry() {
             self.changed(cx);
