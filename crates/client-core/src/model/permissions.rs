@@ -96,7 +96,6 @@ impl ServerModel {
                         permissions: WorkspacePermissions::EMPTY,
                     })
                     .collect(),
-                person_override: Override::NONE,
             },
             everyone_override: Override::NONE,
             role_overrides: Vec::new(),

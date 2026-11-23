@@ -32,9 +32,9 @@ const THEMES: [ThemeChoice; 3] = [ThemeChoice::Light, ThemeChoice::Dark, ThemeCh
 /// The sections of the settings, in the order of their list. One is shown at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsSection {
+    /// The name and the picture that a new account of this device starts with (ADR 0717).
     #[default]
     Profile,
-    Picture,
     Interface,
     VoiceAndVideo,
     /// The settings of the room of the call of this device (ADR 0739).
@@ -50,9 +50,8 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 11] = [
         Self::Profile,
-        Self::Picture,
         Self::Interface,
         Self::VoiceAndVideo,
         Self::Call,
@@ -67,8 +66,7 @@ impl SettingsSection {
 
     pub fn name(self) -> &'static str {
         match self {
-            Self::Profile => text::PROFILE,
-            Self::Picture => text::PICTURE,
+            Self::Profile => text::NEW_SERVER_PROFILE,
             Self::Interface => text::INTERFACE,
             Self::VoiceAndVideo => text::VOICE_AND_VIDEO,
             Self::Call => text::CALL_SECTION,
@@ -85,7 +83,6 @@ impl SettingsSection {
     fn icon(self) -> Icon {
         match self {
             Self::Profile => Icon::Person,
-            Self::Picture => Icon::Picture,
             Self::Interface => Icon::AppWindow,
             Self::VoiceAndVideo => Icon::Microphone,
             Self::Call => Icon::Phone,
@@ -103,7 +100,6 @@ impl SettingsSection {
     pub fn selector(self) -> &'static str {
         match self {
             Self::Profile => "settings-section-profile",
-            Self::Picture => "settings-section-picture",
             Self::Interface => "settings-section-interface",
             Self::VoiceAndVideo => "settings-section-voice-and-video",
             Self::Call => "settings-section-call",
@@ -417,9 +413,8 @@ impl Shell {
             );
         }
         let parts: Vec<AnyElement> = match section {
-            SettingsSection::Profile => self.render_profile_section(&theme, cx),
-            SettingsSection::Picture => {
-                let mut parts = vec![group_label(text::PICTURE, &theme).into_any_element()];
+            SettingsSection::Profile => {
+                let mut parts = self.render_profile_section(&theme, cx);
                 parts.extend(self.render_preset_picture(&theme, cx));
                 parts
             }
@@ -475,7 +470,7 @@ impl Shell {
     /// The name of the profile preset.
     fn render_profile_section(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         vec![
-            group_label(text::PROFILE, theme).into_any_element(),
+            group_label(text::NEW_SERVER_PROFILE, theme).into_any_element(),
             div()
                 .flex()
                 .items_center()

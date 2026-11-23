@@ -134,6 +134,8 @@ pub(crate) struct Row {
     /// page, which is no item.
     label: Option<SharedString>,
     account: Option<AccountId>,
+    /// The row shows the menu button of its actions (ADR 0731).
+    menu: bool,
 }
 
 impl Row {
@@ -149,6 +151,7 @@ impl Row {
             interactive,
             label: Some(label.into()),
             account: None,
+            menu: false,
         }
     }
 
@@ -160,7 +163,16 @@ impl Row {
             interactive,
             label: None,
             account: None,
+            menu: false,
         }
+    }
+
+    /// The row shows the menu button of its actions while the pointer is over it, while it
+    /// holds the keyboard focus and while its menu is open; its actions are items of that
+    /// menu and not buttons of the row (ADR 0731).
+    pub(crate) fn with_menu(mut self) -> Self {
+        self.menu = true;
+        self
     }
 
     /// The row draws this account with its picture.
@@ -184,6 +196,7 @@ struct Entry {
     /// control of the row.
     end: FocusHandle,
     account: Option<AccountId>,
+    menu: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -289,6 +302,7 @@ impl PageList {
                     && entry.interactive == row.interactive
                     && entry.label == row.label
                     && entry.account == row.account
+                    && entry.menu == row.menu
             });
         if !unchanged {
             self.replace(rows, window, cx);
@@ -346,6 +360,7 @@ impl PageList {
                     focus,
                     end,
                     account: row.account,
+                    menu: row.menu,
                 }
             })
             .collect();
@@ -814,7 +829,7 @@ pub(crate) fn element<V: ListHost>(
         laid_out.laid_out.set(laid_out.laid_out.get() + 1);
         let (content, mut actions) = if rows
             .get(index)
-            .is_some_and(|entry| entry.position.is_some())
+            .is_some_and(|entry| entry.position.is_some() || entry.menu)
         {
             crate::ui::collect_actions(|| render(this, index, window, cx))
         } else {
@@ -883,11 +898,8 @@ pub(crate) fn element<V: ListHost>(
         if actions.is_empty() {
             return frame.into_any_element();
         }
-        let row = crate::ui::RowMenu::overlay(entry.focus.is_focused(window)).top(if index == 0 {
-            20.0
-        } else {
-            6.0
-        });
+        let focused = entry.focus.contains_focused(window, cx);
+        let row = crate::ui::RowMenu::overlay(focused).top(if index == 0 { 20.0 } else { 6.0 });
         crate::ui::bind_row_action_menu(frame, ElementId::Name(key), row, actions, window, cx)
             .into_any_element()
     });

@@ -118,15 +118,13 @@ impl Shell {
         let theme = theme(cx);
         let colors = theme.colors;
         let workspace = view.workspace();
-        let (overline, title): (Option<SharedString>, SharedString) =
-            match (&view.selected, workspace) {
-                (Some(server), Some(workspace)) => (
-                    Some(server.name.clone().into()),
-                    workspace.name.clone().into(),
-                ),
-                (Some(server), None) => (None, server.name.clone().into()),
-                (None, _) => (None, SharedString::default()),
-            };
+        // The name of the server stands above its own lists, the notices and the direct
+        // messages, as a small heading (ADR 0730).
+        let title: SharedString = match (&view.selected, workspace) {
+            (Some(_), Some(workspace)) => workspace.name.clone().into(),
+            (Some(server), None) => server.name.clone().into(),
+            (None, _) => SharedString::default(),
+        };
         let header = super::title_bar::header_zone(div())
             .flex()
             .flex_none()
@@ -135,65 +133,37 @@ impl Shell {
             .pl(u(14.0))
             .pr(u(12.0))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .when_some(overline, |column, overline| {
-                        column.child(
-                            div()
-                                .id("server-title")
-                                .role(Role::Heading)
-                                .aria_level(2)
-                                .aria_label(overline.clone())
-                                .focus_visible({
-                                    let ring = crate::ui::focus_ring_inside(
-                                        colors.terracotta_deep,
-                                        theme.metrics.focus_ring,
-                                    );
-                                    move |style| style.shadow(ring)
-                                })
-                                .debug_selector(|| "server-title".to_owned())
-                                .typeface(theme.types.overline, &theme)
-                                .ink(colors.bronze)
-                                .truncate()
-                                .child(overline)
-                                .map(|frame| match view.selected.as_ref() {
-                                    Some(server) => self.bind_server_context(
-                                        frame,
-                                        "server-title",
-                                        server.id,
-                                        window,
-                                        cx,
-                                    ),
-                                    None => frame,
-                                }),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id("workspace-title")
-                            .role(Role::Heading)
-                            .aria_level(1)
-                            .aria_label(title.clone())
-                            .debug_selector(|| "workspace-title".to_owned())
-                            .typeface(theme.types.title, &theme)
-                            .ink(colors.ink)
-                            .truncate()
-                            .child(title)
-                            .map(|frame| {
-                                self.bind_workspace_title_context(frame, view, window, cx)
-                            }),
-                    ),
+                div().flex_1().min_w_0().child(
+                    div()
+                        .id("workspace-title")
+                        .role(Role::Heading)
+                        .aria_level(1)
+                        .aria_label(title.clone())
+                        .debug_selector(|| "workspace-title".to_owned())
+                        .typeface(theme.types.title, &theme)
+                        .ink(colors.ink)
+                        .truncate()
+                        .child(title)
+                        .map(|frame| self.bind_workspace_title_context(frame, view, window, cx)),
+                ),
             )
             .when(view.selected.is_some(), |header| {
+                // The arrow opens the menu of the shown workspace, and the menu of the server
+                // while the server shows no workspace (ADR 0780).
+                let (label, selector) = if view.workspace().is_some() {
+                    (text::book::WORKSPACE_MENU_BUTTON, "workspace-menu-button")
+                } else {
+                    (text::SERVER_MENU, "server-menu-button")
+                };
                 header.child(
-                    Button::new("server-menu")
+                    Button::new("header-menu")
                         .kind(ButtonKind::Ghost)
                         .icon(Icon::ChevronDown)
-                        .tooltip(text::SERVER_MENU)
-                        .selector("server-menu-button")
+                        .tooltip(label)
+                        .accessible_label(label)
+                        .selector(selector)
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_server_menu(window, cx);
+                            this.open_header_menu(window, cx);
                         })),
                 )
             });
@@ -271,7 +241,6 @@ impl Shell {
             .when_some(view.controls.warning.as_ref(), |column, warning| {
                 column.child(self.render_sound_warning(warning, &theme, cx))
             })
-            .children(self.render_update_notice(view, &theme, cx))
             .children(self.render_muted_speech(&view.controls, cx))
             .children(self.render_camera_notice(cx))
             .when_some(view.call.as_ref(), |column, strip| {
@@ -336,6 +305,13 @@ impl Shell {
             .border_b_1()
             .border_color(Hsla::from(colors.rule))
             .child(self.render_notices_row(lists, in_call, cx))
+            .child(self.render_server_heading(
+                server.id,
+                server.name.clone().into(),
+                theme,
+                window,
+                cx,
+            ))
             .children(self.direct_rows(server.id, lists, theme, cx));
         let list = div().flex().flex_col().flex_1().min_h(u(row)).child(
             ScrollArea::new("channel-list", &self.channels_scroll, label)
@@ -393,13 +369,28 @@ impl Shell {
         {
             return;
         }
+        // The page of the channels holds the form in the group of the category; a person who
+        // manages the category and not the workspace has no such page, and gets the form in
+        // the settings of the category, whose scope decides the creation (ADR 0761).
+        let manages_workspace = self
+            .state
+            .read(cx)
+            .client()
+            .server(owner.entry.server_id)
+            .and_then(|server| server.live().view().model)
+            .and_then(|model| {
+                model.workspace(workspace).map(|held| {
+                    held.holds(junto_client_core::protocol::WorkspacePermission::ManageChannel)
+                })
+            })
+            .unwrap_or(false);
         let open = match category {
-            Some(category_id) => crate::state::admin::AdminOpen::Category {
+            Some(category_id) if !manages_workspace => crate::state::admin::AdminOpen::Category {
                 server_id: owner.entry.server_id,
                 workspace_id: workspace,
                 category_id,
             },
-            None => crate::state::admin::AdminOpen::Server {
+            _ => crate::state::admin::AdminOpen::Server {
                 server_id: owner.entry.server_id,
                 page: crate::state::admin::AdminPage::Channels,
             },
@@ -1158,6 +1149,40 @@ impl Shell {
                 row.into_any_element()
             })
             .children(menu)
+            .into_any_element()
+    }
+
+    /// The name of the server as a small heading above its direct messages: the lists under
+    /// it belong to the server, and the channel list below to the shown workspace. Its menu is
+    /// the menu of the server (ADR 0780).
+    fn render_server_heading(
+        &mut self,
+        server_id: ServerId,
+        name: SharedString,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme.colors;
+        let heading = div()
+            .id("server-title")
+            .role(Role::Heading)
+            .aria_level(2)
+            .aria_label(name.clone())
+            .focus_visible({
+                let ring =
+                    crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+                move |style| style.shadow(ring)
+            })
+            .debug_selector(|| "server-title".to_owned())
+            .mx(u(14.0))
+            .mt(u(8.0))
+            .mb(u(2.0))
+            .typeface(theme.types.overline, theme)
+            .ink(colors.bronze)
+            .truncate()
+            .child(name);
+        self.bind_server_context(heading, "server-title", server_id, window, cx)
             .into_any_element()
     }
 

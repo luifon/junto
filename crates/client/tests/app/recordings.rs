@@ -3,7 +3,6 @@
 //! files of the recording are real media files that the server processed.
 
 use std::path::Path;
-use std::time::Duration;
 
 use gpui::TestAppContext;
 use junto_client::state::feed::FeedRow;
@@ -24,7 +23,7 @@ use junto_client_core::transfers::DownloadStage;
 use crate::calls::voice_channel;
 use crate::harness::{Admin, Window, World, member};
 use crate::recording_server::{RecordingServer, Spoken};
-use crate::support::{Device, FaultProxy, logged_in};
+use crate::support::{Device, logged_in};
 
 impl Window {
     /// The card of a recording that the chat of the shown voice channel draws.
@@ -39,18 +38,6 @@ impl Window {
 
     fn detail(&mut self, recording_id: RecordingId) -> Option<CardDetail> {
         match self.card(recording_id)?.state {
-            CardState::Shown(detail) => Some(*detail),
-            _ => None,
-        }
-    }
-
-    /// The files of a recording that its row on the page of the recordings lists.
-    fn row_files(&mut self, recording_id: RecordingId) -> Option<CardDetail> {
-        let row = recordings_page(self)?
-            .rows
-            .into_iter()
-            .find(|row| row.id == recording_id)?;
-        match row.files?.state {
             CardState::Shown(detail) => Some(*detail),
             _ => None,
         }
@@ -694,33 +681,6 @@ fn recorded_scene(
     junto_client_core::protocol::ids::ChannelId,
     junto_client_core::ServerHandle,
 ) {
-    let scene = recorded_scene_at(cx, world, false);
-    let Scene {
-        server,
-        admin,
-        directory,
-        window,
-        voice,
-        luca,
-        ..
-    } = scene;
-    (server, admin, directory, window, voice, luca)
-}
-
-/// What [`recorded_scene_at`] makes.
-struct Scene {
-    server: RecordingServer,
-    admin: Admin,
-    directory: tempfile::TempDir,
-    window: Window,
-    voice: junto_client_core::protocol::ids::ChannelId,
-    luca: junto_client_core::ServerHandle,
-    proxy: Option<FaultProxy>,
-}
-
-/// As [`recorded_scene`]; with `through_proxy` the window reaches the server through a proxy,
-/// which the scene holds as well.
-fn recorded_scene_at(cx: &mut TestAppContext, world: &World, through_proxy: bool) -> Scene {
     let server = world.run(RecordingServer::start("Acme Studio"));
     let admin = world.run(async {
         let device = Device::new();
@@ -734,15 +694,7 @@ fn recorded_scene_at(cx: &mut TestAppContext, world: &World, through_proxy: bool
         logged_in(&handle);
         Admin { device, handle }
     });
-    // The proxy listens at the address that the server lists as its second public origin.
-    let proxy = through_proxy.then(|| {
-        let (listener, port) = server.take_proxy();
-        world.run(FaultProxy::start_on(listener, port))
-    });
-    let address = proxy
-        .as_ref()
-        .map_or_else(|| server.address(), FaultProxy::address);
-    let (directory, mut window) = member(cx, world, &address, &admin, "Luca");
+    let (directory, mut window) = member(cx, world, &server.address(), &admin, "Luca");
     voice_channel(world, &admin, &mut window, "Daily");
     let voice = window
         .channels()
@@ -754,271 +706,7 @@ fn recorded_scene_at(cx: &mut TestAppContext, world: &World, through_proxy: bool
         .state
         .read_with(&window.cx, |state, _| state.client().servers())
         .remove(0);
-    Scene {
-        server,
-        admin,
-        directory,
-        window,
-        voice,
-        luca,
-        proxy,
-    }
-}
-
-/// The page of the recordings that the open administration shows.
-/// The number of reads of the list of recordings that the page started.
-fn reads(window: &mut Window) -> u64 {
-    window
-        .state
-        .read_with(&window.cx, |state, _| state.recordings_reads().0)
-}
-
-/// Moves the clock of the window by the least time between two reads of the list (ADR 0784)
-/// when a read that an event caused waits for it, and not otherwise.
-fn pass_waiting_reload(window: &mut Window) {
-    let waits = window
-        .state
-        .read_with(&window.cx, |state, _| state.recordings_reads().1);
-    if waits {
-        window.cx.executor().advance_clock(Duration::from_secs(1));
-    }
-}
-
-fn recordings_page(
-    window: &mut Window,
-) -> Option<junto_client::state::admin::view::recordings::RecordingsPage> {
-    use junto_client::state::admin::view::{Scope, ServerPage};
-    match window.admin()?.scope {
-        Scope::Server {
-            page: ServerPage::Recordings(page),
-            ..
-        } => Some(page),
-        _ => None,
-    }
-}
-
-#[gpui::test]
-fn the_recordings_page_reads_again_at_the_events_of_a_recording_and_lists_its_content(
-    cx: &mut TestAppContext,
-) {
-    use junto_client::state::admin::view::recordings::RecordingsRead;
-    use junto_client_core::protocol::recording::RecordingState;
-
-    let world = World::new();
-    let Scene {
-        server,
-        admin,
-        directory: _directory,
-        mut window,
-        voice,
-        luca,
-        proxy,
-    } = recorded_scene_at(cx, &world, true);
-    let proxy = proxy.unwrap();
-    let ada = logged_in(&admin.handle);
-    window.open_administration();
-    window.until("the page of the recordings is offered", |window| {
-        window.shows("admin-nav-recordings")
-    });
-    window.click("admin-nav-recordings");
-    window.until("the page states that there is no recording", |window| {
-        window.shows("recordings-empty")
-    });
-
-    // Ada and Luca are in a call of "Daily", and Ada records it. The events of the
-    // recording make the open page read its list again, without a click.
-    let first = world.run(server.record(voice, &[&admin.handle, &luca]));
-    // Each event of the recording reads the list again, at most once in a second: the row
-    // can be ready while the read of a later event is on its way. The page is loaded when
-    // the last read has ended.
-    let before = reads(&mut window);
-    window.until("the page lists the finished recording", |window| {
-        pass_waiting_reload(window);
-        recordings_page(window).is_some_and(|page| {
-            page.state == RecordingsRead::Loaded
-                && page.rows.len() == 1
-                && page.rows[0].state == RecordingState::Ready
-        })
-    });
-    assert!(reads(&mut window) > before, "no read followed the events");
-    let page = recordings_page(&mut window).unwrap();
-    assert_eq!(page.state, RecordingsRead::Loaded);
-    let row = &page.rows[0];
-    assert_eq!(row.id, first);
-    assert_eq!(row.channel.as_deref(), Some("Daily"));
-    assert_eq!(row.started_by.as_deref(), Some("Ada"));
-    assert!(row.started);
-    assert_eq!(row.length, Some(std::time::Duration::from_secs(2)));
-    // The video of the composite, the two microphones and the shared sound.
-    assert_eq!((row.segments, row.failed_segments), (4, 0));
-    assert!(row.bytes.is_some_and(|bytes| bytes > 0));
-    assert_ne!(row.transcript, TranscriptState::Ready);
-    assert!(window.shows_named(format!("recording-row-{first}")));
-    assert!(!window.shows("recordings-empty"));
-
-    // The worker writes the transcript: the row tells it.
-    let line = Spoken {
-        account_id: ada,
-        speaker: None,
-        start_ms: 100,
-        end_ms: 120,
-        text: "The plan for the week.".to_owned(),
-    };
-    // Without an event the page reads nothing, also when its clock moves. The events wait at
-    // the proxy, and a read that an event caused before has ended, so no event can reach
-    // the page while the clock moves.
-    proxy.hold_events();
-    pass_waiting_reload(&mut window);
-    window.settle();
-    let before = reads(&mut window);
-    window.cx.executor().advance_clock(Duration::from_secs(5));
-    window.settle();
-    assert_eq!(reads(&mut window), before);
-    proxy.release_events();
-    world.run(server.transcribe(first, std::slice::from_ref(&line)));
-    // A read that an event causes starts at the earliest one second after the read before
-    // (ADR 0784). The clock of the test platform moves only when the test moves it, and the
-    // test moves it only while such a read waits.
-    window.until_read(
-        "the row tells the transcript",
-        |window| {
-            pass_waiting_reload(window);
-            recordings_page(window).map(|page| {
-                page.rows
-                    .iter()
-                    .map(|row| (row.state, row.transcript, row.transcript_lines))
-                    .collect::<Vec<_>>()
-            })
-        },
-        |rows| {
-            rows.as_deref()
-                .is_some_and(|rows| rows == [(RecordingState::Ready, TranscriptState::Ready, 1)])
-        },
-    );
-
-    assert!(
-        reads(&mut window) > before,
-        "no read followed the event of the transcript"
-    );
-
-    // A second recording comes first: the newest first.
-    let second = world.run(server.record(voice, &[&admin.handle, &luca]));
-    window.until("the page lists both recordings", |window| {
-        pass_waiting_reload(window);
-        recordings_page(window).is_some_and(|page| {
-            page.rows.iter().map(|row| row.id).collect::<Vec<_>>() == [second, first]
-                && page.rows[0].state == RecordingState::Ready
-        })
-    });
-    assert!(window.shows_named(format!("recording-row-{second}")));
-    assert!(window.shows_named(format!("recording-row-{first}")));
-}
-
-#[gpui::test]
-fn the_recordings_page_saves_a_file_and_the_transcript_of_a_recording(cx: &mut TestAppContext) {
-    let world = World::new();
-    let (server, admin, _directory, mut window, voice, luca) = recorded_scene(cx, &world);
-    let own = window.own_account();
-    let downloads = tempfile::tempdir().unwrap();
-    let target = downloads.path().to_path_buf();
-    window.state.update(&mut window.cx, |state, _| {
-        state.set_download_directory(target)
-    });
-    let recording_id = world.run(server.record(voice, &[&admin.handle, &luca]));
-    let line = Spoken {
-        account_id: own,
-        speaker: None,
-        start_ms: 100,
-        end_ms: 120,
-        text: "The plan for the week.".to_owned(),
-    };
-    world.run(server.transcribe(recording_id, std::slice::from_ref(&line)));
-    let held_open = |window: &mut Window| {
-        window
-            .state
-            .read_with(&window.cx, |state, _| state.client().servers())
-            .remove(0)
-            .live()
-            .view()
-            .model
-            .is_some_and(|model| model.recording(recording_id).is_some())
-    };
-
-    window.open_administration();
-    window.until("the page of the recordings is offered", |window| {
-        window.shows("admin-nav-recordings")
-    });
-    window.click("admin-nav-recordings");
-    window.until("the row offers the files of the recording", |window| {
-        window.cx.executor().advance_clock(Duration::from_secs(1));
-        recordings_page(window).is_some_and(|page| {
-            page.rows.len() == 1
-                && page.rows[0].downloads
-                && page.rows[0].transcript == TranscriptState::Ready
-        }) && window.shows_named(format!("recording-download-{recording_id}"))
-    });
-    // The window reads the files of a recording only for the row that lists them.
-    assert!(!held_open(&mut window));
-
-    // "Download" lists the video, the two microphones, the shared sound and the
-    // transcript in the row.
-    window.click_named(format!("recording-download-{recording_id}"));
-    let detail = window.until_read(
-        "the row lists the files of the recording",
-        |window| window.row_files(recording_id),
-        |detail| {
-            detail
-                .as_ref()
-                .is_some_and(|detail| detail.files.len() == 4)
-        },
-    );
-    let detail = detail.unwrap();
-    assert!(window.shows_named(format!("recording-files-{recording_id}")));
-    assert!(window.shows_named(format!("recording-text-{recording_id}")));
-    let (position, own_file) = detail
-        .files
-        .iter()
-        .enumerate()
-        .find(|(_, file)| {
-            file.kind == FileKind::Microphone && file.person.as_deref() == Some("Luca")
-        })
-        .map(|(position, file)| (position, file.clone()))
-        .unwrap();
-
-    // The microphone of Luca is saved and is the file that the server holds.
-    window.click_named(format!("recording-file-{recording_id}-{position}"));
-    let saved = window.until_saved_in(Window::row_files, recording_id, Some(own_file.segment_id));
-    assert_eq!(
-        saved,
-        downloads.path().join(format!("{}.ogg", own_file.stem))
-    );
-    let held = on_disk(
-        &server,
-        recording_id,
-        &format!("{}.ogg", own_file.segment_id),
-    );
-    assert_eq!(held.len() as u64, own_file.bytes);
-    assert!(std::fs::read(&saved).unwrap() == held);
-    assert!(window.shows_named(format!("recorded-download-{position}")));
-
-    // The transcript is saved as a text file with the speaker of each line.
-    window.click_named(format!("recording-text-{recording_id}"));
-    let saved = window.until_saved_in(Window::row_files, recording_id, None);
-    assert_eq!(
-        saved,
-        downloads.path().join(format!("{}.txt", detail.text_stem))
-    );
-    let written = std::fs::read_to_string(&saved).unwrap();
-    assert!(
-        written.contains("Luca: The plan for the week."),
-        "{written}"
-    );
-    assert_eq!(names(downloads.path()).len(), 2);
-
-    // "Download" again closes the list, and the window releases the recording.
-    window.click_named(format!("recording-download-{recording_id}"));
-    assert!(!window.shows_named(format!("recording-files-{recording_id}")));
-    window.until("the recording is released", |window| !held_open(window));
+    (server, admin, directory, window, voice, luca)
 }
 
 #[gpui::test]

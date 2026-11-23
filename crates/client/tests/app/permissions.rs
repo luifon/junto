@@ -37,9 +37,9 @@ fn offered(window: &mut Window, message_id: MessageId) -> Option<(bool, bool)> {
 
 /// The pages that the list of pages of the administration offers.
 fn pages(window: &mut Window) -> Vec<AdminPage> {
-    match window.admin().map(|view| view.scope) {
-        Some(Scope::Server { nav, .. }) => nav.into_iter().flat_map(|group| group.pages).collect(),
-        _ => Vec::new(),
+    match window.admin() {
+        Some(view) => view.nav.into_iter().flat_map(|group| group.pages).collect(),
+        None => Vec::new(),
     }
 }
 

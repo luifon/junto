@@ -76,7 +76,7 @@ fn the_settings_show_one_section_at_a_time_from_a_list_of_sections(cx: &mut Test
     assert!(window.shows_named(page(SettingsSection::Profile)));
     let shown = [
         (SettingsSection::Profile, "name-field"),
-        (SettingsSection::Picture, "preset-picture"),
+        (SettingsSection::Profile, "preset-picture"),
         (SettingsSection::Interface, "scale-0"),
         (SettingsSection::VoiceAndVideo, "input-mode-0"),
         (SettingsSection::Quiet, "quiet-no-server"),
@@ -116,24 +116,27 @@ fn the_settings_show_one_section_at_a_time_from_a_list_of_sections(cx: &mut Test
 fn a_section_ends_after_its_last_control_and_its_help(cx: &mut TestAppContext) {
     let (_directory, mut window) = named(cx, "Luca");
     window.click("app-settings");
-    for (section, last) in [
-        (SettingsSection::Profile, "save-name"),
-        (SettingsSection::Interface, "theme-0"),
+    for (section, last, lines) in [
+        // The picture for new servers follows the name in one section (ADR 0717): its help
+        // and the sentence that no picture is set follow it.
+        (SettingsSection::Profile, "preset-picture", 3.0),
+        (SettingsSection::Interface, "theme-0", 2.0),
         (
             SettingsSection::VoiceAndVideo,
             "hide-own-camera-setting-row",
+            2.0,
         ),
-        (SettingsSection::Notifications, "notifications-state"),
+        (SettingsSection::Notifications, "notifications-state", 2.0),
         // The switch of the last kind of sounds, with its help, ends the section (ADR 0707).
-        (SettingsSection::Sounds, "sound-kind-hand-raised-row"),
+        (SettingsSection::Sounds, "sound-kind-hand-raised-row", 2.0),
     ] {
         window.click(section.selector());
         let page = bounds(&mut window, selector(page(section)));
         let last = bounds(&mut window, last);
         let below = page.bottom() - last.bottom();
-        // One or two lines of help follow the last control, and nothing else.
+        // A few lines of help follow the last control, and nothing else.
         assert!(
-            below < px(48.0),
+            below < px(24.0 * lines),
             "{section:?}: {below:?} of the section under its last control"
         );
     }

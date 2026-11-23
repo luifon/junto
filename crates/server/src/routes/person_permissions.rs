@@ -4,8 +4,8 @@
 use axum::Json;
 use axum::extract::State;
 use junto_authz::{
-    ChannelGrant, Denial, Override, Request, ServerOverride, ServerPermission, ServerPermissions,
-    Target, WorkspacePermission,
+    Denial, Request, ServerOverride, ServerPermission, ServerPermissions, Target,
+    WorkspacePermission,
 };
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
@@ -13,15 +13,13 @@ use junto_protocol::ids::{AccountId, WorkspaceId};
 use junto_protocol::roles::{
     ChangeServerPersonPermission, ServerPersonPermissions, SetServerPersonPermissions,
 };
-use junto_protocol::structure::{
-    ChangeChannelOverride, ChannelPermissions, OverrideState, PersonPermissions, SetChannelOverride,
-};
+use junto_protocol::structure::{ChannelPermissions, OverrideState, PersonPermissions};
 use sqlx::PgConnection;
 use time::OffsetDateTime;
 
-use super::rules::{Change, require_member};
+use super::rules::require_member;
+use crate::access::Access;
 use crate::access::permissions::server_rule;
-use crate::access::{Access, stored_override};
 use crate::audit::{self, About};
 use crate::db;
 use crate::error::{ApiError, ApiResult};
@@ -32,239 +30,59 @@ use crate::routes::server_roles::require_active_account;
 use crate::state::AppState;
 use crate::{read, store, transact};
 
-async fn workspace_rule(
-    connection: &mut PgConnection,
-    workspace_id: WorkspaceId,
-    account_id: AccountId,
-) -> ApiResult<Override> {
-    let row: Option<(i64, i64)> = sqlx::query_as(
-        "select allow, deny from workspace_person_overrides
-         where workspace_id = $1 and account_id = $2",
-    )
-    .bind(workspace_id)
-    .bind(account_id)
-    .fetch_optional(connection)
-    .await?;
-    row.map_or(Ok(Override::NONE), |(allow, deny)| {
-        stored_override(allow, deny)
-    })
-}
+/// The path of the retired routes of the workspace permissions of one member.
+pub const MEMBER_RULES_PATH: &str =
+    "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions";
 
-fn person_permissions(account_id: AccountId, rule: Override) -> PersonPermissions {
-    PersonPermissions {
-        account_id,
-        allow: db::workspace_list(rule.allow()),
-        deny: db::workspace_list(rule.deny()),
-    }
-}
+/// Why the routes of the workspace permissions of one member refuse every request
+/// (ADR 0201, ADR 0306).
+pub const MEMBER_RULES_RETIRED: &str = "Workspace permission rules for one member were removed in \
+     Junto 0.3.0: each one became a role of that member. Use a role, or a rule of a channel or a \
+     category.";
 
-/// The workspace permissions that are allowed to or denied to one member.
+/// Retired: a workspace has no permission rule for one member any more. Every request is
+/// refused with `retired`.
 #[utoipa::path(
     get,
     path = "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
     tag = "workspaces",
     params(("workspace_id" = WorkspaceId, Path), ("account_id" = AccountId, Path)),
-    security(("session" = [])),
-    responses((status = 200, body = PersonPermissions), ApiError)
+    responses(ApiError)
 )]
 pub async fn get_member_permissions(
-    State(app): State<AppState>,
-    bearer: Bearer,
-    ApiPath((workspace_id, account_id)): ApiPath<(WorkspaceId, AccountId)>,
+    _member: ApiPath<(WorkspaceId, AccountId)>,
 ) -> ApiResult<Json<PersonPermissions>> {
-    let now = app.now();
-    read!(app, |connection| {
-        let access = Access::open(connection, &bearer, now).await?;
-        let scope = access.workspace(connection, workspace_id).await?;
-        access.require(Request::Workspace {
-            scope: &scope,
-            permission: WorkspacePermission::ManageRoles,
-        })?;
-        require_member(connection, workspace_id, account_id).await?;
-        let rule = workspace_rule(connection, workspace_id, account_id).await?;
-        Ok(person_permissions(account_id, rule))
-    })
-    .map(Json)
+    Err(ApiError::retired(MEMBER_RULES_RETIRED))
 }
 
-/// Sets the workspace permissions that are allowed to and denied to one member. Two empty
-/// sets remove them. The caller outranks the member and holds what the change adds in the
-/// workspace and in every channel where it adds it (ADR 0306).
+/// Retired: a workspace has no permission rule for one member any more. Every request is
+/// refused with `retired`.
 #[utoipa::path(
     put,
     path = "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
     tag = "workspaces",
     params(("workspace_id" = WorkspaceId, Path), ("account_id" = AccountId, Path)),
-    request_body = SetChannelOverride,
-    security(("session" = [])),
-    responses((status = 200, body = PersonPermissions), ApiError)
+    responses(ApiError)
 )]
 pub async fn set_member_permissions(
-    State(app): State<AppState>,
-    bearer: Bearer,
-    ApiPath((workspace_id, account_id)): ApiPath<(WorkspaceId, AccountId)>,
-    ApiJson(body): ApiJson<SetChannelOverride>,
+    _member: ApiPath<(WorkspaceId, AccountId)>,
 ) -> ApiResult<Json<PersonPermissions>> {
-    let change = Change::set(&body)?;
-    member_permissions(app, bearer, (workspace_id, account_id), change).await
+    Err(ApiError::retired(MEMBER_RULES_RETIRED))
 }
 
-/// Changes one workspace permission of one member.
+/// Retired: a workspace has no permission rule for one member any more. Every request is
+/// refused with `retired`.
 #[utoipa::path(
     patch,
     path = "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
     tag = "workspaces",
     params(("workspace_id" = WorkspaceId, Path), ("account_id" = AccountId, Path)),
-    request_body = ChangeChannelOverride,
-    security(("session" = [])),
-    responses((status = 200, body = PersonPermissions), ApiError)
+    responses(ApiError)
 )]
 pub async fn change_member_permission(
-    State(app): State<AppState>,
-    bearer: Bearer,
-    ApiPath((workspace_id, account_id)): ApiPath<(WorkspaceId, AccountId)>,
-    ApiJson(body): ApiJson<ChangeChannelOverride>,
+    _member: ApiPath<(WorkspaceId, AccountId)>,
 ) -> ApiResult<Json<PersonPermissions>> {
-    let change = Change::one(&body);
-    member_permissions(app, bearer, (workspace_id, account_id), change).await
-}
-
-async fn member_permissions(
-    app: AppState,
-    bearer: Bearer,
-    member: (WorkspaceId, AccountId),
-    change: Change,
-) -> ApiResult<Json<PersonPermissions>> {
-    let now = app.now();
-    transact!(app, |connection| {
-        let access = Access::open(connection, &bearer, now).await?;
-        set_member_permissions_in(connection, &access, now, member, change).await
-    })
-    .map(Json)
-}
-
-pub(crate) async fn set_member_permissions_in(
-    connection: &mut PgConnection,
-    access: &Access,
-    now: OffsetDateTime,
-    (workspace_id, account_id): (WorkspaceId, AccountId),
-    change: Change,
-) -> ApiResult<PersonPermissions> {
-    let scope = access.workspace(connection, workspace_id).await?;
-    access.require(Request::Workspace {
-        scope: &scope,
-        permission: WorkspacePermission::ManageRoles,
-    })?;
-    sqlx::query(
-        "select account_id from workspace_members
-         where workspace_id = $1 and account_id = $2 for update",
-    )
-    .bind(workspace_id)
-    .bind(account_id)
-    .fetch_optional(&mut *connection)
-    .await?
-    .ok_or_else(ApiError::not_found)?;
-    access
-        .require_above_workspace_account(connection, workspace_id, account_id)
-        .await?;
-    let previous = workspace_rule(connection, workspace_id, account_id).await?;
-    let next = change.applied_to(previous)?;
-    let granting = previous.granted_by_change_to(next);
-
-    let mut added = Vec::new();
-    let held = if granting.is_empty() {
-        Vec::new()
-    } else {
-        let person = Access::standing_of(connection, account_id).await?;
-        let person_scope = person.workspace(connection, workspace_id).await?;
-        let theirs = person
-            .workspace_channels(connection, workspace_id, &person_scope)
-            .await?;
-        for (record, before) in theirs {
-            if record.deleted_at.is_some() {
-                continue;
-            }
-            let mut after = before.clone();
-            after.workspace.person_override = next;
-            let gained = after
-                .usable_permissions()
-                .difference(before.usable_permissions());
-            if !gained.is_empty() {
-                added.push((record.channel.id, gained));
-            }
-        }
-        access
-            .workspace_channels(connection, workspace_id, &scope)
-            .await?
-    };
-    let in_channels: Vec<ChannelGrant<'_>> = added
-        .iter()
-        .filter_map(|(channel_id, granting)| {
-            held.iter()
-                .find(|(record, _)| record.channel.id == *channel_id)
-                .map(|(_, scope)| ChannelGrant {
-                    scope,
-                    granting: *granting,
-                })
-        })
-        .collect();
-    access.require(Request::ManageWorkspaceRoles {
-        scope: &scope,
-        granting,
-        in_channels: &in_channels,
-    })?;
-    if !granting.is_empty() {
-        require_active_account(connection, account_id).await?;
-    }
-    let result = person_permissions(account_id, next);
-    if previous == next {
-        return Ok(result);
-    }
-
-    if next.is_none() {
-        sqlx::query(
-            "delete from workspace_person_overrides where workspace_id = $1 and account_id = $2",
-        )
-        .bind(workspace_id)
-        .bind(account_id)
-        .execute(&mut *connection)
-        .await?;
-    } else {
-        sqlx::query(
-            "insert into workspace_person_overrides (workspace_id, account_id, allow, deny)
-             values ($1, $2, $3, $4)
-             on conflict (workspace_id, account_id) do update set
-                 allow = excluded.allow, deny = excluded.deny",
-        )
-        .bind(workspace_id)
-        .bind(account_id)
-        .bind(db::workspace_bits(next.allow()))
-        .bind(db::workspace_bits(next.deny()))
-        .execute(&mut *connection)
-        .await?;
-    }
-    audit::record(
-        connection,
-        now,
-        Some(access.account_id),
-        About::Workspace(workspace_id),
-        &AuditEvent::WorkspacePersonPermissionsSet {
-            account_id,
-            allow: result.allow.clone(),
-            deny: result.deny.clone(),
-        },
-    )
-    .await?;
-    let set = Event::WorkspacePersonPermissionsSet {
-        workspace_id,
-        account_id,
-        allow: result.allow.clone(),
-        deny: result.deny.clone(),
-    };
-    events::publish(connection, now, &set).await?;
-    let affected = Affected::Account(account_id);
-    events::permissions_changed(connection, now, affected, Some(workspace_id)).await?;
-    Ok(result)
+    Err(ApiError::retired(MEMBER_RULES_RETIRED))
 }
 
 /// What a member can use in each channel of the workspace that the caller can see: the

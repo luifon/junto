@@ -163,6 +163,46 @@ pub fn invite_page(server: &ServerAddress, code: &InviteCode) -> String {
     format!("{}/join?{query}", server.as_str())
 }
 
+/// Reads the address of the browser page of an invite, as [`invite_page`] writes it, as the
+/// invite that it names: a person pastes the link that an inviter copied (ADR 0732).
+pub fn parse_invite_page(text: &str) -> Option<AppLink> {
+    if text.len() > LONGEST_LINK
+        || text
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return None;
+    }
+    let page = Url::parse(text).ok()?;
+    if !matches!(page.scheme(), "https" | "http")
+        || !page.username().is_empty()
+        || page.password().is_some()
+        || page.fragment().is_some()
+        || page.path() != "/join"
+    {
+        return None;
+    }
+    let mut code = None;
+    for (key, value) in page.query_pairs() {
+        match key.as_ref() {
+            "code" if code.is_none() => code = Some(value.into_owned()),
+            _ => return None,
+        }
+    }
+    let code = code.filter(|code| valid_invite_code(code))?;
+    let origin = page.origin().ascii_serialization();
+    let server = ServerAddress::parse(&origin).ok()?;
+    Some(AppLink::Invite {
+        server,
+        code: InviteCode::new(code),
+    })
+}
+
+/// A pasted link: an app link, or the address of the browser page of an invite.
+pub fn parse_pasted(text: &str) -> Option<AppLink> {
+    parse(text).or_else(|| parse_invite_page(text))
+}
+
 fn write_target(kind: &str, server: &ServerAddress, parameter: &str, target: &str) -> String {
     let query = form_urlencoded::Serializer::new(String::new())
         .append_pair("server", server.as_str())
@@ -183,6 +223,31 @@ fn valid_escapes(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_address_of_the_browser_page_of_an_invite_is_read_as_the_invite() {
+        let server = ServerAddress::parse("https://chat.example.test").unwrap();
+        let code = InviteCode::new("ABCD-EFGH-JKMN-PQRS".to_owned());
+        let page = invite_page(&server, &code);
+        assert_eq!(
+            parse_pasted(&page),
+            Some(AppLink::Invite {
+                server: server.clone(),
+                code: code.clone(),
+            })
+        );
+        assert!(parse_pasted(&format(&AppLink::Invite { server, code })).is_some());
+        for other in [
+            "https://chat.example.test/join",
+            "https://chat.example.test/join?code=short",
+            "https://chat.example.test/other?code=ABCD-EFGH-JKMN-PQRS",
+            "https://chat.example.test/join?code=ABCD-EFGH-JKMN-PQRS&code=ABCD-EFGH-JKMN-PQRS",
+            "ftp://chat.example.test/join?code=ABCD-EFGH-JKMN-PQRS",
+            "chat.example.test:443",
+        ] {
+            assert_eq!(parse_pasted(other), None, "{other}");
+        }
+    }
 
     const ID: &str = "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f";
 

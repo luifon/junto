@@ -5,9 +5,10 @@
 //! person tries. The server decides every request.
 
 use junto_client_core::model::{
-    AdminPart, CollectionState, RoleRank, ServerModel, WorkspaceModel, outranks,
+    AdminPart, CollectionState, RoleRank, ServerModel, WorkspaceModel, comparable_name, outranks,
 };
-use junto_client_core::protocol::ids::{ServerRoleId, WorkspaceId, WorkspaceRoleId};
+use junto_client_core::protocol::account::AccountStatus;
+use junto_client_core::protocol::ids::{AccountId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
 use junto_client_core::protocol::roles::RoleActions;
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
@@ -147,6 +148,62 @@ pub struct RoleRow {
     pub permissions: Vec<PermissionSwitch>,
     /// What the server states that the person may do with the role.
     pub stated: Stated,
+    /// The people who hold the role and the people who could be given it, in the order of
+    /// their names, while the members or the accounts are read (ADR 0761). The "everyone"
+    /// role lists none.
+    pub members: Option<RoleMembers>,
+}
+
+/// The people of the tab "Members" of a role.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RoleMembers {
+    pub holders: Vec<(AccountId, String)>,
+    pub others: Vec<(AccountId, String)>,
+}
+
+impl RoleRow {
+    /// Whether the person gives the role (`give`) or takes it, and why not. The server
+    /// states the two apart: the rules of single channels limit them differently (ADR 0764).
+    pub fn assignment(&self, give: bool) -> Result<(), NoDeletion> {
+        if let Some(locked) = self.locked {
+            return Err(NoDeletion::Locked(locked));
+        }
+        match &self.stated {
+            Stated::Reading => Err(NoDeletion::Reading),
+            stated
+                if !stated.allows(|actions| {
+                    if give {
+                        actions.may_assign
+                    } else {
+                        actions.may_remove
+                    }
+                }) =>
+            {
+                Err(NoDeletion::NotAllowed)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn role_members<'a>(people: impl Iterator<Item = (AccountId, &'a str, bool)>) -> RoleMembers {
+    let mut members = RoleMembers::default();
+    for (account_id, name, holds) in people {
+        let entry = (account_id, name.to_owned());
+        if holds {
+            members.holders.push(entry);
+        } else {
+            members.others.push(entry);
+        }
+    }
+    let order = |one: &(AccountId, String), other: &(AccountId, String)| {
+        comparable_name(&one.1)
+            .cmp(&comparable_name(&other.1))
+            .then(one.0.cmp(&other.0))
+    };
+    members.holders.sort_by(order);
+    members.others.sort_by(order);
+    members
 }
 
 /// Why a role cannot be deleted, beside role order.
@@ -409,6 +466,18 @@ fn workspace_rows(
                     })
                     .collect(),
                 stated: stated(role.id),
+                members: (!role.is_everyone)
+                    .then(|| workspace.members.loaded())
+                    .flatten()
+                    .map(|members| {
+                        role_members(members.iter().map(|member| {
+                            (
+                                member.account_id,
+                                member.name.as_str(),
+                                member.role_ids.contains(&role.id),
+                            )
+                        }))
+                    }),
             }
         })
         .collect();
@@ -456,6 +525,20 @@ fn server_rows(model: &ServerModel, own: RoleRank) -> Option<Vec<RoleRow>> {
                     beyond_own: false,
                 })
                 .collect(),
+            members: model.admin.accounts.loaded().map(|accounts| {
+                role_members(
+                    accounts
+                        .iter()
+                        .filter(|account| account.status == AccountStatus::Active)
+                        .map(|account| {
+                            (
+                                account.id,
+                                account.name.as_str(),
+                                account.server_role_ids.contains(&role.id),
+                            )
+                        }),
+                )
+            }),
         })
         .collect();
     set_moves(&mut rows);
@@ -1166,7 +1249,10 @@ mod tests {
         // channel denies a permission that the person does not hold.
         set(
             &mut model,
-            Some(vec![(scene.helpers, allowed), (scene.guests, refused)]),
+            Some(vec![
+                (scene.helpers, allowed.clone()),
+                (scene.guests, refused),
+            ]),
         );
         let page = scene.page(&model);
         let row = |role_id| page.row(scene.role(role_id)).unwrap().clone();
@@ -1188,6 +1274,31 @@ mod tests {
         };
         assert_eq!(of(scene.helpers), None);
         assert_eq!(of(scene.guests), Some(NoAssignment::NotAllowed));
+        // The tab "Members" gives and takes a role by the two flags apart: a rule of a
+        // channel can allow taking a role and refuse giving it.
+        set(
+            &mut model,
+            Some(vec![
+                (scene.helpers, allowed.clone()),
+                (
+                    scene.guests,
+                    RoleActions {
+                        may_assign: false,
+                        may_remove: true,
+                        may_delete: false,
+                    },
+                ),
+            ]),
+        );
+        let page = scene.page(&model);
+        let guests = page.row(scene.role(scene.guests)).unwrap();
+        assert_eq!(guests.assignment(true), Err(NoDeletion::NotAllowed));
+        assert_eq!(guests.assignment(false), Ok(()));
+        let helpers = page.row(scene.role(scene.helpers)).unwrap();
+        assert_eq!(
+            (helpers.assignment(true), helpers.assignment(false)),
+            (Ok(()), Ok(()))
+        );
         // A role that the list does not name was added after the read: the read after
         // that event is on its way, and so is the first read.
         assert_eq!(row(scene.everyone).stated, Stated::Reading);
@@ -1276,7 +1387,7 @@ mod tests {
         );
         assert_eq!(
             needed(&administrator, AdminPage::ServerRoles),
-            [AdminPart::ServerRoles]
+            [AdminPart::ServerRoles, AdminPart::Accounts]
         );
         // The owner stands above every role without a position.
         administrator.account.is_owner = true;

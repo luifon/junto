@@ -22,7 +22,7 @@ roles, and other server roles contribute no position.
   among server roles and within each workspace. The workspace everyone role is fixed
   at zero. No assigned role means zero at server level and everyone at workspace level.
   A server role without administrator contributes no workspace position. A server person rule that denies administrator removes the administrator from every server role of that account, so the account has no server position in a workspace comparison; a person rule that allows administrator gives no position. Equal highest
-  roles refuse role-order checks. Permissions still combine as ADR 0301 decides, irrespective of position.
+  roles refuse role-order checks. A role made from the rule of one member when release 0.3.0 removed such rules (ADR 0301) is inserted at the bottom, below every role of now; the roles of now keep their order above it. A member who held no role stands above the members without a role and above the made roles below its own, so the conversion is applied only when no such member holds "manage roles" or "manage channel" in the workspace or in one of its channels or categories, since these act on the people and the roles below (ADR 0005). Banned members count as members: an unban restores their roles. Permissions still combine as ADR 0301 decides, irrespective of position.
 - Removal, ban and unban check role order. Unban restores roles in Junto (ADR 0106),
   unlike Discord: it therefore requires the actor above the restored server position
   and above the restored position in every workspace with assigned roles. The owner

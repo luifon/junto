@@ -878,6 +878,8 @@ impl Window {
     /// Clicks the middle of the element with this name.
     #[track_caller]
     pub fn click(&mut self, selector: &'static str) {
+        self.reveal_nav_row(selector);
+        self.open_arrange_for(selector);
         self.settle();
         let bounds = self.cx.debug_bounds(selector).unwrap_or_else(|| {
             let mut names = vec![
@@ -1027,6 +1029,7 @@ impl Window {
     /// Clicks the element with this name when it is drawn now. A test uses it for an
     /// element that a reload of the state takes away for a moment.
     pub fn click_if_shown(&mut self, selector: &'static str) -> bool {
+        self.reveal_nav_row(selector);
         self.settle();
         let Some(bounds) = self.cx.debug_bounds(selector) else {
             return false;
@@ -1047,6 +1050,22 @@ impl Window {
         self.click(selector(name));
     }
 
+    /// Opens the menu of the selected server as a secondary press on its row, or on its icon
+    /// in the collapsed server book, opens it.
+    #[track_caller]
+    pub fn open_server_menu(&mut self) {
+        if !self.shows("server-menu") {
+            let index = self
+                .view()
+                .servers
+                .iter()
+                .position(|row| row.selected)
+                .expect("a server is selected");
+            self.right_click_named(format!("server-{index}"));
+        }
+        assert!(self.shows("server-menu"));
+    }
+
     /// Presses the right button of the pointer in the middle of the element with this
     /// name, and releases it.
     #[track_caller]
@@ -1058,6 +1077,23 @@ impl Window {
             .debug_bounds(name)
             .unwrap_or_else(|| panic!("{name} is not drawn"));
         self.press_on(Some(name), bounds.center(), gpui::MouseButton::Right, 1);
+        self.settle();
+    }
+
+    /// Presses the right button near the start of the first line of a row of a list, in the
+    /// margin of the row, away from the controls and the parts open under its first line.
+    #[track_caller]
+    pub fn right_click_row(&mut self, name: &'static str) {
+        self.settle();
+        let bounds = self
+            .cx
+            .debug_bounds(name)
+            .unwrap_or_else(|| panic!("{name} is not drawn"));
+        let down = gpui::px(14.0).min(bounds.size.height / 2.0);
+        self.press_at(
+            gpui::point(bounds.left() + gpui::px(4.0), bounds.top() + down),
+            gpui::MouseButton::Right,
+        );
         self.settle();
     }
 
@@ -1128,6 +1164,58 @@ impl Window {
     #[track_caller]
     pub fn wheel_up_to(&mut self, list: &'static str, target: &'static str) {
         self.wheel_until(list, target, 300.0);
+    }
+
+    /// The moves of a server and of a workspace are items of the submenu "Arrange" of their
+    /// menu (ADR 0780): a press on one opens that submenu first, as a person does.
+    fn open_arrange_for(&mut self, selector: &'static str) {
+        const ARRANGE: [&str; 5] = [
+            "menu-move-up",
+            "menu-move-down",
+            "menu-server-group",
+            "workspace-move-up",
+            "workspace-move-down",
+        ];
+        if !ARRANGE.contains(&selector) || self.shows(selector) {
+            return;
+        }
+        for opener in ["menu-arrange", "menu-workspace-arrange"] {
+            if self.shows(opener) {
+                self.click(opener);
+                return;
+            }
+        }
+    }
+
+    /// Brings a row of the list of pages of Server settings into the visible part of that
+    /// list, which scrolls when the window is lower than the list, as a person does with the
+    /// wheel. Other names are left alone.
+    pub fn reveal_nav_row(&mut self, selector: &'static str) {
+        use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+        if !selector.starts_with("admin-nav-") && !selector.starts_with("account-nav-") {
+            return;
+        }
+        for _ in 0..20 {
+            self.settle();
+            let (Some(nav), Some(row)) = (
+                self.cx.debug_bounds("admin-nav"),
+                self.cx.debug_bounds(selector),
+            ) else {
+                return;
+            };
+            let by = if row.bottom() > nav.bottom() {
+                nav.bottom() - row.bottom() - px(8.0)
+            } else if row.top() < nav.top() {
+                nav.top() - row.top() + px(8.0)
+            } else {
+                return;
+            };
+            self.dispatch(ScrollWheelEvent {
+                position: nav.center(),
+                delta: ScrollDelta::Pixels(point(px(0.0), by)),
+                ..Default::default()
+            });
+        }
     }
 
     /// Turns the wheel once over the element with the name `list` by `by` pixels: negative
@@ -1357,10 +1445,13 @@ impl Window {
         self.click("continue");
     }
 
-    /// Types an address into the server book and sends it.
+    /// Opens the window that adds a server, types an address into it and sends it.
     pub fn enter_address(&mut self, address: &str) {
+        if !self.shows("add-window") {
+            self.click("add-server");
+        }
         self.in_shell(|shell, window, cx| shell.type_address(address, window, cx));
-        self.click("add-server");
+        self.click("add-server-submit");
     }
 
     /// Types an address and waits for the dialog of the server that answered.

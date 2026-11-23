@@ -95,9 +95,9 @@ impl Shell {
         cx.notify();
     }
 
+    /// The window that adds a server opens with the address of the link in its field.
     fn prefill_link_server(&mut self, address: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let narrow = super::logical_width(window) < crate::theme::theme(cx).metrics.narrow_below;
-        self.show_address_field(narrow, window, cx);
+        self.open_add_window(super::add_server::AddTab::Server, None, window, cx);
         self.type_address(address, window, cx);
         self.focus_address(window, cx);
     }

@@ -29,8 +29,8 @@ use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::protocol::structure::{
     ArchivePeriod, ArchivedChannel, Category, CategoryRules, ChangeChannelOverride, Channel,
     ChannelKind, ChannelPermissions, ChannelRules, CreateCategory, CreateChannel, OverrideState,
-    PermissionRule, PersonPermissions, RuleSubject, SetChannelOverride, UpdateCategory,
-    UpdateChannel, Workspace, WorkspaceMember,
+    PermissionRule, RuleSubject, SetChannelOverride, UpdateCategory, UpdateChannel, Workspace,
+    WorkspaceMember,
 };
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
@@ -64,9 +64,6 @@ enum Action {
         RuleSubject,
         ChangeChannelOverride,
     ),
-    MemberPermissions(WorkspaceId, AccountId),
-    SetMemberPermissions(WorkspaceId, AccountId, SetChannelOverride),
-    ChangeMemberPermission(WorkspaceId, AccountId, ChangeChannelOverride),
     MemberAccess(WorkspaceId, AccountId),
     ServerPermissions(AccountId),
     SetServerPermissions(AccountId, SetServerPersonPermissions),
@@ -417,18 +414,6 @@ fn rules(action: &str, words: &[String], arguments: &Arguments) -> Result<Option
         "category-change" => {
             Action::ChangeCategoryRule(category()?, subject(words, 3)?, change_at(words, 5)?)
         }
-        "member-list" => {
-            let (workspace_id, account_id) = member()?;
-            Action::MemberPermissions(workspace_id, account_id)
-        }
-        "member-set" => {
-            let (workspace_id, account_id) = member()?;
-            Action::SetMemberPermissions(workspace_id, account_id, sets(arguments)?)
-        }
-        "member-change" => {
-            let (workspace_id, account_id) = member()?;
-            Action::ChangeMemberPermission(workspace_id, account_id, change_at(words, 3)?)
-        }
         "member-access" => {
             let (workspace_id, account_id) = member()?;
             Action::MemberAccess(workspace_id, account_id)
@@ -758,16 +743,6 @@ fn category_rules_lines(held: &CategoryRules) -> Vec<String> {
     let mut lines = vec![format!("rules: category {}", held.category_id)];
     lines.extend(held.rules.iter().map(rule_line));
     lines
-}
-
-/// The workspace permissions that are allowed to or denied to a member.
-fn person_line(held: &PersonPermissions) -> String {
-    format!(
-        "permissions: {}  allow {}  deny {}",
-        held.account_id,
-        names(&held.allow),
-        names(&held.deny)
-    )
 }
 
 /// The server permissions that are allowed to or denied to an account.
@@ -1385,25 +1360,6 @@ async fn perform(api: &ServerApi, action: Action) -> Result<Vec<String>, Failure
                 .await
                 .map_err(failed)?,
         )],
-        Action::MemberPermissions(workspace_id, account_id) => vec![person_line(
-            &api.member_permissions(workspace_id, account_id)
-                .await
-                .map_err(failed)?,
-        )],
-        Action::SetMemberPermissions(workspace_id, account_id, sets) => vec![person_line(
-            &api.set_member_permissions(workspace_id, account_id, &sets)
-                .await
-                .map_err(failed)?,
-        )],
-        Action::ChangeMemberPermission(workspace_id, account_id, change) => vec![person_line(
-            &api.change_member_permission(
-                (workspace_id, account_id),
-                change.permission,
-                change.state,
-            )
-            .await
-            .map_err(failed)?,
-        )],
         Action::MemberAccess(workspace_id, account_id) => api
             .member_access(workspace_id, account_id)
             .await
@@ -1853,29 +1809,10 @@ mod tests {
     }
 
     #[test]
-    fn the_permissions_of_a_member_and_of_an_account_take_the_names_of_the_server() {
+    fn the_access_of_a_member_and_the_permissions_of_an_account_take_the_names_of_the_server() {
         let workspace_id = WorkspaceId::generate();
         let account_id = AccountId::generate();
         let (workspace, account) = (workspace_id.to_string(), account_id.to_string());
-        assert!(matches!(
-            parsed("rules", &["member-list", &workspace, &account]),
-            Ok(Action::MemberPermissions(of, who)) if of == workspace_id && who == account_id
-        ));
-        assert!(matches!(
-            parsed(
-                "rules",
-                &["member-set", &workspace, &account, "--allow", "mention_everyone", "--deny", "send_messages"],
-            ),
-            Ok(Action::SetMemberPermissions(_, _, sets))
-                if sets.allow == [WorkspacePermission::MentionEveryone]
-                    && sets.deny == [WorkspacePermission::SendMessages]
-        ));
-        assert!(matches!(
-            parsed("rules", &["member-change", &workspace, &account, "connect", "inherit"]),
-            Ok(Action::ChangeMemberPermission(_, _, change))
-                if change.permission == WorkspacePermission::Connect
-                    && change.state == OverrideState::Inherit
-        ));
         assert!(matches!(
             parsed("rules", &["member-access", &workspace, &account]),
             Ok(Action::MemberAccess(of, who)) if of == workspace_id && who == account_id
@@ -1900,16 +1837,6 @@ mod tests {
         assert!(refused(
             "rules",
             &["server-change", &account, "send_messages", "allow"]
-        ));
-        assert!(refused(
-            "rules",
-            &[
-                "member-change",
-                &workspace,
-                &account,
-                "administrator",
-                "allow"
-            ]
         ));
         assert!(refused(
             "rules",

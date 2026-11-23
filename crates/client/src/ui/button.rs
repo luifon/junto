@@ -187,6 +187,7 @@ impl IntoElement for Button {
                 disabled: self.disabled,
                 detail: self.disabled.then(|| self.tooltip.clone()).flatten(),
                 shortcut: None,
+                selector: None,
                 handler: self.on_click.clone(),
             })
         });

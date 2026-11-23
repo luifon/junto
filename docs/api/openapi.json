@@ -13838,7 +13838,8 @@
         "tags": [
           "workspaces"
         ],
-        "summary": "The workspace permissions that are allowed to or denied to one member.",
+        "summary": "Retired: a workspace has no permission rule for one member any more. Every request is\nrefused with `retired`.",
+        "description": "Workspace permission rules for one member were removed in Junto 0.3.0: each one became a role of that member. Use a role, or a rule of a channel or a category.",
         "operationId": "get_member_permissions",
         "parameters": [
           {
@@ -13859,19 +13860,12 @@
           }
         ],
         "responses": {
-          "200": {
-            "headers": {
-              "junto-event-cursor": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
-              }
-            },
+          "410": {
+            "description": "An error. The field `error.code` states which one.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PersonPermissions"
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -13887,17 +13881,14 @@
             }
           }
         },
-        "security": [
-          {
-            "session": []
-          }
-        ]
+        "deprecated": true
       },
       "put": {
         "tags": [
           "workspaces"
         ],
-        "summary": "Sets the workspace permissions that are allowed to and denied to one member. Two empty\nsets remove them. The caller outranks the member and holds what the change adds in the\nworkspace and in every channel where it adds it (ADR 0306).",
+        "summary": "Retired: a workspace has no permission rule for one member any more. Every request is\nrefused with `retired`.",
+        "description": "Workspace permission rules for one member were removed in Junto 0.3.0: each one became a role of that member. Use a role, or a rule of a channel or a category.",
         "operationId": "set_member_permissions",
         "parameters": [
           {
@@ -13917,30 +13908,13 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetChannelOverride"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "200": {
-            "headers": {
-              "junto-event-cursor": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
-              }
-            },
+          "410": {
+            "description": "An error. The field `error.code` states which one.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PersonPermissions"
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -13956,17 +13930,14 @@
             }
           }
         },
-        "security": [
-          {
-            "session": []
-          }
-        ]
+        "deprecated": true
       },
       "patch": {
         "tags": [
           "workspaces"
         ],
-        "summary": "Changes one workspace permission of one member.",
+        "summary": "Retired: a workspace has no permission rule for one member any more. Every request is\nrefused with `retired`.",
+        "description": "Workspace permission rules for one member were removed in Junto 0.3.0: each one became a role of that member. Use a role, or a rule of a channel or a category.",
         "operationId": "change_member_permission",
         "parameters": [
           {
@@ -13986,30 +13957,13 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChangeChannelOverride"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "200": {
-            "headers": {
-              "junto-event-cursor": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
-              }
-            },
+          "410": {
+            "description": "An error. The field `error.code` states which one.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PersonPermissions"
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -14025,11 +13979,7 @@
             }
           }
         },
-        "security": [
-          {
-            "session": []
-          }
-        ]
+        "deprecated": true
       }
     },
     "/api/v1/workspaces/{workspace_id}/members/{account_id}/removal": {
@@ -19459,6 +19409,7 @@
           "recordings_full",
           "range_not_satisfiable",
           "method_not_allowed",
+          "retired",
           "timeout",
           "busy",
           "unavailable",
@@ -20197,6 +20148,13 @@
             "properties": {
               "may_unban": {
                 "type": "boolean"
+              },
+              "workspace_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspaceId"
+                },
+                "description": "The workspaces of the account that the caller sees, in the order of their\nidentifiers. A server before release 0.3.0 states none."
               }
             }
           }
@@ -21177,32 +21135,6 @@
           },
           "subject": {
             "$ref": "#/components/schemas/RuleSubject"
-          }
-        }
-      },
-      "PersonPermissions": {
-        "type": "object",
-        "description": "The workspace permissions that are allowed to or denied to one member in a workspace,\nafter the member's roles (ADR 0301).",
-        "required": [
-          "account_id",
-          "allow",
-          "deny"
-        ],
-        "properties": {
-          "account_id": {
-            "$ref": "#/components/schemas/AccountId"
-          },
-          "allow": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/WorkspacePermission"
-            }
-          },
-          "deny": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/WorkspacePermission"
-            }
           }
         }
       },

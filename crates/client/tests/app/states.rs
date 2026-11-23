@@ -5,7 +5,6 @@ use std::time::Duration;
 use gpui::TestAppContext;
 use junto_client::shell::Open;
 use junto_client::state::view::{Content, ServerStatus};
-use junto_client::text;
 use junto_client_core::Reach;
 use junto_client_core::book::ConnectionMode;
 use junto_client_core::flow::access::Notice;
@@ -596,10 +595,10 @@ fn the_keyboard_reaches_the_menus_and_the_dialogs(cx: &mut TestAppContext) {
     assert_eq!(handle.entry().connection_mode, ConnectionMode::Always);
 
     // The menu of the server takes the focus. The arrow keys move between its items, and
-    // Enter chooses one.
-    window.click("server-menu-button");
-    assert!(window.shows("server-menu"));
-    window.press("down");
+    // Enter chooses one: "Keep connected in the background" is the third item from the end,
+    // before "Log out" and "Remove from this device".
+    window.open_server_menu();
+    window.press("up up up");
     window.press("enter");
     window.until("the connection mode changed", |_| {
         handle.entry().connection_mode == ConnectionMode::WhenSelected
@@ -615,20 +614,21 @@ fn the_keyboard_reaches_the_menus_and_the_dialogs(cx: &mut TestAppContext) {
     window.press("escape");
     assert!(!window.shows("server-menu"));
 
-    // A click on the button of the open menu closes it, and the next click opens it.
-    window.click("server-menu-button");
-    assert!(window.shows("server-menu"));
-    window.click("server-menu-button");
-    assert!(!window.shows("server-menu"));
-    window.click("server-menu-button");
-    assert!(window.shows("server-menu"));
+    // A click on the arrow of the open menu of the workspace closes it, and the next click
+    // opens it.
+    window.click("workspace-menu-button");
+    assert!(window.shows("workspace-menu"));
+    window.click("workspace-menu-button");
+    assert!(!window.shows("workspace-menu"));
+    window.click("workspace-menu-button");
+    assert!(window.shows("workspace-menu"));
     // A click outside the menu closes it.
     window.click("channel-title");
-    assert!(!window.shows("server-menu"));
+    assert!(!window.shows("workspace-menu"));
 
     // The last item opens the question, and Escape answers it with "no". The arrow up
     // moves from the menu to its last item, however many items are before it.
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.press("up enter");
     assert!(window.shows("confirm-remove"));
     window.press("escape");
@@ -658,10 +658,10 @@ fn the_keyboard_reaches_the_menus_and_the_dialogs(cx: &mut TestAppContext) {
     assert!(!window.shows("server-hover-menu"));
     assert!(window.view().workspace().is_some());
 
-    // The address field is reached from the collapsed server book through its button.
+    // The window that adds a server opens from the collapsed server book through its button.
     window.click("add-server");
-    assert!(window.shows("address-field") && window.shows("collapse-server-book"));
-    assert_eq!(text::ADDRESS_HELP, "Enter the address your admin gave you.");
+    assert!(window.shows("add-window") && window.shows("address-field"));
+    assert!(window.shows("expand-server-book"));
 }
 
 #[gpui::test]
@@ -681,7 +681,7 @@ fn a_long_name_of_a_server_moves_no_control_of_a_question(cx: &mut TestAppContex
         let inner = window.cx.debug_bounds(inner).unwrap();
         outer.contains(&inner.origin) && outer.contains(&inner.bottom_right())
     };
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.click("menu-remove-server");
     assert!(window.shows("confirm-remove"));
     for control in ["dialog-close", "cancel", "confirm"] {

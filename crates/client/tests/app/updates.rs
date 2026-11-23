@@ -16,7 +16,9 @@ fn update_notice_and_install_control_run_once_and_show_the_result(cx: &mut TestA
     let root = tempfile::tempdir().unwrap();
     let mut window = open_with_updates(cx, root.path(), source, Version::new(1, 0, 0));
     window.choose_name("Luca");
-    window.until("update offered", |window| window.shows("update-notice"));
+    window.until("update offered", |window| {
+        window.shows("client-version-action")
+    });
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
     let release = Arc::new(tokio::sync::Notify::new());
@@ -32,7 +34,7 @@ fn update_notice_and_install_control_run_once_and_show_the_result(cx: &mut TestA
         });
         cx.notify();
     });
-    window.click("update-notice");
+    window.in_shell(|shell, window, cx| shell.open_version_settings(window, cx));
     window.click("install-update");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     release.notify_one();
@@ -73,7 +75,8 @@ fn expired_and_untrusted_metadata_are_visible_and_offer_no_install(cx: &mut Test
         })
     });
     window.in_shell(|shell, window, cx| shell.open_version_settings(window, cx));
-    assert!(!window.shows("install-update") && !window.shows("update-notice"));
+    // The version block offers no install: at most the details (ADR 0780).
+    assert!(!window.shows("install-update") && !offers_update(&mut window));
     source.set(Err(UpdateError::UntrustedKeys));
     window.click("check-update");
     window.until("manual update shown", |window| {
@@ -85,7 +88,8 @@ fn expired_and_untrusted_metadata_are_visible_and_offer_no_install(cx: &mut Test
         txt::check_shown(&CheckShown::UntrustedKeys),
         txt::UNTRUSTED_KEYS
     );
-    assert!(!window.shows("install-update") && !window.shows("update-notice"));
+    // The version block offers no install: at most the details (ADR 0780).
+    assert!(!window.shows("install-update") && !offers_update(&mut window));
     assert!(!txt::UNTRUSTED_KEYS.contains("install the current version"));
     assert!(txt::UNTRUSTED_KEYS.contains("whoever runs your server"));
 }
@@ -100,7 +104,7 @@ fn untrusted_information_removes_every_install_and_release_page_action(cx: &mut 
     let mut window = open_with_updates(cx, root.path(), source.clone(), Version::new(1, 0, 0));
     window.choose_name("Luca");
     window.until("authenticated update offered", |window| {
-        window.shows("update-notice")
+        window.shows("client-version-action")
     });
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
@@ -120,12 +124,17 @@ fn untrusted_information_removes_every_install_and_release_page_action(cx: &mut 
             state.version_view().check == CheckShown::UntrustedKeys
         })
     });
-    assert!(!window.shows("update-notice") && !window.shows("install-update"));
+    assert!(!offers_update(&mut window) && !window.shows("install-update"));
     assert!(!window.shows("release-page-help"));
     window
         .state
         .update(&mut window.cx, |state, cx| state.install_update(cx));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+/// The version block of the server book offers to install a newer version.
+fn offers_update(window: &mut crate::harness::Window) -> bool {
+    line(window).action == Some(junto_client::state::update_install::VersionAction::Update)
 }
 
 fn line(window: &mut crate::harness::Window) -> junto_client::state::update_install::VersionLine {
@@ -147,7 +156,7 @@ fn the_server_book_states_the_version_of_this_copy_below_add_server(cx: &mut Tes
     });
     assert!(window.shows("client-version"));
     assert!(!window.shows("client-version-action"));
-    let add = window.cx.debug_bounds("address-field").unwrap();
+    let add = window.cx.debug_bounds("add-server").unwrap();
     let version = window.cx.debug_bounds("client-version").unwrap();
     assert!(version.top() >= add.bottom(), "{version:?} below {add:?}");
     assert_eq!(line(&mut window).version, "Junto 1.0.0");
@@ -206,13 +215,11 @@ fn an_update_from_the_server_book_installs_and_offers_the_restart(cx: &mut TestA
         line(&mut window).sentence,
         "Junto 2.0.0 is installed. Restart Junto to use it."
     );
-    // The restart quits and starts the installed version, from the server book, the
-    // notice of the channel column, or the settings.
+    // The restart quits and starts the installed version, from the server book or the
+    // settings. The channel column draws no second notice.
+    assert!(!window.shows("update-notice"));
     let mut restart = window.cx.expect_restart();
     window.click("client-version-action");
-    assert!(matches!(restart.try_recv(), Ok(Some(_))));
-    let mut restart = window.cx.expect_restart();
-    window.click("update-notice");
     assert!(matches!(restart.try_recv(), Ok(Some(_))));
     window.in_shell(|shell, window, cx| shell.open_version_settings(window, cx));
     let mut restart = window.cx.expect_restart();

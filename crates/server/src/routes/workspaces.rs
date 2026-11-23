@@ -243,7 +243,7 @@ pub async fn delete_workspace(
 /// The statements that remove what a workspace holds besides its channels, in their
 /// order. Each names the workspace as `$1`. The roles go before the members, and with
 /// them every assignment and every override.
-const EMPTY_WORKSPACE: [&str; 13] = [
+const EMPTY_WORKSPACE: [&str; 12] = [
     "delete from structure_identifiers
      where (kind = 'workspace_role'
             and object_id in (select id from workspace_roles where workspace_id = $1))
@@ -253,7 +253,6 @@ const EMPTY_WORKSPACE: [&str; 13] = [
      where workspace_id = $1 and category_id is not null",
     "delete from categories where workspace_id = $1",
     "delete from workspace_roles where workspace_id = $1",
-    "delete from workspace_person_overrides where workspace_id = $1",
     "delete from channel_person_overrides where workspace_id = $1",
     "delete from workspace_members where workspace_id = $1",
     "delete from glossary_terms where workspace_id = $1",

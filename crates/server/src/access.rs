@@ -510,10 +510,8 @@ impl Access {
                 });
             }
         }
-        let person_override = self.workspace_person(connection, workspace_id).await?;
         let everyone = everyone.ok_or_else(ApiError::not_found)?;
         Ok(WorkspaceScope {
-            person_override,
             membership: if is_member {
                 Membership::Member
             } else {
@@ -692,7 +690,6 @@ pub fn reads_invite(
     let allows = |request: Request<'_>| authorize(actor, &request).is_allowed();
     let sees = |workspace_id: &WorkspaceId| {
         let scope = WorkspaceScope {
-            person_override: Default::default(),
             membership: if member_of.contains(workspace_id) {
                 Membership::Member
             } else {

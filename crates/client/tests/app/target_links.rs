@@ -707,5 +707,9 @@ fn an_unknown_application_origin_shows_the_address_field_in_collapsed_and_narrow
         );
         assert_eq!(window.selected_channel(), selected);
         assert_eq!(window.server_names(), ["Example Studio"]);
+        // The field is in the window "Add server or workspace", which Escape closes.
+        window.press("escape");
+        window.settle();
+        assert!(!window.shows("add-window"));
     }
 }

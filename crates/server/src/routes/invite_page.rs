@@ -65,7 +65,7 @@ pub(super) async fn page(
         .as_ref()
         .map_or("https://github.com/luifon/junto/releases", url::Url::as_str);
     let download = format!(
-        "<p><a href=\"{}\" rel=\"noreferrer\">Download Junto</a>, then return here to open the invite. You can also add the server and enter this code in Junto.</p>",
+        "<p><a href=\"{}\" rel=\"noreferrer\">Download Junto</a>, then return here to open the invite.</p><p>If Junto does not open, choose “Add server or workspace” in Junto and paste the address of this page.</p>",
         escaped(download_url)
     );
     let body = format!(

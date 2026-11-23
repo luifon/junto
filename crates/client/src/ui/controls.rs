@@ -89,6 +89,7 @@ impl Toggle {
             disabled: self.held.is_some(),
             detail: self.held.clone(),
             shortcut: None,
+            selector: None,
             handler: Some(handler.clone()),
         }]
     }

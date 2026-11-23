@@ -49,9 +49,9 @@ impl Window {
         });
     }
 
-    /// Opens the notification settings of the shown workspace from the menu of the server.
+    /// Opens the notification settings of the shown workspace from the menu of the workspace.
     fn open_workspace_settings(&mut self) {
-        self.click("server-menu-button");
+        self.click("workspace-menu-button");
         self.click("workspace-notifications");
         self.until("the settings of the workspace", |window| {
             window

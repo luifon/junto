@@ -279,6 +279,10 @@ pub struct ListedAccount {
     pub account: AccountSummary,
     #[serde(default)]
     pub may_unban: bool,
+    /// The workspaces of the account that the caller sees, in the order of their
+    /// identifiers. A server before release 0.3.0 states none.
+    #[serde(default)]
+    pub workspace_ids: Vec<WorkspaceId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

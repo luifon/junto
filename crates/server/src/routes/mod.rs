@@ -552,6 +552,27 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
             }
         }
     }
+    // A retired route stays in version 1, marked deprecated with the message of its
+    // refusal (ADR 0201).
+    if let Some(item) = document
+        .paths
+        .paths
+        .get_mut("/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions")
+    {
+        for operation in [&mut item.get, &mut item.put, &mut item.patch]
+            .into_iter()
+            .flatten()
+        {
+            operation.deprecated = Some(utoipa::openapi::Deprecated::True);
+            operation.description = Some(person_permissions::MEMBER_RULES_RETIRED.to_owned());
+            if let Some(error) = operation.responses.responses.get("default").cloned() {
+                operation
+                    .responses
+                    .responses
+                    .insert("410".to_owned(), error);
+            }
+        }
+    }
     document
 }
 

@@ -12,14 +12,16 @@ use tokio::signal;
 
 const DATABASE_CONNECTIONS: u32 = 16;
 const HOST_COMMAND_CONNECTIONS: u32 = 1;
-/// The exit code of `check-upgrade` while a recording runs.
+/// The exit code of `check-upgrade` while an upgrade waits: a recording runs, or a case of the
+/// removal of the rules of single members waits for a decision.
 const RECORDING_RUNS: u8 = 3;
 const USAGE: &str = "usage:
   junto-server                             serve the API
   junto-server assign-owner <account-id>   make an active account the server owner
   junto-server issue-owner-code            print a new one-time owner code
   junto-server new-event-epoch             make every client load a snapshot, after a restore
-  junto-server check-upgrade               tell whether a recording runs; an upgrade waits for it
+  junto-server check-upgrade               tell whether an upgrade to this version waits: a running
+                                           recording, or a permission case that needs a decision
   junto-server backup-begin                hold file deletions back and print a backup identifier
   junto-server backup-files <backup-id>    after the copy of the database: list the files to copy
   junto-server backup-end <backup-id>      state that the backup has copied its files
@@ -213,6 +215,18 @@ async fn health() -> ExitCode {
 
 async fn serve(config: Config) -> Result<(), Failure> {
     let options: PgConnectOptions = config.database_url.parse()?;
+    // A start that refuses the removal of the workspace permission rules of single members
+    // makes no copy of the database first (ADR 0301, ADR 0005).
+    {
+        let database = connect(&config, HOST_COMMAND_CONNECTIONS).await?;
+        let mut connection = database.pool().acquire().await?;
+        let cases = junto_server::person_rules::cases(&mut connection, &config.limits)
+            .await
+            .map_err(|error| Failure::from(format!("{error:?}")))?;
+        if !cases.is_empty() {
+            return Err(junto_server::bootstrap::StartError::PersonRules(cases.len()).into());
+        }
+    }
     use junto_server::bootstrap::MigrationCopied;
     let copied =
         junto_server::bootstrap::copy_before_migration(&options, config.migration_copy).await?;
@@ -284,15 +298,35 @@ async fn new_event_epoch(config: Config) -> Result<(), Failure> {
 async fn check_upgrade(config: Config) -> Result<bool, Failure> {
     let database = connect(&config, HOST_COMMAND_CONNECTIONS).await?;
     let running = junto_server::bootstrap::recordings_that_run(&database).await?;
-    if running == 0 {
-        println!("No recording runs. An upgrade can start.");
-    } else {
+    if running > 0 {
         println!(
             "{running} recording(s) are starting or run. End them before an upgrade of the \
              server or of the recorder."
         );
     }
-    Ok(running > 0)
+    // The cases of the removal of the workspace permission rules of single members, which
+    // this version applies at its start (ADR 0301).
+    let cases = {
+        let mut connection = database.pool().acquire().await?;
+        junto_server::person_rules::cases(&mut connection, &config.limits)
+            .await
+            .map_err(|error| Failure::from(format!("{error:?}")))?
+    };
+    if !cases.is_empty() {
+        println!(
+            "This version removes the workspace permission rules of single members: each rule of \
+             a member becomes a role of that member. {} case(s) would change what people may \
+             do. Handle each one with the running version, then run this check again:",
+            cases.len()
+        );
+        for case in &cases {
+            println!("- {}", case.line());
+        }
+    }
+    if running == 0 && cases.is_empty() {
+        println!("No recording runs, and nothing waits for a decision. An upgrade can start.");
+    }
+    Ok(running > 0 || !cases.is_empty())
 }
 
 /// Starts a backup and prints its identifier and the time until which the server holds

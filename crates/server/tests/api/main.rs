@@ -58,6 +58,7 @@ mod moderation;
 mod order_compat;
 mod permission_rules;
 mod permissions_migration;
+mod person_rules_removal;
 mod person_standing;
 mod presence;
 mod processing;

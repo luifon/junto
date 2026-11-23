@@ -86,6 +86,19 @@ pub const GROUP_NAME_HELP: &str =
     "At most 64 characters. Without a name the server book names the group by its servers.";
 
 pub const WORKSPACE_MENU: &str = "Menu of the workspace";
+/// The label of the group of the items of a menu that arrange the server book.
+pub const ARRANGE: &str = "Arrange";
+/// The label of the group of the items of the menu of a server that concern this device.
+pub const ON_THIS_DEVICE: &str = "On this device";
+/// The item of the menu of a workspace that opens Server settings at that workspace.
+pub const WORKSPACE_SETTINGS: &str = "Workspace settings";
+/// The tooltip of the arrow beside the name of the shown workspace.
+pub const WORKSPACE_MENU_BUTTON: &str = "Workspace menu";
+
+/// The accessible name of the menu of a server.
+pub fn server_menu_of(name: &str) -> String {
+    format!("Menu of the server: {name}")
+}
 pub const FIRST_WORKSPACE: &str = "It is the first workspace of the server.";
 pub const LAST_WORKSPACE: &str = "It is the last workspace of the server.";
 
@@ -147,14 +160,11 @@ pub fn move_into(group: &str) -> String {
     format!("Move into {group}")
 }
 
-// The update notice: one line of the channel column.
-/// The sentence of the line. It names no version.
-pub const NEW_VERSION: &str = "New version available";
-/// The action of the line: it opens the section "Version" of the settings. This version
-/// of Junto installs nothing.
+/// The action of the version block of a copy that does not install an update itself: it
+/// opens the section "Version" of the settings.
 pub const DETAILS: &str = "Details";
 
-/// The name and the tooltip of the update notice, and the sentence of the settings. A
+/// The sentence of the version block and of the settings. A
 /// version is three numbers, so it holds no text of the source of releases.
 pub fn update_available(version: Version) -> String {
     format!("Junto {version} is available.")
@@ -341,11 +351,7 @@ mod tests {
     fn the_notice_names_the_version_and_every_state_of_the_check_has_a_sentence() {
         let version = Version::new(0, 4, 0);
         assert_eq!(update_available(version), "Junto 0.4.0 is available.");
-        // The line of the channel column: the sentence of the design, and the action of
-        // a version that installs nothing.
-        assert_eq!(NEW_VERSION, "New version available");
         assert_eq!(DETAILS, "Details");
-        assert!(!NEW_VERSION.contains(|sign: char| sign.is_ascii_digit()));
         assert_eq!(this_build(Version::new(0, 3, 1)), "This is Junto 0.3.1.");
         for check in [
             CheckShown::NotConfigured,

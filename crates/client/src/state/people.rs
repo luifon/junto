@@ -1463,7 +1463,6 @@ pub(super) fn admin_people(view: &AdminView) -> Vec<AccountId> {
             .loaded()
             .map(|rows| rows.iter().map(|row| row.created_by).collect())
             .unwrap_or_default(),
-        ServerPage::Recordings(page) => page.rows.iter().map(|row| row.starter).collect(),
         ServerPage::AuditLog(page) => page
             .rows
             .iter()

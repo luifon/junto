@@ -66,6 +66,23 @@ pub async fn list_accounts(
             .map(|row| row.0)
             .collect();
         let ranks = crate::access::RestoredRanks::load(connection, &access, &banned).await?;
+        // The workspaces that the caller sees name the memberships of each account.
+        let workspaces: Vec<WorkspaceId> =
+            sqlx::query_scalar("select id from workspaces where deleted_at is null order by id")
+                .fetch_all(&mut *connection)
+                .await?;
+        let mut seen = std::collections::HashSet::new();
+        for workspace_id in workspaces {
+            let scope = access.workspace(connection, workspace_id).await?;
+            if access.allows(Request::ViewWorkspace(&scope)) {
+                seen.insert(workspace_id);
+            }
+        }
+        let memberships: Vec<(AccountId, WorkspaceId)> = sqlx::query_as(
+            "select account_id, workspace_id from workspace_members order by workspace_id",
+        )
+        .fetch_all(&mut *connection)
+        .await?;
         let mut accounts = Vec::with_capacity(rows.len());
         for (id, name, status, is_owner, server_role_ids, created_at) in rows {
             let status = AccountStatus::read(&status)?;
@@ -82,6 +99,13 @@ pub async fn list_accounts(
                     created_at,
                 },
                 may_unban,
+                workspace_ids: memberships
+                    .iter()
+                    .filter(|(account_id, workspace_id)| {
+                        *account_id == id && seen.contains(workspace_id)
+                    })
+                    .map(|(_, workspace_id)| *workspace_id)
+                    .collect(),
             });
         }
         Ok(accounts)

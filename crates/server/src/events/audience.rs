@@ -1285,7 +1285,6 @@ pub fn receives<'a>(
         ),
         Audience::DeletedWorkspace { members, .. } => {
             let scope = WorkspaceScope {
-                person_override: Default::default(),
                 membership: if recipient.listed.contains(members) {
                     Membership::Member
                 } else {
@@ -1524,7 +1523,6 @@ mod tests {
         private: bool,
     ) -> WorkspaceStanding {
         let scope = WorkspaceScope {
-            person_override: Default::default(),
             membership,
             everyone: WorkspacePermissions::EVERYONE_DEFAULT,
             roles: if with_role {

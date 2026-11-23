@@ -182,10 +182,18 @@ fn every_operation_documents_a_success_and_the_error_body() {
                 status.starts_with('2')
                     || (status == "101" && path == junto_protocol::events::STREAM_PATH)
             };
+            // A retired route answers every request with `retired` (ADR 0201).
+            let retired = operation["deprecated"] == true;
             assert!(
-                responses.keys().any(succeeds),
+                retired || responses.keys().any(succeeds),
                 "{method} {path} documents no success"
             );
+            if retired {
+                assert!(
+                    responses.contains_key("410") && operation["description"].is_string(),
+                    "{method} {path} states its retirement"
+                );
+            }
             assert_eq!(
                 responses["default"]["content"]["application/json"]["schema"]["$ref"],
                 "#/components/schemas/ErrorBody",
@@ -202,7 +210,8 @@ fn routes_without_a_session_are_the_ones_a_device_uses_before_it_has_one() {
     let mut open = Vec::new();
     for (path, operations) in document["paths"].as_object().unwrap() {
         for (method, operation) in operations.as_object().unwrap() {
-            if operation.get("security").is_none() {
+            // A retired route needs no session: it refuses every request (ADR 0201).
+            if operation.get("security").is_none() && operation["deprecated"] != true {
                 open.push(format!("{method} {path}"));
             }
         }

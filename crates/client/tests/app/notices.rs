@@ -513,7 +513,7 @@ fn a_person_sets_the_level_and_the_mute_of_a_channel(cx: &mut TestAppContext) {
     });
 
     // The settings of the server and of the workspace open from the menu of the server.
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.click("server-notifications");
     window.until("the settings of the server", |window| {
         window
@@ -530,7 +530,7 @@ fn a_person_sets_the_level_and_the_mute_of_a_channel(cx: &mut TestAppContext) {
         level(window) == Some(NotificationLevel::Nothing)
     });
     window.click("dialog-close");
-    window.click("server-menu-button");
+    window.click("workspace-menu-button");
     window.click("workspace-notifications");
     window.until("the settings of the workspace", |window| {
         window.view().notify.is_some_and(|panel| {
@@ -1060,7 +1060,7 @@ fn a_workspace_default_result_keeps_the_dialog_controls_in_place(cx: &mut TestAp
     window.find_server(&proxy.address());
     window.join_with_code(&server.owner_code().unwrap());
     window.until_ready();
-    window.click("server-menu-button");
+    window.click("workspace-menu-button");
     window.click("workspace-notifications");
     window.until("the workspace default is drawn", |window| {
         window.shows("workspace-default-not-set") && window.shows("notify-level-0")

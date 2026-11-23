@@ -69,6 +69,7 @@ impl Segmented {
                     disabled: self.selected == Some(index),
                     detail: None,
                     shortcut: None,
+                    selector: None,
                     handler: Some(std::rc::Rc::new(move |_, window, cx| {
                         handler(index, window, cx)
                     })),

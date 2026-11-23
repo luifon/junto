@@ -23,6 +23,7 @@ use crate::state::view::{
 };
 
 pub mod account;
+pub mod add;
 pub mod admin;
 pub mod book;
 pub mod call_pin;
@@ -80,11 +81,6 @@ pub fn logo_of(server: &str) -> String {
     format!("Logo of {server}")
 }
 
-pub const ADD_SERVER: &str = "Add server";
-pub const ADD_SERVER_BY_ADDRESS: &str = "Add server by address";
-pub const ADDRESS_PLACEHOLDER: &str = "host:port";
-pub const ADDRESS_FIELD: &str = "Server address";
-pub const ADDRESS_HELP: &str = "Enter the address your admin gave you.";
 pub const ADDRESS_ASKING: &str = "Asking the server…";
 pub const WORKSPACES: &str = "Workspaces";
 pub const NO_WORKSPACES: &str = "No workspace is visible to your account.";
@@ -1743,7 +1739,7 @@ pub fn link_code(code: &str) -> String {
 // The first start and the settings.
 pub const WELCOME_TITLE: &str = "Your name";
 pub const WELCOME: &str = "People on a server see this name. A new account on a server starts \
-     with it, and you can change it in the settings.";
+     with it. You can change it in Settings, “Name and picture for new servers”.";
 pub const NAME_FIELD: &str = "Name";
 pub const CONTINUE: &str = "Continue";
 pub const SETTINGS: &str = "Settings";
@@ -1754,9 +1750,11 @@ pub const NOTIFICATIONS_SHOWN: &str = "Junto shows notifications of the system."
 pub const NOTIFICATIONS_OFF_BY_SYSTEM: &str =
     "The system does not show the notifications of Junto.";
 pub const NOTIFICATIONS_HELP: &str = "What a server notifies you of is chosen in the menu of that server. Quiet times hold for every server.";
-pub const PROFILE: &str = "Profile";
-pub const PROFILE_NAME_HELP: &str =
-    "A new account on a server starts with this name. Accounts that exist keep their name.";
+/// The section of Settings that holds the name and the picture that a new account of this
+/// device starts with (ADR 0717).
+pub const NEW_SERVER_PROFILE: &str = "Name and picture for new servers";
+pub const PROFILE_NAME_HELP: &str = "A new account on a server starts with this name and this \
+     picture. Your profile on a server you joined is in Server settings, Your account.";
 pub const SAVE: &str = "Save";
 pub const SAVED: &str = "Saved";
 pub const INTERFACE: &str = "Interface";

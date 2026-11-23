@@ -1,6 +1,7 @@
-//! The page of the workspaces of a server (ADR 0102, ADR 0115, ADR 0308): the list, a new
-//! workspace, a new name, the deletion, and the invite code that enters a further
-//! workspace.
+//! The page of the workspaces of a server (ADR 0102, ADR 0308): the list, a new workspace,
+//! the deletion, and for each workspace its overview; and the overview of a workspace: its
+//! name, its logo (ADR 0122), its notification level (ADR 0412) and its AFK channel
+//! (ADR 0523).
 
 use std::path::PathBuf;
 
@@ -13,15 +14,22 @@ use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 
 use super::{
     Form, FormField, Mode, Question, group_label, line, line_text, named, page_title, refusal,
-    row_action, sentence,
+    row_action,
 };
 use crate::shell::Shell;
 use crate::state::admin::AdminOpen;
-use crate::state::admin::view::{AdminView, WorkspaceLine, WorkspacesPage};
-use crate::state::admin::{AskKind, Made};
+use crate::state::admin::AskKind;
+use crate::state::admin::view::{AdminView, WorkspaceLine, WorkspaceOverviewPage, WorkspacesPage};
 use crate::text;
 use crate::theme::{Theme, theme, u};
-use crate::ui::{Avatar, Button, Notice};
+use crate::ui::{Avatar, Button};
+
+/// Where the row of a workspace is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowPlace {
+    List,
+    Overview,
+}
 
 fn detail(row: &WorkspaceLine) -> Option<SharedString> {
     let mut parts = Vec::new();
@@ -47,7 +55,9 @@ impl Shell {
         match state.admin_open() {
             Some(AdminOpen::Server {
                 server_id,
-                page: crate::state::admin::AdminPage::Workspaces,
+                page:
+                    crate::state::admin::AdminPage::Workspaces
+                    | crate::state::admin::AdminPage::WorkspaceOverview,
             }) => state.owner(server_id).map(|owner| (server_id, owner)),
             _ => None,
         }
@@ -126,26 +136,19 @@ impl Shell {
                     });
                 }
             }
-            Some(Mode::EnterCode) => {
-                let code = self.admin_value(cx);
-                if code.is_empty() {
-                    self.admin.invalid = Some(text::admin::CODE_EMPTY);
-                } else {
-                    self.admin_sent(AskKind::RedeemInvite);
-                    self.state
-                        .update(cx, |state, cx| state.redeem_invite(server_id, &code, cx));
-                }
-            }
             _ => {}
         }
         cx.notify();
     }
 
+    /// The row of a workspace: on the page of the workspaces with "Open", which opens its
+    /// overview, and "Delete"; in the overview of the workspace with its logo and "Rename".
     fn render_workspace_row(
         &mut self,
         view: &AdminView,
-        page: &WorkspacesPage,
+        manages: bool,
         row: &WorkspaceLine,
+        place: RowPlace,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -212,7 +215,8 @@ impl Shell {
                 .into_any_element(),
             _ => {
                 // Without the permission the actions of a workspace are absent (ADR 0790).
-                let manages = page.may_manage;
+                let in_overview = place == RowPlace::Overview;
+                let listed = place == RowPlace::List;
                 let manage = None;
                 let delete = row
                     .is_default
@@ -247,7 +251,18 @@ impl Shell {
                         }
                     })
                     .child(line_text(row.name.clone(), detail(row), theme))
-                    .when(manages, |line| {
+                    .when(listed, |line| {
+                        line.child(row_action(
+                            ("workspace-open", workspace_id.as_uuid().as_u128() as u64),
+                            text::admin::OPEN,
+                            format!("workspace-open-{workspace_id}"),
+                            None,
+                            cx.listener(move |this, _, window, cx| {
+                                this.open_workspace_overview(workspace_id, window, cx);
+                            }),
+                        ))
+                    })
+                    .when(manages && in_overview, |line| {
                         line.child(row_action(
                             ("workspace-logo", workspace_id.as_uuid().as_u128() as u64),
                             text::admin::WORKSPACE_LOGO,
@@ -258,7 +273,7 @@ impl Shell {
                             }),
                         ))
                     })
-                    .children((manages && row.has_logo).then(|| {
+                    .children((manages && in_overview && row.has_logo).then(|| {
                         row_action(
                             (
                                 "workspace-logo-remove",
@@ -277,7 +292,7 @@ impl Shell {
                             }),
                         )
                     }))
-                    .when(manages, |line| {
+                    .when(manages && in_overview, |line| {
                         line.child(row_action(
                             ("workspace-rename", workspace_id.as_uuid().as_u128() as u64),
                             text::admin::RENAME,
@@ -293,7 +308,7 @@ impl Shell {
                             }),
                         ))
                     })
-                    .when(manages, |line| {
+                    .when(manages && listed, |line| {
                         line.child(row_action(
                             ("workspace-delete", workspace_id.as_uuid().as_u128() as u64),
                             text::admin::DELETE,
@@ -384,7 +399,14 @@ impl Shell {
                     .into_any_element();
                 }
                 if let Some(row) = page.rows.get(index - 1) {
-                    return this.render_workspace_row(&view, &page, row, &theme, cx);
+                    return this.render_workspace_row(
+                        &view,
+                        page.may_manage,
+                        row,
+                        RowPlace::List,
+                        &theme,
+                        cx,
+                    );
                 }
                 this.render_workspaces_footer(&view, &page, cx)
             },
@@ -441,52 +463,67 @@ impl Shell {
                 "workspace-create-refused",
             ));
         }
-        // A further workspace with an invite code.
-        column = column.child(group_label(text::admin::ENTER_CODE, &theme));
-        let enter_code = match self.admin.mode {
-            Some(Mode::EnterCode) => self.render_form(
-                Form {
-                    field: FormField::Value,
-                    label: text::admin::INVITE_CODE,
-                    field_selector: "redeem-code",
-                    send: text::admin::ENTER,
-                    sending: view.sending(AskKind::RedeemInvite),
-                    help: Some(text::admin::ENTER_CODE_HELP),
-                    held: None,
-                    extra: Vec::new(),
+        column.into_any_element()
+    }
+
+    /// Opens the overview of a workspace in the layer, as "Open" of its row does.
+    pub(crate) fn open_workspace_overview(
+        &mut self,
+        workspace_id: WorkspaceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(open) = self.state.read(cx).admin_open() else {
+            return;
+        };
+        self.reset_admin_ui(window, cx);
+        self.state.update(cx, |state, cx| {
+            state.open_admin_in_workspace(
+                AdminOpen::Server {
+                    server_id: open.server_id(),
+                    page: crate::state::admin::AdminPage::WorkspaceOverview,
                 },
+                workspace_id,
+                cx,
+            );
+        });
+    }
+
+    /// The overview of a workspace (ADR 0761).
+    pub(crate) fn render_workspace_overview(
+        &mut self,
+        view: &AdminView,
+        page: &WorkspaceOverviewPage,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let mut column = div()
+            .flex()
+            .flex_col()
+            .child(page_title(
+                text::admin::page_name(crate::state::admin::AdminPage::WorkspaceOverview),
+                text::admin::workspace_overview_help(&page.workspace.name),
+                &theme,
+            ))
+            .child(group_label(text::admin::WORKSPACE_NAME_AND_LOGO, &theme))
+            .child(self.render_workspace_row(
+                view,
+                page.may_manage,
+                &page.workspace,
+                RowPlace::Overview,
                 &theme,
                 cx,
-            ),
-            _ => div()
-                .flex()
-                .flex_col()
-                .child(
-                    div().flex().flex_none().child(
-                        Button::new("redeem-open")
-                            .icon(crate::assets::Icon::Ticket)
-                            .label(text::admin::ENTER_CODE)
-                            .selector("redeem-open")
-                            .h(u(30.0))
-                            .px(u(12.0))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.set_admin_mode(Some(Mode::EnterCode), "", window, cx);
-                            })),
-                    ),
-                )
-                .child(sentence(text::admin::ENTER_CODE_HELP, &theme).mt(u(5.0))),
-        };
-        column = column.child(self.mode_row(&[Mode::EnterCode], enter_code));
-        column = column.children(refusal(
-            view.refused(AskKind::RedeemInvite),
-            "redeem-refused",
-        ));
-        if let Some(workspace_ids) = view.made.iter().find_map(|made| match made {
-            Made::Entered(workspace_ids) => Some(workspace_ids),
-            _ => None,
-        }) {
-            column = column.child(div().flex_none().mt(u(8.0)).child(
-                Notice::new(text::admin::entered(workspace_ids.len())).selector("redeemed"),
+            ));
+        if let Some(notifications) = &page.notifications {
+            column = column.child(self.render_notification_default(view, notifications, cx));
+        }
+        if let Some(channels) = &page.afk_channels {
+            column = column.child(self.render_afk_settings(
+                view.server_id,
+                page.workspace.id,
+                channels,
+                cx,
             ));
         }
         column.into_any_element()

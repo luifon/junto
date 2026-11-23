@@ -31,34 +31,6 @@ async fn server_person_rules_are_loaded_with_role_grants() {
 }
 
 #[tokio::test]
-async fn workspace_person_rules_are_loaded_after_roles() {
-    let server = TestServer::start().await;
-    let owner = server.owner().await;
-    let member = server.join(&owner, "Reader").await;
-    let workspace = server.default_workspace(&owner).await;
-    sqlx::query("insert into workspace_person_overrides(workspace_id,account_id,allow,deny) values($1,$2,$3,$4)")
-        .bind(workspace.id).bind(member.account_id).bind(1_i64 << W::ManageChannel as u8).bind(1_i64 << W::SendMessages as u8)
-        .execute(&server.db).await.unwrap();
-    let mut connection = server.db.acquire().await.unwrap();
-    let access = Access::of_account(&mut connection, member.account_id)
-        .await
-        .unwrap()
-        .unwrap();
-    let scope = access
-        .workspace(&mut connection, workspace.id)
-        .await
-        .unwrap();
-    assert!(access.allows(Request::Workspace {
-        scope: &scope,
-        permission: W::ManageChannel
-    }));
-    assert!(!access.allows(Request::Workspace {
-        scope: &scope,
-        permission: W::SendMessages
-    }));
-}
-
-#[tokio::test]
 async fn inherited_person_and_role_rules_agree_for_single_and_batch_channel_loads() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
@@ -155,8 +127,9 @@ async fn batch_visibility_and_contact_standing_apply_person_rules() {
     let owner = server.owner().await;
     let member = server.join(&owner, "Reader").await;
     let workspace = server.default_workspace(&owner).await;
-    sqlx::query("insert into workspace_person_overrides(workspace_id,account_id,allow,deny) values($1,$2,0,1)")
-        .bind(workspace.id).bind(member.account_id).execute(&server.db).await.unwrap();
+    // Without "view channel" in the everyone role, the reader sees no channel.
+    sqlx::query("update workspace_roles set permissions = permissions & ~1 where workspace_id=$1 and is_everyone")
+        .bind(workspace.id).execute(&server.db).await.unwrap();
     let mut connection = server.db.acquire().await.unwrap();
     let access = Access::of_account(&mut connection, member.account_id)
         .await

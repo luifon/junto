@@ -24,6 +24,7 @@ pub mod maintenance;
 pub mod media;
 pub mod messages;
 pub mod owner;
+pub mod person_rules;
 pub mod proof;
 pub mod purge;
 pub mod rate_limit;
@@ -125,7 +126,8 @@ pub async fn prepare_with(
     media: Option<Arc<dyn media::MediaServer>>,
     recorder: Option<recordings::Backend>,
 ) -> Result<Prepared, StartError> {
-    let started = bootstrap::start(&database, &config.server_name, clock.now()).await?;
+    let started =
+        bootstrap::start(&database, &config.server_name, &config.limits, clock.now()).await?;
     let server_id = started.server_id;
     Ok(Prepared {
         state: AppState::new(database, config, clock, server_id, media, recorder),

@@ -26,6 +26,7 @@ use crate::threads::with_root;
 impl Window {
     /// The texts that the window paints inside the element with this name.
     fn drawn_texts(&mut self, selector: &'static str) -> Vec<String> {
+        self.reveal_nav_row(selector);
         let _record = junto_client::ui::record_painted_text();
         self.cx.update(|window, _| window.refresh());
         self.settle();

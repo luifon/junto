@@ -2871,7 +2871,6 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
         |shell, window, cx| shell.open(Open::Settings, window, cx),
     )?;
     for (name, section) in [
-        ("settings-picture", SettingsSection::Picture),
         ("settings-interface", SettingsSection::Interface),
         ("settings-voice", SettingsSection::VoiceAndVideo),
         // Outside a call the section states what it holds (ADR 0739).

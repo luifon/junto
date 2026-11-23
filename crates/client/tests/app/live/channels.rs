@@ -101,8 +101,7 @@ fn a_voice_channel_made_and_set_in_the_administration_holds_its_settings_in_its_
     // The settings of the channel, while no call runs: a limit of two people, and the
     // people outside do not see who is inside.
     let settings = crate::harness::selector(format!("channel-settings-{lounge}"));
-    window.until("the channel has its row", |window| window.shows(settings));
-    window.click(settings);
+    crate::admin_pages::click_in_page(&mut window, settings);
     window.until("the settings of the channel are open", |window| {
         window.shows("channel-limit") && window.shows("channel-hide")
     });

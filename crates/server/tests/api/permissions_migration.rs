@@ -2,6 +2,8 @@ use junto_authz::{WorkspacePermission as W, WorkspacePermissions};
 use sqlx::ConnectOptions;
 
 #[tokio::test]
+/// Runs up to migration 58, the last one that has the rules of single members in a workspace
+/// (ADR 0301).
 async fn permission_migration_keeps_access_and_custom_channel_rules() {
     let database = crate::support::empty_database().await;
     let mut connection = database.options.connect().await.unwrap();
@@ -28,7 +30,7 @@ async fn permission_migration_keeps_access_and_custom_channel_rules() {
         .bind(custom).bind(workspace).bind(category).bind(plain).execute(&mut connection).await.unwrap();
     sqlx::query("insert into channel_overrides(channel_id,role_id,workspace_id,allow,deny) values($1,$2,$3,4,1)")
         .bind(custom).bind(role).bind(workspace).execute(&mut connection).await.unwrap();
-    crate::migration_identifiers::migrations_up_to(i64::MAX)
+    crate::migration_identifiers::migrations_up_to(58)
         .run(&mut connection)
         .await
         .unwrap();
@@ -195,7 +197,7 @@ async fn person_rules_copied_by_the_migration_stay_when_the_membership_ends() {
         .bind(category).bind(account).bind(workspace).execute(&mut connection).await.unwrap();
     sqlx::query("insert into channel_person_overrides(channel_id,account_id,workspace_id,allow,deny) values($1,$2,$3,0,4)")
         .bind(channel).bind(account).bind(workspace).execute(&mut connection).await.unwrap();
-    crate::migration_identifiers::migrations_up_to(i64::MAX)
+    crate::migration_identifiers::migrations_up_to(58)
         .run(&mut connection)
         .await
         .unwrap();

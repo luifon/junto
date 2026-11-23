@@ -146,13 +146,11 @@ async fn delivery_batch_statement_bound() {
             .map(|(_, calls)| calls)
             .sum();
         // The rules of the reader as a person (ADR 0304) are read once per batch: the rule
-        // of the server, the rule of the workspace of the batch and the rules of all its
-        // channels in one statement, with the events spread over four channels. The bounds
+        // of the server and the rules of all the channels of the batch in one statement, with the events spread over four channels. The bounds
         // are the measured counts, 16 statements per batch of changes and 21 per mixed
         // batch, three of them these reads.
         for person_rules in [
             "select allow,deny from server_person_overrides",
-            "select allow,deny from workspace_person_overrides",
             "select channel_id,allow,deny from effective_channel_person_overrides",
         ] {
             let calls: i64 = counts

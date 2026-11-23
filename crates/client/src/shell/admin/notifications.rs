@@ -1,16 +1,15 @@
-//! The page "Notifications" of a workspace (ADR 0761): the notification level that the
-//! workspace sets for its members, with "not set" (ADR 0412).
+//! The notification level that a workspace sets for its members, with "not set" (ADR 0412),
+//! a part of the overview of the workspace (ADR 0761).
 
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
-    Window, div,
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div,
 };
 
-use super::{group_label, page_title, refusal, sentence};
+use super::{group_label, refusal, sentence};
 use crate::shell::Shell;
+use crate::state::admin::AskKind;
 use crate::state::admin::view::AdminView;
 use crate::state::admin::view::notifications::{DefaultChoice, NotificationsPage};
-use crate::state::admin::{AdminPage, AskKind};
 use crate::text;
 use crate::text::admin::notifications as txt;
 use crate::theme::{theme, u};
@@ -20,11 +19,11 @@ use crate::ui::{Segmented, StyleExt};
 const LEVEL_WIDTH: f32 = 520.0;
 
 impl Shell {
-    pub(crate) fn render_notifications_page(
+    /// The notification level of a workspace, a part of the overview of the workspace.
+    pub(crate) fn render_notification_default(
         &mut self,
         view: &AdminView,
         page: &NotificationsPage,
-        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -67,12 +66,9 @@ impl Shell {
         let mut column = div()
             .flex()
             .flex_col()
-            .child(page_title(
-                text::admin::page_name(AdminPage::Notifications),
-                txt::help(&page.workspace_name),
-                &theme,
-            ))
+            .flex_none()
             .child(group_label(txt::LEVEL, &theme))
+            .child(sentence(txt::help(&page.workspace_name), &theme).mb(u(4.0)))
             .child(
                 div()
                     .flex()
