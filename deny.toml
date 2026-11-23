@@ -55,4 +55,10 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained as a separate crate; a part of zbus" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained as a separate crate; a part of zbus" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained as a separate crate; a part of zbus" },
+    # Unmaintained notices with no fixed version that name no defect. chrono stays in the
+    # lock through the vendored gpui set and livekit whatever the client does. chrono-tz is a
+    # dependency of the client itself, for its named time zones; its replacement, with the
+    # client's own calls of chrono, is planned. Review by 2027-02-23.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: unmaintained; a dependency of gpui, of the component library, of livekit and of the client" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz: unmaintained; a dependency of the client for its named time zones" },
 ]
