@@ -23,8 +23,9 @@ use crate::version::Incompatibility;
 pub mod access;
 pub mod add_server;
 pub mod approve_link;
-pub mod link_all;
+pub mod link_device;
 pub(crate) mod machine;
+pub mod relay;
 
 /// What an interface reads from a flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,8 +110,29 @@ pub enum FlowError {
     UnknownServer,
     #[error("the code expired")]
     Expired,
-    #[error("the text is not a valid {0}")]
-    InvalidBundle(&'static str),
+    /// This device already has an account on the server that it would be linked on.
+    #[error("this device already has an account on the server")]
+    AlreadyLinked,
+    /// A message of the relay of a device link is not signed by the key that the person
+    /// compared (ADR 0104).
+    #[error("the message of the other device is not signed by the key that was compared")]
+    NotSignedByDevice,
+    #[error("no server is chosen")]
+    NoServerChosen,
+    /// More servers are checked for a device link than its relay passes on (ADR 0104).
+    #[error("at most {most} servers can be linked at once")]
+    TooManyServers { most: usize },
+    /// The first server of a device link answered with another key than the one that the
+    /// person compared, so nothing that it relays is trusted (ADR 0104).
+    #[error("the first server added a device with another key than the one that was compared")]
+    OtherKeyApproved,
+    /// The first server of a device link keeps no relay, so the other servers cannot be
+    /// passed to the new device through it (ADR 0104).
+    #[error("the first server cannot pass the other servers to the new device")]
+    RelayNotAvailable,
+    /// The new device could not ask the server for a link. The reason is its own text.
+    #[error("the new device could not ask this server for a link: {0}")]
+    OnNewDevice(String),
     /// An action over several servers ended, and some of them failed. Each server has its
     /// own result.
     #[error("{failed} of {total} servers did not succeed")]

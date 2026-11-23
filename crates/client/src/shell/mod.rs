@@ -117,7 +117,10 @@ pub(crate) enum Layer {
     AddServer(add_server::AddWindow),
     /// The menu of a server, at the place where it was opened.
     ServerMenu(ServerId, MenuAt),
+    /// The own menu of the user bar: the status and the status text (ADR 0401).
     Presence(junto_client_core::Owner),
+    /// The dialog of the own status text.
+    StatusText(junto_client_core::Owner),
     Profile,
     ConfirmRemove(ServerId),
     ConfirmForget(ServerId),
@@ -227,6 +230,7 @@ impl Layer {
             | Layer::SearchFilter(..)
             | Layer::RecordingFiles(..)
             | Layer::RecordingParts(..)
+            | Layer::Presence(..)
             | Layer::RecordLanguage => false,
             Layer::Welcome
             | Layer::Settings
@@ -234,7 +238,7 @@ impl Layer {
             | Layer::Prejoin(..)
             | Layer::Join(..)
             | Layer::AddServer(..)
-            | Layer::Presence(..)
+            | Layer::StatusText(..)
             | Layer::Profile
             | Layer::ConfirmRemove(..)
             | Layer::ConfirmForget(..)
@@ -358,6 +362,8 @@ pub struct Shell {
     /// The person chose push to talk in the settings, and the settings ask before the
     /// switch (ADR 0507).
     push_to_talk_question: bool,
+    /// The permissions of the settings whose steps are shown.
+    pub(crate) permission_steps: Vec<crate::permissions::Permission>,
     /// The keys that the window holds, and the binding whose keys the settings wait for
     /// (ADR 0777).
     pub(crate) keys: keybinds::WindowKeys,
@@ -525,6 +531,9 @@ pub struct Shell {
     pub(crate) joins_opened: u64,
     /// The number of results of join actions that this window has received.
     pub(crate) join_results: u64,
+    /// The administration page that opened the notification dialog of a channel, which
+    /// opens again when the dialog closes.
+    pub(crate) notify_return: Option<crate::state::admin::AdminOpen>,
     // The messages.
     /// The list of the messages of the shown channel.
     pub(crate) feed: feed::FeedList,
@@ -569,6 +578,15 @@ pub struct Shell {
     /// The text of the search field of the header.
     pub(crate) search_field: Entity<InputState>,
     voice_status_field: Entity<InputState>,
+    /// The field of the own status text, and its end (ADR 0401).
+    pub(crate) status_text_field: Entity<InputState>,
+    pub(crate) status_text_end: crate::state::presence::StatusTextEnd,
+    pub(crate) status_text_refusal: Option<&'static str>,
+    pub(crate) status_text_date: Entity<InputState>,
+    pub(crate) status_text_time: Entity<InputState>,
+    /// The saved end of the own status text and the date and time that show it. While the
+    /// fields keep them, a save keeps the saved end to the second.
+    pub(crate) status_text_kept: Option<(time::OffsetDateTime, String, String)>,
     search_from: Entity<InputState>,
     search_through: Entity<InputState>,
     search_date_invalid: bool,
@@ -666,6 +684,9 @@ impl Shell {
         let contact_part = Field::state(text::CONTACT_PART, window, cx);
         let search_field = Field::state(text::SEARCH, window, cx);
         let voice_status_field = Field::state("Status", window, cx);
+        let status_text_field = Field::state(text::presence::STATUS_TEXT_PLACEHOLDER, window, cx);
+        let status_text_date = Field::state(text::presence::END_DATE_PLACEHOLDER, window, cx);
+        let status_text_time = Field::state(text::presence::END_TIME_PLACEHOLDER, window, cx);
         let search_from = Field::state("YYYY-MM-DD", window, cx);
         let search_through = Field::state("YYYY-MM-DD", window, cx);
         let quiet_from = Field::state(text::QUIET_FROM, window, cx);
@@ -691,6 +712,15 @@ impl Shell {
         let book = book::BookUi::new(window, cx);
         let arrange = arrange::ArrangeUi::new(window, cx);
         let mut subscriptions = vec![
+            Field::observe(
+                &status_text_field,
+                window,
+                cx,
+                |this: &mut Self, event, window, cx| match event {
+                    FieldEvent::Submitted => this.save_status_text(window, cx),
+                    FieldEvent::Changed => cx.notify(),
+                },
+            ),
             Field::observe(
                 &voice_status_field,
                 window,
@@ -1000,6 +1030,7 @@ impl Shell {
             focused_camera: std::cell::Cell::new(None),
             stage_area: std::rc::Rc::default(),
             push_to_talk_question: false,
+            permission_steps: Vec::new(),
             keys: keybinds::WindowKeys::default(),
             share_dialog_parent: None,
             pictures: share::ShownPictures::default(),
@@ -1046,6 +1077,7 @@ impl Shell {
             add_code,
             joins_opened: 0,
             join_results: 0,
+            notify_return: None,
             feed,
             message_pictures: feed::MessagePictures::default(),
             viewer_reads: 0,
@@ -1072,6 +1104,12 @@ impl Shell {
             record_language_closed_by_press: false,
             search_field,
             voice_status_field,
+            status_text_field,
+            status_text_end: crate::state::presence::StatusTextEnd::Never,
+            status_text_refusal: None,
+            status_text_date,
+            status_text_time,
+            status_text_kept: None,
             search_from,
             search_through,
             search_date_invalid: false,
@@ -1121,7 +1159,12 @@ impl Shell {
                 .update(cx, |state, cx| state.set_window_active(active, cx));
         }
         let notes = shell.state.read(cx).release_notes_due().to_vec();
-        if !detached && shell.state.read(cx).preset_name().is_empty() {
+        // A device that is linked to an account has servers: it needs no name for new
+        // accounts at its start (ADR 0782).
+        if !detached
+            && shell.state.read(cx).preset_name().is_empty()
+            && shell.state.read(cx).client().servers().is_empty()
+        {
             shell.open_layer(Layer::Welcome, window, cx);
             shell.focus_field(&shell.name.clone(), window, cx);
         } else if !detached && !notes.is_empty() {
@@ -2393,8 +2436,12 @@ impl Shell {
                 .as_ref()
                 .is_none_or(|strip| strip.own_shares.is_empty()),
             Layer::Profile => self.state.read(cx).profile_view(cx.entity_id()).is_none(),
-            Layer::Presence(owner) => {
-                self.state.read(cx).owner(owner.entry.server_id) != Some(*owner)
+            Layer::Presence(owner) | Layer::StatusText(owner) => {
+                self.state
+                    .read(cx)
+                    .presence_server(owner.entry.server_id)
+                    .map(crate::state::presence::ServerPresence::owner)
+                    != Some(*owner)
             }
             Layer::NewDirect => {
                 self.state.read(cx).contacts_view().is_none()
@@ -2524,7 +2571,8 @@ impl Shell {
             Layer::Admin => self.render_admin(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
             Layer::Profile => self.render_profile(cx),
-            Layer::Presence(owner) => self.render_presence(owner.entry.server_id, cx),
+            Layer::Presence(owner) => self.render_presence(*owner, cx),
+            Layer::StatusText(_) => self.render_status_text(cx),
             Layer::QuickSwitcher => self.render_switcher(window, cx),
             Layer::NewDirect => self.render_new_direct(window, cx),
             Layer::GroupConversation => self.render_group_details(cx),

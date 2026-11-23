@@ -32,6 +32,7 @@ mod concurrency;
 mod contacts;
 mod deletions;
 mod departures;
+mod device_relay;
 mod devices;
 mod downloads;
 mod exports;

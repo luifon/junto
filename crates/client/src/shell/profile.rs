@@ -35,6 +35,18 @@ impl Shell {
         }
         self.profile_layer(window, cx);
     }
+    /// Opens the profile card of an account, as a press on the avatar of that account in a
+    /// message or in the members list does.
+    #[cfg(feature = "test-support")]
+    pub fn open_profile_card(
+        &mut self,
+        server: junto_client_core::protocol::ids::ServerId,
+        account: junto_client_core::protocol::ids::AccountId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_profile(OpenProfile { server, account }, window, cx);
+    }
     #[cfg(feature = "test-support")]
     pub fn show_profile_fixture(
         &mut self,
@@ -181,6 +193,18 @@ impl Shell {
                                         .typeface(theme.types.small, &theme)
                                         .ink(theme.colors.ink_2)
                                         .child(text::presence::label(faces.presence(view.account))),
+                                )
+                                .when_some(
+                                    faces.status_text(view.account).map(text::label),
+                                    |column, status| {
+                                        column.child(
+                                            div()
+                                                .debug_selector(|| "profile-status-text".to_owned())
+                                                .typeface(theme.types.small, &theme)
+                                                .ink(theme.colors.ink)
+                                                .child(status),
+                                        )
+                                    },
                                 ),
                         ),
                 );

@@ -4552,7 +4552,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
         notify: selection.notify.and_then(|(server_id, scope)| {
             let server = servers.iter().find(|server| server.id == server_id)?;
             let model = shown_model(server).filter(|_| status(server).shows_content())?;
-            super::notices::notify_panel(server_id, &server.name, scope, model, known)
+            super::notices::notify_panel(server_id, scope, model, known)
         }),
         quiet: {
             let with_session: Vec<(ServerId, &str, &ServerModel)> = servers

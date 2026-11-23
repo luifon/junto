@@ -292,7 +292,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 22;
+pub const EVENT_REVISION: u32 = 23;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -315,6 +315,11 @@ pub enum Event {
     },
     /// A device of the account was removed. Its sessions have ended.
     DeviceRemoved {
+        device_id: DeviceId,
+    },
+    /// The relay of the link of the new device `device_id` was created or answered: its two
+    /// devices read it again (revision 23, ADR 0104).
+    DeviceLinkRelayChanged {
         device_id: DeviceId,
     },
     DeviceLoggedIn {
@@ -813,6 +818,7 @@ impl Event {
     pub const NAMES: &'static [&'static str] = &[
         "device_added",
         "device_renamed",
+        "device_link_relay_changed",
         "device_removed",
         "device_logged_in",
         "device_logged_out",
@@ -914,6 +920,7 @@ impl Event {
     pub const fn name(&self) -> &'static str {
         match self {
             Self::DeviceAdded { .. } => "device_added",
+            Self::DeviceLinkRelayChanged { .. } => "device_link_relay_changed",
             Self::DeviceRenamed { .. } => "device_renamed",
             Self::DeviceRemoved { .. } => "device_removed",
             Self::DeviceLoggedIn { .. } => "device_logged_in",
@@ -1238,6 +1245,7 @@ mod tests {
                 device_id,
                 name: "laptop".to_owned(),
             },
+            Event::DeviceLinkRelayChanged { device_id },
             Event::DeviceRemoved { device_id },
             Event::DeviceLoggedIn {
                 device_id,

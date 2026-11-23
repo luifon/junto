@@ -164,7 +164,7 @@ fn push_to_talk_follows_both_windows(cx: &mut TestAppContext) {
     turn_processing_off(&mut window);
     window.state.update(&mut window.cx, |state, cx| {
         state.set_input_mode(junto_client_core::voice::InputMode::PushToTalk, cx);
-        state.set_talk_key(junto_client_core::voice::TalkKey::Control, cx);
+        state.set_talk_keys(junto_client_core::voice::TalkKey::Control.combo(), cx);
     });
     let voice = room(&mut window);
     enter(

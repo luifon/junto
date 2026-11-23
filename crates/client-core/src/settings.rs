@@ -290,6 +290,28 @@ impl SettingsStore {
         Ok(self.update_all(|settings, _| change(settings))?.0)
     }
 
+    /// Moves the key of push to talk out of the voice settings into its key binding, once
+    /// (ADR 0777): a binding that still takes the key of the voice settings gets that key,
+    /// and the voice settings keep the default key, which a client of 0.2 reads only while
+    /// the binding takes it. Nothing is written when the binding has its own keys.
+    pub fn adopt_talk_key(&self, voice: &crate::voice::VoiceStore) -> Result<(), StorageError> {
+        if !self
+            .load_keybinds()?
+            .get(crate::keybinds::KeyAction::PushToTalk)
+            .inherited
+        {
+            return Ok(());
+        }
+        let talk_key = voice.load()?.talk_key;
+        self.update_keybinds(|keybinds| {
+            keybinds.adopt_talk_key(talk_key.combo());
+        })?;
+        if talk_key != crate::voice::TalkKey::default() {
+            voice.update(|settings| settings.talk_key = crate::voice::TalkKey::default())?;
+        }
+        Ok(())
+    }
+
     /// As [`SettingsStore::update`], for the key bindings.
     pub fn update_keybinds(
         &self,
@@ -363,6 +385,58 @@ mod tests {
         let data_dir = DataDir::open(directory.path().join("junto")).unwrap();
         let store = SettingsStore::new(data_dir.clone());
         (directory, data_dir, store)
+    }
+
+    #[test]
+    fn the_key_of_push_to_talk_moves_into_its_binding_once() {
+        use crate::keybinds::KeyAction;
+        use crate::voice::{TalkKey, VoiceStore};
+        let (_directory, data_dir, store) = store();
+        let voice = VoiceStore::new(data_dir.clone());
+        voice
+            .update(|settings| settings.talk_key = TalkKey::Control)
+            .unwrap();
+        assert!(
+            store
+                .load_keybinds()
+                .unwrap()
+                .get(KeyAction::PushToTalk)
+                .inherited
+        );
+        store.adopt_talk_key(&voice).unwrap();
+        let binding = store.load_keybinds().unwrap().get(KeyAction::PushToTalk);
+        assert!(!binding.inherited);
+        assert_eq!(binding.keys, Some(TalkKey::Control.combo()));
+        // The voice settings keep the default key, which a client of 0.2 reads only while
+        // its binding takes it.
+        assert_eq!(voice.load().unwrap().talk_key, TalkKey::default());
+
+        // A binding with its own keys is not changed, and nothing is written.
+        let file = data_dir.root().join(SETTINGS_FILE);
+        let written = fs::metadata(&file).unwrap().modified().unwrap();
+        voice
+            .update(|settings| settings.talk_key = TalkKey::Control)
+            .unwrap();
+        store.adopt_talk_key(&voice).unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), written);
+        assert_eq!(
+            store
+                .load_keybinds()
+                .unwrap()
+                .get(KeyAction::PushToTalk)
+                .keys,
+            Some(TalkKey::Control.combo())
+        );
+
+        // A binding that kept only its outside switch keeps it at the move.
+        let (_other, other_dir, other) = self::store();
+        other
+            .update_keybinds(|keys| keys.set_outside(KeyAction::PushToTalk, false).unwrap())
+            .unwrap();
+        other.adopt_talk_key(&VoiceStore::new(other_dir)).unwrap();
+        let binding = other.load_keybinds().unwrap().get(KeyAction::PushToTalk);
+        assert!(!binding.outside);
+        assert_eq!(binding.keys, Some(TalkKey::Alt.combo()));
     }
 
     #[test]

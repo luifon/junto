@@ -769,12 +769,7 @@ impl Shell {
                 .icon(Icon::Bell)
                 .selector("workspace-notifications")
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_notify_settings(
-                        server_id,
-                        junto_client_core::api::SettingsScope::Workspace(workspace_id),
-                        window,
-                        cx,
-                    );
+                    this.open_own_notifications(server_id, window, cx);
                 }))
                 .into_any_element(),
             );

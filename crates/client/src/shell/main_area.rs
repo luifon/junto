@@ -1941,6 +1941,23 @@ impl Shell {
                                     )
                                 }),
                         )
+                        // The status text of the person, with the status (ADR 0401).
+                        .when_some(
+                            faces.status_text(account_id).map(text::label),
+                            |column, status| {
+                                column.child(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("member-status-text:{account_id}")
+                                        })
+                                        .typeface(theme.types.small, &theme)
+                                        .line_height(u(18.0))
+                                        .ink(colors.ink)
+                                        .truncate()
+                                        .child(status),
+                                )
+                            },
+                        )
                         .when(!detail.is_empty(), |column| {
                             column.child(
                                 div()

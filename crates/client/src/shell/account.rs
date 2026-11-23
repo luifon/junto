@@ -63,11 +63,7 @@ pub(crate) struct AccountUi {
     pub(crate) name: Entity<InputState>,
     /// The new name of a device.
     pub(crate) device_name: Entity<InputState>,
-    /// The link code of a new device.
-    pub(crate) code: Entity<InputState>,
     pub(crate) mode: Option<Mode>,
-    /// Why the text of the code field was not sent.
-    pub(crate) invalid: Option<&'static str>,
     /// Why a file that the dialog returned was not sent as the picture.
     pub(crate) picture_refused: Option<&'static str>,
     /// The request that the open form or question was sent as.
@@ -83,7 +79,6 @@ impl AccountUi {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> (Self, Vec<Subscription>) {
         let name = Field::state(text::account::NAME_FIELD, window, cx);
         let device_name = Field::state(text::account::DEVICE_NAME, window, cx);
-        let code = Field::state("", window, cx);
         let subscriptions = vec![
             Field::observe(
                 &name,
@@ -103,22 +98,11 @@ impl AccountUi {
                     FieldEvent::Submitted => this.submit_device_name(window, cx),
                 },
             ),
-            Field::observe(
-                &code,
-                window,
-                cx,
-                |this: &mut Shell, event, window, cx| match event {
-                    FieldEvent::Changed => this.link_code_changed(cx),
-                    FieldEvent::Submitted => this.submit_link_code(window, cx),
-                },
-            ),
         ];
         let ui = Self {
             name,
             device_name,
-            code,
             mode: None,
-            invalid: None,
             picture_refused: None,
             sent: None,
             space: FormSpace::default(),
@@ -282,7 +266,6 @@ impl Shell {
     /// code is not kept in a field that nobody sees.
     pub(crate) fn reset_account_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.account.mode = None;
-        self.account.invalid = None;
         self.account.picture_refused = None;
         self.account.sent = None;
         self.account.space.release();
@@ -290,11 +273,7 @@ impl Shell {
         {
             self.account.drawn = None;
         }
-        for field in [
-            self.account.name.clone(),
-            self.account.device_name.clone(),
-            self.account.code.clone(),
-        ] {
+        for field in [self.account.name.clone(), self.account.device_name.clone()] {
             field.update(cx, |field, cx| field.set_value("", window, cx));
         }
     }
@@ -348,7 +327,6 @@ impl Shell {
                 }
             }
         }
-        self.settle_link_code(view, window, cx);
     }
 
     fn account_name_changed(&mut self, cx: &mut Context<Self>) {

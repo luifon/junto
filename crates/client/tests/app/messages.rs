@@ -2111,7 +2111,7 @@ fn a_file_dialog_answered_after_the_server_was_added_again_attaches_nothing(
     world
         .run(phone.api().approve_device_link(code, public_key))
         .unwrap();
-    window.click("dialog-close");
+    window.click("link-all-close");
     window.until("the channel is shown for the same account", |window| {
         window.view().person.account_id == Some(luca)
             && window

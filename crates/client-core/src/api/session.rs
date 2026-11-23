@@ -11,6 +11,7 @@ use junto_protocol::account::{
     LookUpDeviceLink, ModerationNoticePage, OwnAccount, PendingDeviceLink, RecoverAccount,
     RecoveryNotice, RenameDevice, UpdateProfile,
 };
+use junto_protocol::device_relay::{AnswerRelay, RelayAnswer, RelayOffer, Sealed};
 use junto_protocol::ids::{
     AccountId, CategoryId, ChannelId, DeviceId, InviteId, JoinRequestId, RecoveryId, ServerRoleId,
     WorkspaceId, WorkspaceRoleId,
@@ -454,9 +455,53 @@ impl ServerApi {
         code: LinkCode,
         public_key: PublicKey,
     ) -> Result<Device, ApiError> {
+        self.approve_device_link_with(code, public_key, None).await
+    }
+
+    /// Like [`Self::approve_device_link`], with the offer that the server keeps in the relay
+    /// of the link (ADR 0104). Only for a server that states the relay.
+    pub async fn approve_device_link_with(
+        &self,
+        code: LinkCode,
+        public_key: PublicKey,
+        relay: Option<Sealed>,
+    ) -> Result<Device, ApiError> {
         let path = "/account/device-links/approve".to_owned();
-        self.send(Method::Post, path, &ApproveDeviceLink { code, public_key })
+        let body = ApproveDeviceLink {
+            code,
+            public_key,
+            relay,
+        };
+        self.send(Method::Post, path, &body).await
+    }
+
+    /// The offer of the device that approved this one.
+    pub async fn read_relay_offer(&self) -> Result<RelayOffer, ApiError> {
+        self.get("/account/device-link-relay".to_owned()).await
+    }
+
+    /// Writes the answer of this device to the offer; it replaces an earlier answer.
+    pub async fn answer_relay(&self, answer: Sealed) -> Result<(), ApiError> {
+        let path = "/account/device-link-relay/answer".to_owned();
+        let body = Some(encode(&AnswerRelay { answer })?);
+        self.call(Method::Put, path, Vec::new(), body)
             .await
+            .map(|_| ())
+    }
+
+    /// The answer of the new device `device_id`, which this device approved.
+    pub async fn read_relay_answer(&self, device_id: DeviceId) -> Result<RelayAnswer, ApiError> {
+        self.get(format!("/account/device-link-relays/{device_id}"))
+            .await
+    }
+
+    /// Ends the relay of the link of the new device `device_id`.
+    pub async fn end_relay(&self, device_id: DeviceId) -> Result<(), ApiError> {
+        self.act(
+            Method::Delete,
+            format!("/account/device-link-relays/{device_id}"),
+        )
+        .await
     }
 
     // Invites and join requests.

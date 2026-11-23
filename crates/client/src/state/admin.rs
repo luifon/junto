@@ -77,6 +77,8 @@ pub enum AdminPage {
     Recoveries,
     /// Leaving a workspace and deleting the account (ADR 0121).
     Departure,
+    /// The notification levels that the person chose on this server (ADR 0742).
+    OwnNotifications,
 }
 
 impl AdminPage {

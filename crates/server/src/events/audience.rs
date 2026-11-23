@@ -62,6 +62,7 @@ impl Class {
             } => Self::General,
             Event::WorkspaceAfkChanged { .. }
             | Event::DeviceAdded { .. }
+            | Event::DeviceLinkRelayChanged { .. }
             | Event::JoinRequestCreated { .. }
             | Event::JoinRequestDecided { .. }
             | Event::JoinRequestWithdrawn { .. }
@@ -745,6 +746,7 @@ impl Audience {
                 None => permission(ServerPermission::Administrator),
             },
             Event::DeviceAdded { .. }
+            | Event::DeviceLinkRelayChanged { .. }
             | Event::DeviceRenamed { .. }
             | Event::DeviceRemoved { .. }
             | Event::DeviceLoggedIn { .. }
@@ -918,6 +920,7 @@ impl Audience {
             ) => workspace_id == w && channel_id == ch,
             (
                 Event::DeviceAdded { .. }
+                | Event::DeviceLinkRelayChanged { .. }
                 | Event::DeviceRenamed { .. }
                 | Event::DeviceRemoved { .. }
                 | Event::DeviceLoggedIn { .. }

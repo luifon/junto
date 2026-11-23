@@ -13,7 +13,7 @@ use junto_client_core::protocol::account::Departure;
 use junto_client_core::protocol::call::{BlockReason, LeaveReason, ShareAudio};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::version::Incompatibility;
-use junto_client_core::voice::{ShareResolution, TalkKey};
+use junto_client_core::voice::ShareResolution;
 use junto_media::calls::{EndReason, MicrophoneClosed, Unused};
 use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureError, ShareKind};
@@ -1170,54 +1170,111 @@ pub const ALL_SOUNDS_HELP: &str =
 pub const ALL_SOUNDS_ARE_OFF: &str = "All sounds are off.";
 
 /// The name and the sentence of the switch of a kind of sounds.
-pub fn sound_kind(kind: junto_client_core::voice::SoundKind) -> (&'static str, &'static str) {
+/// The title of a sound, and a sentence only where the title does not say when the sound
+/// plays.
+pub fn sound_kind(
+    kind: junto_client_core::voice::SoundKind,
+) -> (&'static str, Option<&'static str>) {
     use junto_client_core::voice::SoundKind;
     match kind {
         SoundKind::Messages => (
             "Messages",
-            "A new message in a place that you do not look at, when the place notifies you of all messages, and a reply in a thread that you follow.",
+            Some(
+                "A new message in a place that you do not look at, when the place notifies you of all messages, and a reply in a thread that you follow.",
+            ),
         ),
         SoundKind::Mentions => (
             "Mentions and direct messages",
-            "A mention of you, a direct message, a call that you missed.",
+            Some("A mention of you, a direct message, a call that you missed."),
         ),
-        SoundKind::Ring => ("Incoming call", "The ring of a direct call to you."),
-        SoundKind::CallJoined => ("You join a call", "You enter a call."),
-        SoundKind::CallLeft => ("You leave a call", "You leave a call or it ends."),
-        SoundKind::Moved => ("You are moved", "A moderator moves you to another call."),
+        SoundKind::Ring => ("Incoming call", None),
+        SoundKind::CallJoined => ("You join a call", None),
+        SoundKind::CallLeft => ("You leave a call", Some("You leave a call or it ends.")),
+        SoundKind::Moved => (
+            "You are moved",
+            Some("A moderator moves you to another call."),
+        ),
         SoundKind::ConnectionLost => (
             "Call connection lost",
-            "The call reconnects after losing its connection.",
+            Some("The call reconnects after losing its connection."),
         ),
-        SoundKind::PersonJoined => ("Someone joins", "Another person joins your call."),
-        SoundKind::PersonLeft => ("Someone leaves", "Another person leaves your call."),
-        SoundKind::MicrophoneOff => ("Microphone off", "Your microphone closes."),
-        SoundKind::MicrophoneOn => ("Microphone on", "Your microphone opens."),
-        SoundKind::SoundOff => ("Sound off", "You turn the sound off."),
-        SoundKind::SoundOn => ("Sound on", "You turn the sound on."),
-        SoundKind::TalkStarts => ("Push to talk pressed", "You press the push to talk key."),
-        SoundKind::TalkEnds => ("Push to talk released", "You release the push to talk key."),
-        SoundKind::ShareStarted => ("Share starts", "A share starts in your call."),
-        SoundKind::ShareEnded => ("Share ends", "A share ends in your call."),
-        SoundKind::ViewerJoined => ("Viewer joins", "Someone starts watching your share."),
-        SoundKind::ViewerLeft => ("Viewer leaves", "Someone stops watching your share."),
-        SoundKind::Invitation => ("Call invitation", "Someone invites you into a call."),
+        SoundKind::PersonJoined => ("Someone joins your call", None),
+        SoundKind::PersonLeft => ("Someone leaves your call", None),
+        SoundKind::MicrophoneOff => ("Microphone off", None),
+        SoundKind::MicrophoneOn => ("Microphone on", None),
+        SoundKind::SoundOff => ("Sound off", None),
+        SoundKind::SoundOn => ("Sound on", None),
+        SoundKind::TalkStarts => ("Push to talk pressed", None),
+        SoundKind::TalkEnds => ("Push to talk released", None),
+        SoundKind::ShareStarted => ("Share starts", None),
+        SoundKind::ShareEnded => ("Share ends", None),
+        SoundKind::ViewerJoined => ("Someone watches your share", None),
+        SoundKind::ViewerLeft => ("Someone stops watching your share", None),
+        SoundKind::Invitation => ("Call invitation", None),
         SoundKind::Request => (
             "Entry or join request",
-            "Someone asks to enter your call or join your server.",
+            Some("Someone asks to enter your call or join your server."),
         ),
-        SoundKind::RecordingStarted => ("Recording starts", "Your call starts being recorded."),
-        SoundKind::RecordingStopped => ("Recording stops", "Your call stops being recorded."),
-        SoundKind::HandRaised => ("Hand raised", "Someone raises a hand that you may lower."),
+        SoundKind::RecordingStarted => ("Recording starts", None),
+        SoundKind::RecordingStopped => ("Recording stops", None),
+        SoundKind::HandRaised => (
+            "Hand raised",
+            Some("Someone raises a hand that you may lower."),
+        ),
     }
 }
 
+/// The groups of the Sounds section, in their order, with their sounds (ADR 0707).
+pub const SOUND_GROUPS: [(&str, &[junto_client_core::voice::SoundKind]); 5] = {
+    use junto_client_core::voice::SoundKind as K;
+    [
+        ("Messages", &[K::Messages, K::Mentions]),
+        (
+            "Calls",
+            &[
+                K::Ring,
+                K::Invitation,
+                K::CallJoined,
+                K::CallLeft,
+                K::PersonJoined,
+                K::PersonLeft,
+                K::Moved,
+                K::ConnectionLost,
+                K::HandRaised,
+            ],
+        ),
+        (
+            "Your microphone and sound",
+            &[
+                K::MicrophoneOff,
+                K::MicrophoneOn,
+                K::SoundOff,
+                K::SoundOn,
+                K::TalkStarts,
+                K::TalkEnds,
+            ],
+        ),
+        (
+            "Shares",
+            &[
+                K::ShareStarted,
+                K::ShareEnded,
+                K::ViewerJoined,
+                K::ViewerLeft,
+            ],
+        ),
+        (
+            "Requests and recordings",
+            &[K::Request, K::RecordingStarted, K::RecordingStopped],
+        ),
+    ]
+};
+
 /// The question before the switch to push to talk.
-pub fn push_to_talk_question(key: TalkKey) -> String {
+pub fn push_to_talk_question(keys: &str) -> String {
     format!(
-        "With push to talk, your microphone sends sound only while you hold {}. Switch to push \
-         to talk?",
-        talk_key(key)
+        "With push to talk, your microphone sends sound only while you hold {keys}. Switch to \
+         push to talk?"
     )
 }
 
@@ -1233,8 +1290,6 @@ pub const CHANGE_KEYS: &str = "Change";
 pub const REMOVE_KEYS: &str = "Remove";
 pub const RESET_KEYS: &str = "Reset";
 pub const KEYBIND_OUTSIDE: &str = "Also while another application is in front";
-pub const TALK_KEY_FROM_VOICE: &str =
-    "The key of the sound settings, until you set another one here.";
 pub const CALL_KEYS_IN_KEYBINDS: &str =
     "The mute key, push to mute and the other keys of a call are in Keybinds.";
 
@@ -1418,14 +1473,6 @@ pub fn push_to_talk_mark(keys: &junto_client_core::global_keys::KeyCombo) -> Str
 }
 pub const PUSH_TO_TALK_MARK_HELP: &str =
     "Change the input mode in the app settings, under Voice and video.";
-
-pub fn talk_key(key: TalkKey) -> &'static str {
-    match key {
-        TalkKey::Alt if cfg!(target_os = "macos") => "Option",
-        TalkKey::Alt => "Alt",
-        TalkKey::Control => "Control",
-    }
-}
 
 /// How the last join or call ended, when the person did not end it.
 pub fn call_notice(notice: &CallNotice) -> String {
@@ -1737,7 +1784,11 @@ pub fn link_code(code: &str) -> String {
 }
 
 // The first start and the settings.
-pub const WELCOME_TITLE: &str = "Your name";
+pub const WELCOME_TITLE: &str = "Welcome to Junto";
+pub const WELCOME_NEW: &str = "I am new to Junto";
+pub const WELCOME_OTHER_COMPUTER: &str = "I use Junto on another computer";
+pub const WELCOME_OTHER_COMPUTER_HELP: &str = "Link this device to your account with a code that you type on the other \
+     computer. Your name and picture come from your servers.";
 pub const WELCOME: &str = "People on a server see this name. A new account on a server starts \
      with it. You can change it in Settings, “Name and picture for new servers”.";
 pub const NAME_FIELD: &str = "Name";
@@ -1757,7 +1808,8 @@ pub const PROFILE_NAME_HELP: &str = "A new account on a server starts with this 
      picture. Your profile on a server you joined is in Server settings, Your account.";
 pub const SAVE: &str = "Save";
 pub const SAVED: &str = "Saved";
-pub const INTERFACE: &str = "Interface";
+pub const APPEARANCE: &str = "Appearance";
+pub const START_AND_CLOSE: &str = "Start and close";
 pub const SCALE: &str = "Scale";
 pub const SCALE_HELP: &str = "The size of text and controls in this window.";
 pub const THEME: &str = "Theme";
@@ -1905,7 +1957,26 @@ pub fn flow_error(error: &FlowError) -> String {
         ),
         FlowError::UnknownServer => "The server is not in the server book.".to_owned(),
         FlowError::Expired => "The code expired.".to_owned(),
-        FlowError::InvalidBundle(kind) => format!("The text is not a valid {kind}."),
+        FlowError::AlreadyLinked => "This device already has an account on the server.".to_owned(),
+        FlowError::NotSignedByDevice => "The message of the other device is not signed by the \
+             device code that was compared."
+            .to_owned(),
+        FlowError::NoServerChosen => "No server is chosen.".to_owned(),
+        FlowError::TooManyServers { most } => {
+            format!(
+                "At most {most} servers can be linked at once. Uncheck some, and link them later."
+            )
+        }
+        FlowError::OtherKeyApproved => "The server added a device with another device code than \
+             the one that you compared. No other server was asked. Remove that device in \
+             Linked devices."
+            .to_owned(),
+        FlowError::RelayNotAvailable => "The first server cannot pass the other servers to the \
+             new device."
+            .to_owned(),
+        FlowError::OnNewDevice(reason) => {
+            format!("The new device could not ask the server for a link: {reason}")
+        }
         FlowError::Incomplete { failed, total } => {
             format!("{failed} of {total} servers did not succeed.")
         }
@@ -2930,9 +3001,24 @@ pub fn level_default_now(
     format!("Default now: {}.", level_name(level).to_lowercase())
 }
 
-pub const WORKSPACE_DEFAULT: &str = "For every member";
-pub const WORKSPACE_DEFAULT_HELP: &str =
-    "The level of a member who chose none. Only an administrator of the server can change it.";
+/// "Default" with the level that it means now, as a choice of a control.
+pub fn level_default_named(
+    level: junto_client_core::protocol::discovery::NotificationLevel,
+) -> String {
+    format!("Default ({})", level_name(level).to_lowercase())
+}
+
+pub const OWN_NOTIFICATIONS_HELP: &str = "What notifies you on this server. The settings of this device are in Settings, \
+     Notifications.";
+pub const THIS_SERVER: &str = "This server";
+pub const OWN_EXCEPTIONS: &str = "Channels and conversations with their own setting";
+pub const NO_OWN_EXCEPTIONS: &str =
+    "No channel or conversation has a setting of its own. The menu of a channel sets one.";
+pub const NO_ROLE_MENTIONS: &str = "no role mentions";
+pub const NO_EVERYONE_MENTIONS: &str = "no @everyone";
+pub const GROUP_CONVERSATION: &str = "Group conversation";
+pub const CHANGE_ELLIPSIS: &str = "Change…";
+pub const REMOVE_SETTING: &str = "Remove";
 pub const MUTE: &str = "Mute";
 pub const MUTE_HELP: &str = "A muted channel sends no notification and shows no unread sign.";
 pub const MUTE_CHANNEL: &str = "Mute channel";
@@ -3345,7 +3431,7 @@ pub const DO_NOT_DISTURB: &str = "Do not disturb";
 pub const DO_NOT_DISTURB_HELP: &str =
     "No notification of the system is shown. Unread signs still follow new messages.";
 pub const DAILY_QUIET: &str = "Daily quiet time";
-pub const DAILY_QUIET_HELP: &str = "Every day between the two times, notifications are held back. The times follow the chosen time zone.";
+pub const DAILY_QUIET_HELP: &str = "Every day between the two times, notifications are held back on every server. The times follow the chosen time zone. Your status does not change.";
 pub const QUIET_FROM: &str = "From";
 pub const QUIET_UNTIL: &str = "Until";
 pub const QUIET_SET: &str = "Set";
@@ -3662,7 +3748,13 @@ mod tests {
             },
             FlowError::UnknownServer,
             FlowError::Expired,
-            FlowError::InvalidBundle("link offer"),
+            FlowError::AlreadyLinked,
+            FlowError::NotSignedByDevice,
+            FlowError::NoServerChosen,
+            FlowError::TooManyServers { most: 65 },
+            FlowError::OtherKeyApproved,
+            FlowError::RelayNotAvailable,
+            FlowError::OnNewDevice("the server cannot be reached.".to_owned()),
             FlowError::Incomplete {
                 failed: 1,
                 total: 3,
@@ -3676,6 +3768,29 @@ mod tests {
             category: category(*code, code.http_status()),
         }));
         all
+    }
+
+    #[test]
+    fn every_sound_is_in_one_group_of_the_sounds_section() {
+        let mut grouped: Vec<junto_client_core::voice::SoundKind> = SOUND_GROUPS
+            .iter()
+            .flat_map(|(_, kinds)| kinds.iter().copied())
+            .collect();
+        assert_eq!(
+            grouped.len(),
+            junto_client_core::voice::SoundKind::ALL.len()
+        );
+        grouped.sort_by_key(|kind| format!("{kind:?}"));
+        grouped.dedup();
+        assert_eq!(
+            grouped.len(),
+            junto_client_core::voice::SoundKind::ALL.len()
+        );
+        // A sentence says more than its title.
+        for kind in junto_client_core::voice::SoundKind::ALL {
+            let (title, sentence) = sound_kind(kind);
+            assert!(sentence.is_none_or(|sentence| sentence != title));
+        }
     }
 
     #[test]
@@ -3720,14 +3835,20 @@ mod tests {
                 FlowError::KeyOfOtherAddress { .. } => "key of other address",
                 FlowError::UnknownServer => "unknown server",
                 FlowError::Expired => "expired",
-                FlowError::InvalidBundle(_) => "invalid bundle",
+                FlowError::AlreadyLinked => "already linked",
+                FlowError::NotSignedByDevice => "not signed by device",
+                FlowError::NoServerChosen => "no server chosen",
+                FlowError::TooManyServers { .. } => "too many servers",
+                FlowError::OtherKeyApproved => "other key approved",
+                FlowError::RelayNotAvailable => "relay not available",
+                FlowError::OnNewDevice(_) => "on new device",
                 FlowError::Incomplete { .. } => "incomplete",
                 FlowError::Storage(_) => "storage",
                 FlowError::DataHeld => "data held",
                 FlowError::Stopped => "stopped",
             })
             .collect();
-        assert_eq!(kinds.len(), 25);
+        assert_eq!(kinds.len(), 31);
     }
 
     #[test]

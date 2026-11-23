@@ -27,10 +27,15 @@ junto-authz = { workspace = true }
 junto-protocol = { workspace = true }
 base64 = { workspace = true }
 bytes = "1"
+# X25519 from the Ed25519 device keys, for the relay of a device link (ADR 0104).
+curve25519-dalek = { version = "5", default-features = false, features = ["zeroize"] }
 ed25519-dalek = { workspace = true }
 emojis = "0.8"
 futures-util = { workspace = true }
 getrandom = { workspace = true }
+# HKDF and ChaCha20-Poly1305 of the relay of a device link (ADR 0104). The TLS library of
+# the client already uses this crate.
+ring = "0.17"
 # The 0.12 line with the trust store of the operating system (ADR 0714).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
 # The version that a server states, with its pre-release, in the order of semantic versions

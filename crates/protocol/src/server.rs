@@ -26,6 +26,13 @@ pub struct Capabilities {
     pub message_format: crate::message::DocumentFormat,
     #[serde(default)]
     pub search: crate::discovery::SearchCapabilities,
+    /// The account has a status text with an end time (`PUT /api/v1/account/status-text`).
+    #[serde(default)]
+    pub status_text: bool,
+    /// The approval of a device link takes an offer, which the server keeps in a relay for
+    /// the two devices (`/api/v1/account/device-link-relay`).
+    #[serde(default)]
+    pub device_link_relay: bool,
 }
 
 /// What the health route reports when the server can serve requests.

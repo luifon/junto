@@ -1119,6 +1119,7 @@ impl ServerModel {
             // needs them (ADR 0207). The collections of the administration that a reader
             // has open follow them (ADR 0760); the state holds none of the others.
             Event::DeviceAdded { .. }
+            | Event::DeviceLinkRelayChanged { .. }
             | Event::DeviceRenamed { .. }
             | Event::DeviceRemoved { .. }
             | Event::DeviceLoggedIn { .. }

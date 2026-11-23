@@ -22,7 +22,6 @@ use junto_client_core::settings::Panel;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::MentionSwitch;
-use crate::state::admin::view::notifications::DefaultChoice;
 use crate::state::notices::{
     Agreement, Jump, Mute, MuteFor, NoticeRow, NoticesPanel, NotifyPanel, QuietView, Whereabouts,
     clock_text, parse_clock,
@@ -1287,6 +1286,22 @@ impl Shell {
         self.state
             .update(cx, |state, cx| state.close_notify_settings(cx));
         self.close_layer(window, cx);
+        if let Some(open) = self.notify_return.take() {
+            self.open_admin(open, window, cx);
+        }
+    }
+
+    /// Opens the notification dialog of a channel from the page "Notifications" of the
+    /// account group; the page opens again when the dialog closes.
+    pub(crate) fn open_notify_settings_from_admin(
+        &mut self,
+        server_id: ServerId,
+        scope: SettingsScope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.notify_return = self.state.read(cx).admin_open();
+        self.open_notify_settings(server_id, scope, window, cx);
     }
 
     pub(crate) fn render_notify_dialog(
@@ -1386,50 +1401,35 @@ impl Shell {
         }))
         .child(help(about_level));
 
-        if let Some(hidden) = panel.hide_text {
-            dialog = dialog.child(
-                div()
-                    .mt(u(12.0))
-                    .flex()
-                    .justify_between()
-                    .child(text::NOTIFICATION_TEXT)
-                    .child(
-                        Toggle::new(
-                            "server-notification-text",
-                            text::NOTIFICATION_TEXT,
-                            !hidden,
-                            (text::ON, text::OFF),
-                        )
-                        .selector("server-notification-text")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if !busy {
-                                this.state.update(cx, |state, cx| {
-                                    state.set_server_hide_text(server_id, !hidden, cx)
-                                });
-                            }
-                        })),
+        if let Some(channel) = &panel.channel {
+            let switches = match scope {
+                SettingsScope::Channel(channel_id) => vec![
+                    (channel_id, MentionSwitch::Roles),
+                    (channel_id, MentionSwitch::Everyone),
+                ],
+                _ => Vec::new(),
+            };
+            let switches = switches
+                .into_iter()
+                .map(|(channel_id, switch)| match switch {
+                    MentionSwitch::Roles => (
+                        channel_id,
+                        MentionSwitch::Roles,
+                        channel.role_mentions,
+                        text::ROLE_MENTIONS,
+                        text::ROLE_MENTIONS_HELP,
+                        "role-mentions",
                     ),
-            );
-        }
-
-        if let (Some(channel), SettingsScope::Channel(channel_id)) = (&panel.channel, scope) {
-            let switches = [
-                (
-                    MentionSwitch::Roles,
-                    channel.role_mentions,
-                    text::ROLE_MENTIONS,
-                    text::ROLE_MENTIONS_HELP,
-                    "role-mentions",
-                ),
-                (
-                    MentionSwitch::Everyone,
-                    channel.everyone_mentions,
-                    text::EVERYONE_MENTIONS,
-                    text::EVERYONE_MENTIONS_HELP,
-                    "everyone-mentions",
-                ),
-            ];
-            for (switch, on, title, sentence, selector) in switches {
+                    MentionSwitch::Everyone => (
+                        channel_id,
+                        MentionSwitch::Everyone,
+                        channel.everyone_mentions,
+                        text::EVERYONE_MENTIONS,
+                        text::EVERYONE_MENTIONS_HELP,
+                        "everyone-mentions",
+                    ),
+                });
+            for (channel_id, switch, on, title, sentence, selector) in switches {
                 dialog = dialog.child(
                     div()
                         .flex()
@@ -1484,7 +1484,7 @@ impl Shell {
                         .selector("dialog-unmute")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.state.update(cx, |state, cx| {
-                                state.set_channel_mute(server_id, channel_id, None, cx);
+                                state.set_scope_mute(server_id, scope, None, cx);
                             });
                         }))
                         .into_any_element(),
@@ -1501,9 +1501,9 @@ impl Shell {
                                     .disabled(busy)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.state.update(cx, |state, cx| {
-                                            state.set_channel_mute(
+                                            state.set_scope_mute(
                                                 server_id,
-                                                channel_id,
+                                                scope,
                                                 Some(length),
                                                 cx,
                                             );
@@ -1518,72 +1518,6 @@ impl Shell {
                 .child(div().mt(u(16.0)).child(group(text::MUTE)))
                 .child(div().flex().flex_wrap().gap(u(6.0)).children(actions))
                 .child(help(state));
-        }
-
-        if let (Some(default), SettingsScope::Workspace(workspace_id)) =
-            (panel.workspace_default, scope)
-        {
-            dialog = dialog.child(div().mt(u(16.0)).child(group(text::WORKSPACE_DEFAULT)));
-            let held = default.level;
-            dialog = if default.may_set {
-                let shown = held;
-                let changing = default.changing;
-                dialog.child(
-                    div().flex().child(
-                        Segmented::new(
-                            "workspace-default",
-                            text::WORKSPACE_DEFAULT,
-                            levels.map(|level| SharedString::from(text::level_name(level))),
-                        )
-                        .selected(
-                            held.and_then(|held| levels.iter().position(|level| *level == held)),
-                        )
-                        .selector("workspace-default")
-                        .on_select({
-                            let select = cx.listener(move |this, index: &usize, _, cx| {
-                                let Some(level) = levels.get(*index).copied() else {
-                                    return;
-                                };
-                                if busy || changing || shown == Some(level) {
-                                    return;
-                                }
-                                this.state.update(cx, |state, cx| {
-                                    state.set_workspace_default(server_id, workspace_id, level, cx);
-                                });
-                            });
-                            move |index, window, cx| select(&index, window, cx)
-                        }),
-                    ),
-                )
-            } else {
-                // A member reads the level and does not set it.
-                dialog.child(
-                    div()
-                        .id("workspace-default-held")
-                        .debug_selector(|| "workspace-default-held".to_owned())
-                        .typeface(theme.types.control, &theme)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .ink(colors.ink)
-                        .child(text::admin::notifications::choice(DefaultChoice::of(held))),
-                )
-            };
-            dialog = dialog.child(
-                crate::ui::notice_slot("workspace-default-status-slot")
-                    .when(default.changing, |slot| {
-                        slot.child(
-                            help(text::admin::SENDING.into())
-                                .debug_selector(|| "workspace-default-sending".to_owned()),
-                        )
-                    })
-                    .when(default.may_set && held.is_none(), |slot| {
-                        slot.child(
-                            help(text::admin::notifications::stated(DefaultChoice::NotSet).into())
-                                .id("workspace-default-not-set")
-                                .debug_selector(|| "workspace-default-not-set".to_owned()),
-                        )
-                    }),
-            );
-            dialog = dialog.child(help(text::WORKSPACE_DEFAULT_HELP.into()));
         }
 
         dialog
@@ -1849,7 +1783,9 @@ impl Shell {
                 .ink(colors.ink_2)
                 .child(label)
         };
-        let (Some(do_not_disturb), Some(daily)) = (&quiet.do_not_disturb, &quiet.daily) else {
+        // "Do not disturb" is a status of each server (ADR 0404); this section holds the
+        // daily quiet time, which the device sends to every server.
+        let Some(daily) = &quiet.daily else {
             return vec![
                 div()
                     .id("quiet-no-server")
@@ -1859,15 +1795,15 @@ impl Shell {
             ];
         };
         let busy = quiet.busy;
-        let on = *do_not_disturb == Agreement::All(true);
         let daily_on = matches!(daily, Agreement::All(Some(_)));
-        let differs = *do_not_disturb == Agreement::Differs || *daily == Agreement::Differs;
+        let differs = *daily == Agreement::Differs;
         let mut rows =
             vec![
                 div()
                     .flex()
                     .items_start()
                     .gap(u(10.0))
+                    .mt(u(10.0))
                     .child(
                         div()
                             .flex_1()
@@ -1877,7 +1813,7 @@ impl Shell {
                                     .flex()
                                     .items_center()
                                     .gap(u(8.0))
-                                    .child(title(text::DO_NOT_DISTURB))
+                                    .child(title(text::DAILY_QUIET))
                                     .when(quiet.quiet_now, |line| {
                                         line.child(
                                             div()
@@ -1889,35 +1825,6 @@ impl Shell {
                                         )
                                     }),
                             )
-                            .child(help(text::DO_NOT_DISTURB_HELP)),
-                    )
-                    .child(
-                        Toggle::new(
-                            "do-not-disturb",
-                            text::DO_NOT_DISTURB,
-                            on,
-                            (text::ON, text::OFF),
-                        )
-                        .selector("do-not-disturb")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if busy {
-                                return;
-                            }
-                            this.state
-                                .update(cx, |state, cx| state.set_do_not_disturb(!on, cx));
-                        })),
-                    )
-                    .into_any_element(),
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(u(10.0))
-                    .mt(u(10.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(title(text::DAILY_QUIET))
                             .child(help(text::DAILY_QUIET_HELP)),
                     )
                     .child(

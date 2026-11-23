@@ -9,6 +9,7 @@ mod glossary;
 mod list;
 mod notifications;
 pub mod overrides;
+mod own_notifications;
 mod page_scroll;
 pub mod people;
 mod person;
@@ -491,6 +492,18 @@ impl Shell {
             }
         }
         cx.notify();
+    }
+
+    /// Opens Server settings of a server at the page "Notifications" of the group "Your
+    /// account" (ADR 0742).
+    pub(crate) fn open_own_notifications(
+        &mut self,
+        server_id: ServerId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let page = AdminPage::OwnNotifications;
+        self.open_admin(AdminOpen::Server { server_id, page }, window, cx);
     }
 
     /// Opens the administration of the selected server at its first page.
@@ -1484,6 +1497,9 @@ impl Shell {
             ServerPage::Members(page) => self.render_members_page(view, page, window, cx),
             ServerPage::WorkspaceOverview(page) => {
                 self.render_workspace_overview(view, page, window, cx)
+            }
+            ServerPage::OwnNotifications(page) => {
+                self.render_own_notifications_page(view, page, window, cx)
             }
             ServerPage::People(page) => self.render_people_page(view, page, window, cx),
             ServerPage::Invites(page) => self.render_invites_page(view, page, window, cx),

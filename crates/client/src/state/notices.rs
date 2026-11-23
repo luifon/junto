@@ -538,20 +538,6 @@ pub struct ChannelNotify {
     pub everyone_mentions: bool,
 }
 
-/// The level that the administrators set for the members of a workspace, as the state
-/// holds it, or as a change that the server took and the state does not hold yet asked
-/// for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WorkspaceDefault {
-    /// The level, or none while the workspace sets no level (ADR 0412).
-    pub level: Option<NotificationLevel>,
-    /// The account administers the server and can set the level.
-    pub may_set: bool,
-    /// A change of the level is on its way, or waits for the state: the control takes no
-    /// further choice.
-    pub changing: bool,
-}
-
 /// A change of the level of a workspace that the state does not hold yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SentDefault {
@@ -589,11 +575,9 @@ pub struct NotifyPanel {
     /// The name of the server, of the workspace or of the channel.
     pub name: String,
     pub level: LevelView,
-    pub hide_text: Option<bool>,
-    /// Present for a channel.
+    /// Present for a channel and a group conversation; the mention switches belong to a
+    /// channel only.
     pub channel: Option<ChannelNotify>,
-    /// Present for a workspace.
-    pub workspace_default: Option<WorkspaceDefault>,
     /// A change is on its way to the server.
     pub busy: bool,
     /// Why the server did not take the last change.
@@ -658,44 +642,53 @@ fn inherited_level(
     }
 }
 
+/// The level that holds for a scope while the person stored none.
+pub(crate) fn inherited_level_of(
+    server_id: ServerId,
+    scope: SettingsScope,
+    model: &ServerModel,
+    known: &Known,
+) -> Option<NotificationLevel> {
+    inherited_level(server_id, scope, model, known)
+}
+
+/// The mute of stored settings, as the window states it.
+pub(crate) fn mute_of(settings: &NotificationSettings, known: &Known) -> Mute {
+    Mute::of(settings.mute, settings.muted_until, known)
+}
+
 /// The settings of a scope as their dialog shows them. Absent when the state does not
 /// hold the workspace or the channel.
 pub fn notify_panel(
     server_id: ServerId,
-    server_name: &str,
     scope: SettingsScope,
     model: &ServerModel,
     known: &Known,
 ) -> Option<NotifyPanel> {
     let settings = stored_settings(server_id, scope, model, known);
-    let (name, channel, workspace_default) = match scope {
-        SettingsScope::Conversation(_) => return None,
-        SettingsScope::Account => (server_name.to_owned(), None, None),
-        SettingsScope::Workspace(workspace_id) => {
-            let workspace = model.workspace(workspace_id)?;
-            (
-                workspace.workspace.name.clone(),
-                None,
-                Some(WorkspaceDefault {
-                    level: shown_default(server_id, workspace, known),
-                    may_set: model.is_administrator(),
-                    changing: known.defaults_sent.contains_key(&(server_id, workspace_id)),
-                }),
-            )
+    // The levels of the server and of each workspace are on the page "Notifications" of
+    // the account group (ADR 0742); the dialog belongs to one channel or one named group
+    // conversation, which has a level and a mute and no mention switches.
+    let name = match scope {
+        SettingsScope::Channel(channel_id) => model.channel(channel_id)?.channel.name.clone(),
+        SettingsScope::Conversation(id) => {
+            let group = model
+                .group_conversations
+                .iter()
+                .find(|group| group.id == id)?;
+            if group.name.trim().is_empty() {
+                text::GROUP_CONVERSATION.to_owned()
+            } else {
+                group.name.clone()
+            }
         }
-        SettingsScope::Channel(channel_id) => {
-            let channel = model.channel(channel_id)?;
-            (
-                channel.channel.name.clone(),
-                Some(ChannelNotify {
-                    mute: Mute::of(settings.mute, settings.muted_until, known),
-                    role_mentions: settings.role_mentions.unwrap_or(true),
-                    everyone_mentions: settings.everyone_mentions.unwrap_or(true),
-                }),
-                None,
-            )
-        }
+        SettingsScope::Account | SettingsScope::Workspace(_) => return None,
     };
+    let channel = Some(ChannelNotify {
+        mute: Mute::of(settings.mute, settings.muted_until, known),
+        role_mentions: settings.role_mentions.unwrap_or(true),
+        everyone_mentions: settings.everyone_mentions.unwrap_or(true),
+    });
     let key = (server_id, scope.id());
     Some(NotifyPanel {
         server_id,
@@ -705,9 +698,7 @@ pub fn notify_panel(
             stored: settings.level,
             inherited: inherited_level(server_id, scope, model, known),
         },
-        hide_text: (scope == SettingsScope::Account).then_some(settings.hide_text),
         channel,
-        workspace_default,
         busy: known.notify_busy.contains(&key),
         refused: known
             .notify_refused
@@ -719,13 +710,13 @@ pub fn notify_panel(
 
 // Quiet times.
 
-/// "Do not disturb" and the daily quiet time of the application. Each is data of the
-/// account on one server (ADR 0409); the application shows and sets them for every server
-/// on which the device has a session (ADR 0404).
+/// The daily quiet time and the other settings of the device that the application sends to
+/// every server. Each is data of the account on one server (ADR 0409); the application shows
+/// and sets them for every server on which the device has a session (ADR 0404). "Do not
+/// disturb" is a status of each server.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QuietView {
     /// Absent: the device has a session on no server.
-    pub do_not_disturb: Option<Agreement<bool>>,
     pub daily: Option<Agreement<Option<DailyQuiet>>>,
     /// The system notifications of messages leave out their text (ADR 0742).
     pub hide_text: Option<Agreement<bool>>,
@@ -767,10 +758,6 @@ pub fn quiet_view(
     let account = |server_id: ServerId, model: &ServerModel| {
         stored_settings(server_id, SettingsScope::Account, model, known)
     };
-    let dnd: Vec<bool> = servers
-        .iter()
-        .map(|(server_id, _, model)| account(*server_id, model).do_not_disturb)
-        .collect();
     let daily: Vec<Option<DailyQuiet>> = servers
         .iter()
         .map(|(server_id, _, model)| account(*server_id, model).daily_quiet)
@@ -784,7 +771,6 @@ pub fn quiet_view(
         .map(|(server_id, _, model)| holds_while_presenting(&account(*server_id, model)))
         .collect();
     QuietView {
-        do_not_disturb: agreement(&dnd),
         daily: agreement(&daily),
         hide_text: agreement(&hide_text),
         hold_while_presenting: agreement(&hold),

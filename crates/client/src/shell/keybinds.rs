@@ -289,6 +289,19 @@ impl Shell {
 
     /// The Keybinds section of the settings (ADR 0777): how the keys reach Junto, and each
     /// action of each group with its keys.
+    /// Records the next keys that the person presses for `action`.
+    pub(super) fn start_keybind_recording(&mut self, action: KeyAction, cx: &mut Context<Self>) {
+        self.keys.recording = Some(action);
+        self.keys.recording_release = true;
+        self.keys.talks = false;
+        self.keys.mutes = false;
+        let id = cx.entity_id();
+        self.state
+            .update(cx, |state, _| state.begin_keybind_recording(id));
+        self.keys.refusal = None;
+        cx.notify();
+    }
+
     pub(super) fn render_keybinds_section(
         &mut self,
         theme: &Theme,
@@ -402,15 +415,7 @@ impl Shell {
                     .kind(ButtonKind::Ghost)
                     .selector(selector("set", action))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.keys.recording = Some(action);
-                        this.keys.recording_release = true;
-                        this.keys.talks = false;
-                        this.keys.mutes = false;
-                        let id = cx.entity_id();
-                        this.state
-                            .update(cx, |state, _| state.begin_keybind_recording(id));
-                        this.keys.refusal = None;
-                        cx.notify();
+                        this.start_keybind_recording(action, cx);
                     })),
             );
             if keys.is_some() {
@@ -495,9 +500,6 @@ impl Shell {
                     .debug_selector(|| "keybind-refusal".to_owned())
                     .child(refusal.clone()),
             );
-        }
-        if action == KeyAction::PushToTalk && !changed {
-            row = row.child(super::settings::help(text::TALK_KEY_FROM_VOICE, theme));
         }
         row.into_any_element()
     }

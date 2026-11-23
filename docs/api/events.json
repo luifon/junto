@@ -968,6 +968,25 @@
       ],
       "type": "object"
     },
+    "device_link_relay_changed": {
+      "description": "The relay of the link of the new device `device_id` was created or answered: its two\ndevices read it again (revision 23, ADR 0104).",
+      "properties": {
+        "device_id": {
+          "$ref": "#/components/schemas/DeviceId"
+        },
+        "type": {
+          "enum": [
+            "device_link_relay_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "device_logged_in": {
       "properties": {
         "device_id": {
@@ -3290,6 +3309,25 @@
               "type": {
                 "enum": [
                   "device_removed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "device_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The relay of the link of the new device `device_id` was created or answered: its two\ndevices read it again (revision 23, ADR 0104).",
+            "properties": {
+              "device_id": {
+                "$ref": "#/components/schemas/DeviceId"
+              },
+              "type": {
+                "enum": [
+                  "device_link_relay_changed"
                 ],
                 "type": "string"
               }

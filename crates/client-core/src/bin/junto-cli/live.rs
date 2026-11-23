@@ -756,6 +756,7 @@ fn event_details(event: &Event) -> String {
         |call_id: &CallId, call_place: &CallPlace| format!("call={call_id} {}", pair(call_place));
     match event {
         Event::DeviceAdded { device_id, .. }
+        | Event::DeviceLinkRelayChanged { device_id }
         | Event::DeviceRenamed { device_id, .. }
         | Event::DeviceRemoved { device_id }
         | Event::DeviceLoggedIn { device_id, .. }

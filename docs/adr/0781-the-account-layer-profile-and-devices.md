@@ -50,10 +50,7 @@ Recoveries:
 
 Approval of a new device:
 
-- "Link a new device" on the devices page is the approving side of ADR 0112. It draws the four states of the flow of the client core: the entry of the code, the key to compare with "Approve" and "Cancel", "Device linked", and "outcome unknown" with "Check again".
-- The key of the new device is shown as the text that the command-line tool prints for a key, in groups of four characters (ADR 0782).
-- The flow belongs to the open page. It holds the code from the start of the lookup. The code field is emptied when the lookup starts, when the person cancels, when the link ends, and when the layer closes. Reason: the field needs the code only until the flow has it, and a code is not kept longer than it is needed. After a refusal, and after a lookup without an answer, the person types the code again.
-- An approval reads the list of devices again also when the event of the server was missed.
+- "Link a new device" on the devices page opens the layer of ADR 0782 in the role that approves a new device, with only the server of the page on. The person can turn the other servers on there. Reason: one flow links a device (ADR 0716), and the page does not keep a second form of it.
 
 Text of a server:
 
@@ -70,6 +67,4 @@ Each linked-device row has a context menu made from its current row actions (ADR
 - A server that tells device events without end causes one read after another, never two at once, and only while the devices page is open.
 - A person who removes the device of the session by mistake needs a device link or a recovery to return.
 - The name field does not follow a change of the name that another device makes while the page is open; the button then reads "Save" again.
-- The typed link code is held by the text input of the component library until the lookup starts, in memory that this crate cannot overwrite (ADR 0732 states the same of an invite code).
-- A person whose lookup got no answer types the 8 symbols of the code again.
 - A person who saves the name and chooses a picture does the second after the first has ended.

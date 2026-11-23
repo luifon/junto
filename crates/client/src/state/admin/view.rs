@@ -6,6 +6,7 @@
 pub mod glossary;
 pub mod notifications;
 pub mod overrides;
+pub mod own_notifications;
 pub mod people;
 pub mod person;
 pub mod recordings;
@@ -525,6 +526,8 @@ pub enum ServerPage {
     Channels(ChannelsPage),
     Archive(ArchivePage),
     Members(people::MembersPage),
+    /// The levels that the person chose on this server.
+    OwnNotifications(own_notifications::OwnNotificationsPage),
     People(people::PeoplePage),
     Invites(people::InvitesPage),
     JoinRequests(people::RequestsPage),
@@ -788,10 +791,12 @@ pub fn nav(
             pages,
         });
     }
-    // The pages of the account on the server (ADR 0781). Every account lists and revokes
-    // its own tokens, also after it lost the administrator permission (ADR 0210).
+    // The pages of the account on the server (ADR 0781), with the levels of notifications
+    // that the person chose (ADR 0742). Every account lists and revokes its own tokens, also
+    // after it lost the administrator permission (ADR 0210).
     let own = vec![
         AdminPage::Profile,
+        AdminPage::OwnNotifications,
         AdminPage::Devices,
         AdminPage::Recoveries,
         AdminPage::Exports,
@@ -867,9 +872,10 @@ pub fn needs(
     match *open {
         AdminOpen::Server { page, .. } => match page {
             // The snapshot carries the notification level of a workspace.
-            AdminPage::Workspaces | AdminPage::Channels | AdminPage::WorkspaceOverview => {
-                Vec::new()
-            }
+            AdminPage::Workspaces
+            | AdminPage::Channels
+            | AdminPage::WorkspaceOverview
+            | AdminPage::OwnNotifications => Vec::new(),
             // The logo is no collection: its image is read from the public route. The page
             // is an administrator's.
             AdminPage::Server => {
@@ -1589,6 +1595,9 @@ pub fn derive(
                     | AdminPage::Departure,
                     _,
                 ) => ServerPage::Account,
+                (AdminPage::OwnNotifications, _) => {
+                    ServerPage::OwnNotifications(own_notifications::derive(server_id, model, known))
+                }
                 (AdminPage::AuditLog, _) => ServerPage::AuditLog(Box::new(records::audit(
                     server_id, model, workspace, known, admin,
                 ))),

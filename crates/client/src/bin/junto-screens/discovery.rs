@@ -15,9 +15,7 @@ use junto_client_core::protocol::discovery::{
     DailyQuiet, Notification, NotificationKind, NotificationLevel, NotificationSettings,
     ScopedNotificationSettings,
 };
-use junto_client_core::protocol::ids::{
-    AccountId, ChannelId, ConversationId, MessageId, ServerId, WorkspaceId,
-};
+use junto_client_core::protocol::ids::{AccountId, ChannelId, ConversationId, MessageId, ServerId};
 use junto_client_core::protocol::message::{Conversation, Message, MessagePlace};
 use time::Duration;
 
@@ -30,10 +28,6 @@ const DAILY: u32 = 34;
 
 fn server_id() -> ServerId {
     id(1)
-}
-
-fn studio_id() -> WorkspaceId {
-    id(10)
 }
 
 /// The moment of the screens: Thursday, 8 October 2026 at 10:40.
@@ -405,39 +399,40 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             ));
         }),
     )?;
-    studio.draw(
-        Screen::new("notify-workspace-member", chosen()),
-        dialog(SettingsScope::Workspace(studio_id()), |_| {}),
-    )?;
-    let administered = || {
-        acme(|model| {
-            model.account.is_owner = true;
-            for workspace in &mut model.workspaces {
-                std::sync::Arc::make_mut(workspace).notification_default =
-                    Some(NotificationLevel::All);
-            }
-        })
+    // The page "Notifications" of the account group (ADR 0742), which the two entries of
+    // the menu of the server open.
+    let own_page = |change: fn(&mut Known)| {
+        move |shell: &mut Shell, window: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+            let open = junto_client::state::admin::AdminOpen::Server {
+                server_id: server_id(),
+                page: junto_client::state::admin::AdminPage::OwnNotifications,
+            };
+            shell.open_admin(open, window, cx);
+            fixed(shell, change, cx);
+        }
     };
     studio.draw(
-        Screen::new("notify-workspace-administrator", administered()),
-        dialog(SettingsScope::Workspace(studio_id()), |_| {}),
+        Screen::new("own-notifications", acme(|_| {})),
+        own_page(|_| {}),
     )?;
-    // A change of the level that the state does not hold yet (ADR 0214).
     studio.draw(
-        Screen::new("notify-workspace-changing", administered()),
-        dialog(SettingsScope::Workspace(studio_id()), |known| {
-            known.defaults_sent.insert(
-                (server_id(), studio_id()),
-                junto_client::state::notices::SentDefault {
-                    level: Some(NotificationLevel::Nothing),
-                    answered: None,
-                },
-            );
+        Screen::new("own-notifications-chosen", chosen()),
+        own_page(|_| {}),
+    )?;
+    studio.draw(
+        Screen::new("own-notifications-muted", muted()),
+        own_page(|_| {}),
+    )?;
+    studio.draw(
+        Screen::new("own-notifications-refused", chosen()),
+        own_page(|known| {
+            known.notify_refused = Some((
+                server_id(),
+                uuid::Uuid::nil(),
+                "The server limits how often an account may do this. Try again in a minute."
+                    .to_owned(),
+            ));
         }),
-    )?;
-    studio.draw(
-        Screen::new("notify-server", chosen()),
-        dialog(SettingsScope::Account, |_| {}),
     )?;
     studio.draw(
         Screen::new("server-menu-notifications", acme(|_| {})),
@@ -447,7 +442,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         },
     )?;
 
-    // The quiet times of the settings of the application.
+    // The daily quiet time in the section "Notifications" of the settings.
     let quiet = |do_not_disturb: bool, daily: Option<(u16, u16)>| NotificationSettings {
         do_not_disturb,
         daily_quiet: daily.map(|(start_minute, end_minute)| DailyQuiet {
@@ -461,6 +456,11 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         |shell: &mut Shell, window: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
             fixed(shell, |_| {}, cx);
             shell.open(Open::Settings, window, cx);
+            shell.open_settings_section(
+                junto_client::shell::SettingsSection::Notifications,
+                window,
+                cx,
+            );
         };
     studio.draw(Screen::new("settings-quiet", acme(|_| {})), open_settings)?;
     let quiet_on = || {
@@ -484,9 +484,8 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     // The list of time zones of the daily quiet time (ADR 0798).
     studio.draw(
         Screen::new("settings-quiet-zones", quiet_on()),
-        |shell, window, cx| {
-            fixed(shell, |_| {}, cx);
-            shell.open(Open::Settings, window, cx);
+        move |shell, window, cx| {
+            open_settings(shell, window, cx);
             shell.toggle_quiet_zones(cx);
             shell.type_quiet_zone_search("america", window, cx);
         },
@@ -528,6 +527,11 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
                 cx,
             );
             shell.open(Open::Settings, window, cx);
+            shell.open_settings_section(
+                junto_client::shell::SettingsSection::Notifications,
+                window,
+                cx,
+            );
         },
     )?;
 

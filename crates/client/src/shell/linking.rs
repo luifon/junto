@@ -1,11 +1,12 @@
 //! Device linking in the window (ADR 0782): what a server shows while this device waits
-//! for its link, the third way of the join dialog, and the layer that links a device on
-//! all servers with two texts that the person carries (ADR 0716).
+//! for its link, and the layer that links a new device with one code: the device that
+//! approves checks its servers and types the code, the new device asks one server for the
+//! code and then links on the servers that the other device names (ADR 0104).
 
 use gpui::{
-    AnyElement, ClipboardItem, Context, Entity, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Role, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Window, div, prelude::FluentBuilder,
+    AnyElement, Context, Entity, InteractiveElement, IntoElement, ParentElement, Role,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div,
+    prelude::FluentBuilder,
 };
 use gpui_base::input::InputState;
 use junto_client_core::protocol::ids::ServerId;
@@ -15,36 +16,30 @@ use super::admin::{group_label, line, named, sentence};
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::linking::{
-    ApprovalLine, ApprovalShown, FirstDeviceView, FirstStep, LinkAllView, LinkLine, LinkRole,
-    LinkShown, LinkWait, NewDeviceView, NewStep, fits,
+    ApprovalLine, ApprovalShown, ChoiceLine, FirstDeviceView, FirstStep, LinkAllView, LinkLine,
+    LinkRole, LinkShown, LinkWait, NewDeviceView, NewStep,
 };
 use crate::state::view::{SelectedServer, ServerStatus};
 use crate::text;
 use crate::theme::{Theme, theme, u};
-use crate::ui::{Button, ButtonKind, Field, FieldEvent, Notice, StatePanel, StyleExt, icon};
+use crate::ui::{
+    Button, ButtonKind, Field, FieldEvent, Notice, StatePanel, StyleExt, Toggle, icon,
+};
 
-/// The most characters of a link text that its box draws. "Copy" takes the whole text.
-const SHOWN_CHARACTERS: usize = 480;
+/// The longest text that the field for a link code keeps: a code has 8 symbols, in two
+/// groups.
+const LONGEST_CODE_TEXT: usize = 16;
 
-/// A field of the layer of the link on all servers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LinkField {
-    Offer,
-    Request,
-}
-
-/// What the layer of the link on all servers holds of the window itself.
+/// What the layer of a link holds of the window itself.
 pub(crate) struct LinkingUi {
-    /// The offer of the first device, on the new device.
-    pub(crate) offer: Entity<InputState>,
+    /// The address of a server of the account, on the new device.
+    pub(crate) address: Entity<InputState>,
     /// The name of this device, on the new device.
     pub(crate) device_name: Entity<InputState>,
-    /// The request of the new device, on the first device.
-    pub(crate) request: Entity<InputState>,
+    /// The code of the new device, on the device that approves.
+    pub(crate) code: Entity<InputState>,
     /// Why the text of a field was not sent.
     pub(crate) invalid: Option<&'static str>,
-    /// The text of the layer was given to the clipboard.
-    pub(crate) copied: bool,
     pub(crate) scroll: ScrollHandle,
     /// What the layer drew last. A test reads the layer from it.
     #[cfg(feature = "test-support")]
@@ -53,17 +48,17 @@ pub(crate) struct LinkingUi {
 
 impl LinkingUi {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> (Self, Vec<Subscription>) {
-        let offer = Field::state("", window, cx);
+        let address = Field::state(text::account::SERVER_ADDRESS_PLACEHOLDER, window, cx);
         let device_name = Field::state(text::account::THIS_DEVICE_NAME, window, cx);
-        let request = Field::state("", window, cx);
+        let code = Field::state(text::account::LINK_CODE_PLACEHOLDER, window, cx);
         let subscriptions = vec![
             Field::observe(
-                &offer,
+                &address,
                 window,
                 cx,
                 |this: &mut Shell, event, window, cx| match event {
-                    FieldEvent::Changed => this.link_text_changed(LinkField::Offer, window, cx),
-                    FieldEvent::Submitted => this.submit_link_offer(window, cx),
+                    FieldEvent::Changed => cx.notify(),
+                    FieldEvent::Submitted => this.submit_link_address(window, cx),
                 },
             ),
             Field::observe(
@@ -72,25 +67,24 @@ impl LinkingUi {
                 cx,
                 |this: &mut Shell, event, window, cx| match event {
                     FieldEvent::Changed => cx.notify(),
-                    FieldEvent::Submitted => this.submit_link_offer(window, cx),
+                    FieldEvent::Submitted => this.submit_link_address(window, cx),
                 },
             ),
             Field::observe(
-                &request,
+                &code,
                 window,
                 cx,
                 |this: &mut Shell, event, window, cx| match event {
-                    FieldEvent::Changed => this.link_text_changed(LinkField::Request, window, cx),
-                    FieldEvent::Submitted => this.submit_link_request(window, cx),
+                    FieldEvent::Changed => this.link_code_changed(window, cx),
+                    FieldEvent::Submitted => this.submit_link_code(window, cx),
                 },
             ),
         ];
         let ui = Self {
-            offer,
+            address,
             device_name,
-            request,
+            code,
             invalid: None,
-            copied: false,
             scroll: ScrollHandle::new(),
             #[cfg(feature = "test-support")]
             drawn: None,
@@ -136,24 +130,78 @@ fn mono_value(
         .child(value)
 }
 
+/// A value with the button that copies it (ADR 0731).
+fn with_copy(value: impl IntoElement, copy: AnyElement) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(u(6.0))
+        .child(value)
+        .child(copy)
+}
+
+/// The copy buttons of the code and of the key that a device that waits for its link shows.
+pub(crate) struct WaitCopies {
+    code: Option<AnyElement>,
+    fingerprint: AnyElement,
+}
+
+impl Shell {
+    pub(crate) fn link_wait_copies(&self, wait: &LinkWait, cx: &mut Context<Self>) -> WaitCopies {
+        let copy =
+            |selector: &'static str, label: &'static str, value: String, cx: &mut Context<Self>| {
+                div()
+                    .flex_none()
+                    .debug_selector(move || selector.to_owned())
+                    .child(Self::value_copy_button(selector, label, value, cx))
+                    .into_any_element()
+            };
+        WaitCopies {
+            code: wait.code.as_ref().map(|code| {
+                copy(
+                    "link-wait-code-copy",
+                    text::account::COPY_LINK_CODE,
+                    code.expose().to_owned(),
+                    cx,
+                )
+            }),
+            fingerprint: copy(
+                "link-wait-fingerprint-copy",
+                text::account::COPY_DEVICE_CODE,
+                wait.fingerprint.clone(),
+                cx,
+            ),
+        }
+    }
+}
+
 /// What a device that waits for its link shows: the code, the key of this device, the
 /// expiry, and what the person does with them.
 pub(crate) fn link_wait_block(
     wait: &LinkWait,
+    copies: WaitCopies,
     centered: bool,
     theme: &Theme,
     cycle: junto_client_core::clock::HourCycle,
 ) -> gpui::Div {
-    let code: AnyElement = match &wait.code {
-        Some(code) => mono_value(
-            code.expose().to_owned(),
-            text::account::LINK_CODE,
-            "link-wait-code",
-            true,
-            theme,
+    let WaitCopies {
+        code: code_copy,
+        fingerprint: fingerprint_copy,
+    } = copies;
+    let code: AnyElement = match (&wait.code, code_copy) {
+        (Some(code), Some(copy)) => with_copy(
+            mono_value(
+                code.expose().to_owned(),
+                text::account::LINK_CODE,
+                "link-wait-code",
+                true,
+                theme,
+            ),
+            copy,
         )
         .into_any_element(),
-        None => Notice::error(text::account::LINK_CODE_NOT_SHOWN)
+        _ => Notice::error(text::account::LINK_CODE_NOT_SHOWN)
             .selector("link-wait-no-code")
             .into_any_element(),
     };
@@ -166,12 +214,15 @@ pub(crate) fn link_wait_block(
         .child(value_label(text::account::LINK_CODE, theme))
         .child(code)
         .child(value_label(text::account::KEY_OF_THIS_DEVICE, theme).mt(u(10.0)))
-        .child(mono_value(
-            wait.fingerprint.clone(),
-            text::account::KEY_OF_THIS_DEVICE,
-            "link-wait-fingerprint",
-            false,
-            theme,
+        .child(with_copy(
+            mono_value(
+                wait.fingerprint.clone(),
+                text::account::KEY_OF_THIS_DEVICE,
+                "link-wait-fingerprint",
+                false,
+                theme,
+            ),
+            fingerprint_copy,
         ))
         .child(
             sentence(text::account::code_expires(wait.expires_at, cycle), theme)
@@ -189,60 +240,6 @@ pub(crate) fn link_wait_block(
                 .when(centered, |help| help.text_center())
                 .debug_selector(|| "link-wait-recovery".to_owned()),
         )
-}
-
-/// A long text that the person carries to the other device: its start in a frame, and
-/// its length.
-fn text_box(
-    text: &str,
-    label: &'static str,
-    selector: &'static str,
-    theme: &Theme,
-) -> impl IntoElement + use<> {
-    let characters = text.chars().count();
-    let shown: String = if characters > SHOWN_CHARACTERS {
-        text.chars().take(SHOWN_CHARACTERS).chain(['…']).collect()
-    } else {
-        text.to_owned()
-    };
-    div()
-        .flex()
-        .flex_col()
-        .flex_none()
-        .child(
-            div()
-                .id(selector)
-                .role(Role::Label)
-                .aria_label(label)
-                .debug_selector(move || selector.to_owned())
-                .w_full()
-                .min_w_0()
-                .py(u(8.0))
-                .px(u(10.0))
-                .rounded(u(theme.metrics.radius))
-                .border_1()
-                .border_color(Hsla::from(theme.colors.rule))
-                .bg(Hsla::from(theme.colors.travertine_hi))
-                .typeface(theme.types.mono_small, theme)
-                .ink(theme.colors.ink)
-                .child(shown),
-        )
-        .child(
-            sentence(text::account::text_length(characters), theme)
-                .mt(u(4.0))
-                .debug_selector(move || format!("{selector}-length")),
-        )
-}
-
-/// The heading of a step of the layer.
-fn step_title(title: &'static str, theme: &Theme) -> gpui::Div {
-    div()
-        .flex_none()
-        .mt(u(14.0))
-        .mb(u(3.0))
-        .typeface(theme.types.heading, theme)
-        .ink(theme.colors.ink)
-        .child(title)
 }
 
 fn failure(reason: Option<&str>, selector: &'static str) -> Option<AnyElement> {
@@ -283,17 +280,6 @@ fn server_text(name: &str, detail: Option<String>, theme: &Theme) -> gpui::Div {
 
 /// The state of one server at the end of its line.
 fn progress(text: impl Into<SharedString>, mark: Option<Icon>, theme: &Theme) -> gpui::Div {
-    progress_named(text, None, mark, theme)
-}
-
-/// The state of one server with a name that a server gave. The name has a line of its
-/// own under the state, cut at the width of the state: it is no part of the sentence.
-fn progress_named(
-    text: impl Into<SharedString>,
-    named: Option<String>,
-    mark: Option<Icon>,
-    theme: &Theme,
-) -> gpui::Div {
     div()
         .flex()
         .flex_none()
@@ -305,14 +291,7 @@ fn progress_named(
         .when_some(mark, |state, mark| {
             state.child(icon(mark, 13.0, theme.colors.ink_2))
         })
-        .child(
-            div()
-                .min_w_0()
-                .child(text.into())
-                .when_some(named, |state, named| {
-                    state.child(div().truncate().child(named))
-                }),
-        )
+        .child(div().min_w_0().child(text.into()))
 }
 
 impl Shell {
@@ -322,11 +301,18 @@ impl Shell {
         self.linking.scroll.clone()
     }
 
-    /// Opens the link on all servers in one role.
-    pub fn open_link_all(&mut self, role: LinkRole, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens a link in one role. With `only`, the device that approves starts with only
+    /// that server checked.
+    pub fn open_link_all(
+        &mut self,
+        role: LinkRole,
+        only: Option<ServerId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.reset_linking_ui(window, cx);
         self.state
-            .update(cx, |state, cx| state.open_link_all(role, cx));
+            .update(cx, |state, cx| state.open_link_all(role, only, cx));
         if role == LinkRole::NewDevice {
             self.linking.device_name.update(cx, |field, cx| {
                 field.set_value(text::device_name(), window, cx);
@@ -335,7 +321,7 @@ impl Shell {
         match self.layer {
             Layer::LinkAll => {}
             Layer::None => self.open_layer(Layer::LinkAll, window, cx),
-            // The layer takes the place of the settings that opened it.
+            // The layer takes the place of the layer that opened it.
             _ => {
                 self.layer = Layer::LinkAll;
                 self.layer_focus().clone().focus(window, cx);
@@ -344,71 +330,60 @@ impl Shell {
         cx.notify();
     }
 
-    /// The fields of the layer are emptied: a text with link codes is not kept in a
-    /// field that nobody sees.
+    /// The fields of the layer are emptied when the layer opens and closes.
     pub(crate) fn reset_linking_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.linking.invalid = None;
-        self.linking.copied = false;
         #[cfg(feature = "test-support")]
         {
             self.linking.drawn = None;
         }
         for field in [
-            self.linking.offer.clone(),
+            self.linking.address.clone(),
             self.linking.device_name.clone(),
-            self.linking.request.clone(),
+            self.linking.code.clone(),
         ] {
             field.update(cx, |field, cx| field.set_value("", window, cx));
         }
     }
 
-    /// A field for a link text takes at most 32 KiB (ADR 0716): a longer text is not
-    /// kept in the field.
-    fn link_text_changed(&mut self, which: LinkField, window: &mut Window, cx: &mut Context<Self>) {
-        let field = match which {
-            LinkField::Offer => self.linking.offer.clone(),
-            LinkField::Request => self.linking.request.clone(),
-        };
+    /// A field for a link code keeps a short text only.
+    fn link_code_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (too_long, empty) = {
-            let value = field.read(cx).value();
-            (!fits(&value), value.is_empty())
+            let value = self.linking.code.read(cx).value();
+            (value.chars().count() > LONGEST_CODE_TEXT, value.is_empty())
         };
         if too_long {
-            field.update(cx, |field, cx| field.set_value("", window, cx));
-            self.linking.invalid = Some(text::account::TEXT_TOO_LONG);
+            self.linking
+                .code
+                .update(cx, |field, cx| field.set_value("", window, cx));
+            self.linking.invalid = Some(text::account::LINK_CODE_TOO_LONG);
         } else if !empty {
             self.linking.invalid = None;
         }
         cx.notify();
     }
 
-    /// Puts text into the field for the offer of the first device, as pasting does.
-    pub fn type_link_offer(&mut self, offer: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let offer = offer.to_owned();
+    /// Puts text into the field for the code of the new device, as typing does.
+    pub fn type_link_code(&mut self, code: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let code = code.to_owned();
         self.linking
-            .offer
-            .update(cx, |field, cx| field.set_value(offer, window, cx));
-        self.link_text_changed(LinkField::Offer, window, cx);
+            .code
+            .update(cx, |field, cx| field.set_value(code, window, cx));
+        self.link_code_changed(window, cx);
     }
 
-    /// Puts text into the field for the request of the new device, as pasting does.
-    pub fn type_link_request(
+    /// Puts text into the field for the address of a server, as typing does.
+    pub fn type_link_address(
         &mut self,
-        request: &str,
+        address: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let request = request.to_owned();
+        let address = address.to_owned();
         self.linking
-            .request
-            .update(cx, |field, cx| field.set_value(request, window, cx));
-        self.link_text_changed(LinkField::Request, window, cx);
-    }
-
-    /// True when the two fields for link texts hold no text.
-    pub fn link_fields_are_empty(&self, cx: &gpui::App) -> bool {
-        self.linking.offer.read(cx).value().is_empty()
-            && self.linking.request.read(cx).value().is_empty()
+            .address
+            .update(cx, |field, cx| field.set_value(address, window, cx));
+        cx.notify();
     }
 
     /// Why the text of a field of the layer was not sent.
@@ -416,13 +391,12 @@ impl Shell {
         self.linking.invalid
     }
 
-    /// The new device takes the typed offer and asks each server for a link. A second
-    /// start while the first one runs is not sent.
-    pub fn submit_link_offer(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    /// The new device asks the server at the typed address for a link code.
+    pub fn submit_link_address(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let enters = matches!(
             self.state.read(cx).link_all_view(),
             Some(LinkAllView::New(NewDeviceView {
-                step: NewStep::EnterOffer,
+                step: NewStep::EnterAddress,
                 busy: false,
                 ..
             }))
@@ -430,26 +404,26 @@ impl Shell {
         if !enters {
             return;
         }
-        let offer = self.linking.offer.read(cx).value().trim().to_owned();
-        if offer.is_empty() {
-            self.linking.invalid = Some(text::account::OFFER_EMPTY);
+        let address = self.linking.address.read(cx).value().trim().to_owned();
+        if address.is_empty() {
+            self.linking.invalid = Some(text::account::ADDRESS_EMPTY);
             cx.notify();
             return;
         }
         let device_name = self.linking.device_name.read(cx).value().to_string();
         self.linking.invalid = None;
-        self.linking.copied = false;
-        self.state
-            .update(cx, |state, cx| state.start_linking(offer, device_name, cx));
+        self.state.update(cx, |state, cx| {
+            state.start_linking(address, device_name, cx)
+        });
     }
 
-    /// The first device takes the typed request and looks each link up. Nothing is
-    /// approved.
-    pub fn submit_link_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The device that approves looks the typed code up on its checked servers. Nothing
+    /// is approved.
+    pub fn submit_link_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let enters = matches!(
             self.state.read(cx).link_all_view(),
             Some(LinkAllView::First(FirstDeviceView {
-                step: FirstStep::EnterRequest,
+                step: FirstStep::EnterCode { .. },
                 busy: false,
                 ..
             }))
@@ -457,49 +431,24 @@ impl Shell {
         if !enters {
             return;
         }
-        let request = self.linking.request.read(cx).value().trim().to_owned();
-        if request.is_empty() {
-            self.linking.invalid = Some(text::account::REQUEST_EMPTY);
+        let code = self.linking.code.read(cx).value().trim().to_owned();
+        if code.is_empty() {
+            self.linking.invalid = Some(text::account::LINK_CODE_EMPTY);
             cx.notify();
             return;
         }
         self.linking.invalid = None;
-        // The flow holds the request from here on; the field does not keep its codes.
         self.linking
-            .request
+            .code
             .update(cx, |field, cx| field.set_value("", window, cx));
         self.state
-            .update(cx, |state, cx| state.look_up_request(request, cx));
+            .update(cx, |state, cx| state.look_up_link_code(code, cx));
     }
 
-    /// What the layer of the link on all servers drew last.
+    /// What the layer of a link drew last.
     #[cfg(feature = "test-support")]
     pub fn link_all_drawn(&self) -> Option<&LinkAllView> {
         self.linking.drawn.as_ref()
-    }
-
-    /// The button that gives a text to the clipboard. The clipboard is written by the
-    /// click and at no other moment.
-    fn copy_button(
-        &mut self,
-        text: String,
-        selector: &'static str,
-        cx: &mut Context<Self>,
-    ) -> Button {
-        Button::new(selector)
-            .label(if self.linking.copied {
-                text::account::COPIED
-            } else {
-                text::account::COPY
-            })
-            .selector(selector)
-            .h(u(28.0))
-            .px(u(10.0))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                this.linking.copied = true;
-                cx.notify();
-            }))
     }
 
     fn start_over(&mut self, cx: &mut Context<Self>) -> Button {
@@ -509,77 +458,126 @@ impl Shell {
             .h(u(30.0))
             .px(u(12.0))
             .on_click(cx.listener(|this, _, window, cx| {
-                this.reset_linking_ui(window, cx);
                 let role = this.state.read(cx).link_all_role();
                 if let Some(role) = role {
-                    this.open_link_all(role, window, cx);
+                    this.open_link_all(role, None, window, cx);
                 }
             }))
     }
 
-    fn render_approval_line(
+    fn close_button(&mut self, cx: &mut Context<Self>) -> Button {
+        Button::new("link-all-done")
+            .kind(ButtonKind::Primary)
+            .label(text::account::DONE)
+            .selector("link-all-done")
+            .h(u(30.0))
+            .px(u(12.0))
+            .on_click(cx.listener(|this, _, window, cx| this.close_layer(window, cx)))
+    }
+
+    /// One server of this device with its switch, in the choice of a link.
+    fn render_choice(
         &mut self,
-        row: &ApprovalLine,
+        choice: &ChoiceLine,
         busy: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let server_id: ServerId = row.server_id;
-        let account = match &row.account {
-            Some(account) => text::account::account_line(account),
-            None => text::account::NO_ACCOUNT_SHOWN.to_owned(),
+        let server_id = choice.server_id;
+        let detail: Option<SharedString> = if choice.locked {
+            Some(text::account::LINK_STARTS_HERE.into())
+        } else {
+            choice.unavailable.clone().map(Into::into)
         };
+        let held: Option<SharedString> = if choice.locked {
+            Some(text::account::LINK_STARTS_HERE.into())
+        } else if busy {
+            Some(text::account::CHECKING.into())
+        } else {
+            choice.unavailable.clone().map(Into::into)
+        };
+        let toggle = Toggle::new(
+            ("link-choice", server_id.as_uuid().as_u128() as u64),
+            choice.server.clone(),
+            choice.checked,
+            (text::ON, text::OFF),
+        )
+        .held(held)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let checked = !this.link_choice_checked(server_id, cx);
+            this.state.update(cx, |state, cx| {
+                state.choose_link_server(server_id, checked, cx)
+            });
+        }));
+        named(
+            format!("link-choice-{server_id}"),
+            line(theme)
+                .child(super::admin::line_text(
+                    choice.server.clone(),
+                    detail,
+                    theme,
+                ))
+                .child(toggle),
+        )
+        .flex_1()
+        .into_any_element()
+    }
+
+    fn link_choice_checked(&self, server_id: ServerId, cx: &gpui::App) -> bool {
+        let Some(LinkAllView::First(view)) = self.state.read(cx).link_all_view() else {
+            return false;
+        };
+        let (FirstStep::EnterCode { choices } | FirstStep::Confirm { choices, .. }) = view.step
+        else {
+            return false;
+        };
+        choices
+            .iter()
+            .any(|choice| choice.server_id == server_id && choice.checked)
+    }
+
+    fn render_approval_line(row: &ApprovalLine, theme: &Theme) -> AnyElement {
+        let server_id = row.server_id;
         let state = match &row.progress {
+            ApprovalShown::Waiting => progress(
+                text::account::PROGRESS_WAITING_FOR_DEVICE,
+                Some(Icon::Clock),
+                theme,
+            ),
             ApprovalShown::Working => progress(text::account::PROGRESS_WORKING, None, theme),
-            ApprovalShown::Ready => progress(text::account::PROGRESS_READY, None, theme),
             ApprovalShown::Approved => {
                 progress(text::account::PROGRESS_APPROVED, Some(Icon::Check), theme)
             }
+            ApprovalShown::AlreadyLinked => progress(
+                text::account::PROGRESS_ALREADY_LINKED,
+                Some(Icon::Check),
+                theme,
+            ),
             ApprovalShown::Failed(reason) => progress(
                 text::account::progress_failed(reason),
                 Some(Icon::Warning),
                 theme,
             ),
-            ApprovalShown::Unknown => {
-                progress(text::account::PROGRESS_UNKNOWN, Some(Icon::Warning), theme)
-            }
-            ApprovalShown::AccountChanged(now) => progress_named(
-                text::account::ACCOUNT_CHANGED,
-                Some(text::account::account_now(now)),
-                Some(Icon::Warning),
-                theme,
-            ),
         };
-        let content = line(theme)
-            .child(server_text(&row.server, Some(account), theme))
-            .child(
-                crate::ui::notice_slot((
-                    "approval-progress",
-                    row.server_id.as_uuid().as_u128() as u64,
+        named(
+            format!("approval-line-{server_id}"),
+            line(theme)
+                .child(super::admin::line_text(
+                    row.server.clone(),
+                    Some(text::account::account_line(&row.account).into()),
+                    theme,
                 ))
-                .w(u(330.0))
-                .child(state),
-            )
-            .when(
-                matches!(row.progress, ApprovalShown::AccountChanged(_)),
-                |content| {
-                    content.child(named(
-                        format!("use-account-{server_id}"),
-                        Button::new(("use-account", server_id.as_uuid().as_u128() as u64))
-                            .label(text::account::USE_THIS_ACCOUNT)
-                            .disabled(busy)
-                            .h(u(28.0))
-                            .px(u(10.0))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state
-                                    .update(cx, |state, cx| state.use_account(server_id, cx));
-                            })),
+                .child(
+                    crate::ui::notice_slot((
+                        "approval-progress",
+                        server_id.as_uuid().as_u128() as u64,
                     ))
-                },
-            );
-        named(format!("approval-line-{server_id}"), content)
-            .flex_1()
-            .into_any_element()
+                    .w(u(330.0))
+                    .child(state),
+                ),
+        )
+        .flex_1()
+        .into_any_element()
     }
 
     fn render_first_device(
@@ -588,73 +586,45 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut column = div()
-            .flex()
-            .flex_col()
-            .child(step_title(text::account::OFFER_TITLE, theme))
-            .child(sentence(text::account::OFFER_HELP, theme));
-        column = match &view.offer {
-            Some(offer) => column
-                .child(div().flex_none().mt(u(8.0)).child(text_box(
-                    offer,
-                    text::account::OFFER_LABEL,
-                    "link-offer-text",
-                    theme,
-                )))
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(u(10.0))
-                        .mt(u(6.0))
-                        .child(self.copy_button(offer.clone(), "link-offer-copy", cx))
-                        .child(
-                            sentence(text::account::offer_names(&view.offered), theme)
-                                .flex_1()
-                                .min_w_0()
-                                .truncate(),
-                        ),
-                ),
-            None => column.child(
-                div()
-                    .flex_none()
-                    .mt(u(8.0))
-                    .child(Notice::new(text::account::NO_OFFER).selector("link-no-offer")),
-            ),
-        };
+        let mut column = div().flex().flex_col();
         match &view.step {
-            FirstStep::EnterRequest => {
+            FirstStep::EnterCode { choices } => {
                 column = column
-                    .child(step_title(text::account::REQUEST_TITLE, theme))
-                    .child(sentence(text::account::REQUEST_HELP, theme))
+                    .child(sentence(text::account::LINK_NEW_DEVICE_HELP, theme))
+                    .child(group_label(text::account::SERVERS, theme));
+                for choice in choices {
+                    column = column.child(self.render_choice(choice, view.busy, theme, cx));
+                }
+                let none = !choices.iter().any(|choice| choice.checked);
+                column = column
+                    .child(value_label(text::account::LINK_CODE_FIELD, theme).mt(u(12.0)))
                     .child(
                         div()
                             .flex()
                             .flex_none()
                             .items_center()
                             .gap(u(8.0))
-                            .mt(u(8.0))
+                            .mt(u(3.0))
                             .child(
                                 div().flex_1().min_w_0().child(
-                                    Field::new(&self.linking.request, text::account::REQUEST_FIELD)
-                                        .selector("link-request-field"),
+                                    Field::new(&self.linking.code, text::account::LINK_CODE_FIELD)
+                                        .selector("link-code-field"),
                                 ),
                             )
                             .child(
-                                Button::new("link-request-look-up")
+                                Button::new("link-code-look-up")
                                     .kind(ButtonKind::Primary)
                                     .label(if view.busy {
                                         text::account::LOOKING_UP
                                     } else {
                                         text::account::LOOK_UP
                                     })
-                                    .selector("link-request-look-up")
-                                    .disabled(view.busy || view.offer.is_none())
+                                    .selector("link-code-look-up")
+                                    .disabled(view.busy || none)
                                     .h(u(32.0))
                                     .px(u(12.0))
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.submit_link_request(window, cx);
+                                        this.submit_link_code(window, cx);
                                     })),
                             ),
                     )
@@ -662,24 +632,33 @@ impl Shell {
                     .children(failure(view.error.as_deref(), "link-all-error"));
             }
             FirstStep::Confirm {
-                fingerprint,
                 device_name,
-                lines,
-                can_approve,
-                all_approved,
+                device_code,
+                choices,
             } => {
                 column = column
-                    .child(step_title(text::account::CONFIRM_TITLE, theme))
-                    .child(sentence(text::account::CONFIRM_HELP, theme))
-                    .child(value_label(text::account::FINGERPRINT, theme).mt(u(8.0)))
-                    .child(mono_value(
-                        fingerprint.clone(),
-                        text::account::FINGERPRINT,
-                        "link-all-fingerprint",
-                        true,
-                        theme,
+                    .child(sentence(text::account::COMPARE_KEY, theme))
+                    .child(value_label(text::account::KEY_OF_NEW_DEVICE, theme).mt(u(8.0)))
+                    .child(with_copy(
+                        mono_value(
+                            device_code.clone(),
+                            text::account::KEY_OF_NEW_DEVICE,
+                            "link-all-device-code",
+                            false,
+                            theme,
+                        ),
+                        div()
+                            .flex_none()
+                            .debug_selector(|| "link-all-device-code-copy".to_owned())
+                            .child(Self::value_copy_button(
+                                "link-all-device-code-copy",
+                                text::account::COPY_DEVICE_CODE,
+                                device_code.clone(),
+                                cx,
+                            ))
+                            .into_any_element(),
                     ))
-                    // The name comes from the request: it has a line of its own that is
+                    // The name comes from the new device: it has a line of its own that is
                     // cut at the width of the page.
                     .child(
                         sentence(text::account::new_device_named(device_name), theme)
@@ -687,18 +666,11 @@ impl Shell {
                             .mt(u(4.0)),
                     )
                     .child(group_label(text::account::SERVERS, theme));
-                for row in lines {
-                    column = column.child(self.render_approval_line(row, view.busy, theme, cx));
+                for choice in choices {
+                    column = column.child(self.render_choice(choice, view.busy, theme, cx));
                 }
                 column = column
                     .children(failure(view.error.as_deref(), "link-all-error"))
-                    .child(crate::ui::notice_slot("link-all-approved-slot").children(
-                        all_approved.then(|| {
-                            Notice::new(text::account::ALL_APPROVED)
-                                .icon(Icon::Check)
-                                .selector("link-all-approved")
-                        }),
-                    ))
                     .child(
                         div()
                             .flex()
@@ -716,15 +688,52 @@ impl Shell {
                                         text::account::APPROVE
                                     })
                                     .selector("link-all-approve")
-                                    .disabled(!*can_approve)
+                                    .disabled(view.busy)
                                     .h(u(30.0))
                                     .px(u(12.0))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.state
-                                            .update(cx, |state, cx| state.approve_devices(cx));
+                                            .update(cx, |state, cx| state.approve_new_device(cx));
                                     })),
                             ),
                     );
+            }
+            FirstStep::Linking {
+                device_name,
+                lines,
+                done,
+            } => {
+                column = column
+                    .child(sentence(text::account::device_linked(device_name), theme).truncate());
+                column = column.child(group_label(text::account::SERVERS, theme));
+                for row in lines {
+                    column = column.child(Self::render_approval_line(row, theme));
+                }
+                let buttons = div().flex().flex_none().gap(u(8.0)).mt(u(12.0));
+                let buttons = if *done {
+                    buttons.child(self.close_button(cx))
+                } else {
+                    buttons.child(
+                        Button::new("link-all-check")
+                            .icon(Icon::Retry)
+                            .label(if view.busy {
+                                text::account::CHECKING
+                            } else {
+                                text::TRY_AGAIN
+                            })
+                            .selector("link-all-check")
+                            .disabled(view.busy)
+                            .h(u(30.0))
+                            .px(u(12.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.follow_new_device(cx));
+                            })),
+                    )
+                };
+                column = column
+                    .children(failure(view.error.as_deref(), "link-all-error"))
+                    .child(buttons);
             }
         }
         column.into_any_element()
@@ -768,13 +777,13 @@ impl Shell {
     ) -> AnyElement {
         let column = div().flex().flex_col();
         match &view.step {
-            NewStep::EnterOffer => column
-                .child(step_title(text::account::OFFER_FIELD_TITLE, theme))
-                .child(sentence(text::account::OFFER_FIELD_HELP, theme))
+            NewStep::EnterAddress => column
+                .child(sentence(text::account::LINK_THIS_DEVICE_HELP, theme))
+                .child(value_label(text::account::SERVER_ADDRESS, theme).mt(u(10.0)))
                 .child(
-                    div().flex_none().mt(u(8.0)).child(
-                        Field::new(&self.linking.offer, text::account::OFFER_FIELD)
-                            .selector("link-offer-field"),
+                    div().flex_none().mt(u(3.0)).child(
+                        Field::new(&self.linking.address, text::account::SERVER_ADDRESS)
+                            .selector("link-address-field"),
                     ),
                 )
                 .child(value_label(text::account::THIS_DEVICE_NAME, theme).mt(u(10.0)))
@@ -784,7 +793,6 @@ impl Shell {
                             .selector("link-device-name-field"),
                     ),
                 )
-                .child(sentence(text::account::DEVICE_NAME_HELP, theme).mt(u(5.0)))
                 .children(failure(self.linking.invalid, "link-text-invalid"))
                 .children(failure(view.error.as_deref(), "link-all-error"))
                 .child(
@@ -792,74 +800,32 @@ impl Shell {
                         Button::new("link-start")
                             .kind(ButtonKind::Primary)
                             .label(if view.busy {
-                                text::account::REQUESTING_LINKS
+                                text::account::REQUESTING_LINK
                             } else {
-                                text::account::REQUEST_LINKS
+                                text::account::GET_A_CODE
                             })
                             .selector("link-start")
                             .disabled(view.busy)
                             .h(u(30.0))
                             .px(u(12.0))
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.submit_link_offer(window, cx);
+                                this.submit_link_address(window, cx);
                             })),
                     ),
                 )
                 .into_any_element(),
-            NewStep::Requested {
-                device_name: _,
-                request,
-                fingerprint,
-                lines,
-                all_linked,
-            } => {
-                let mut column = column
-                    .child(step_title(text::account::REQUEST_TEXT_TITLE, theme))
-                    .child(sentence(text::account::REQUEST_TEXT_HELP, theme));
-                // The request text arrives with the step that the press of "Request links"
-                // opened, and goes when every server is linked: only that removal waits while
-                // the pointer is on the controls under it (ADR 0730).
-                let result = crate::ui::held("link-request-result").grows_at_once();
-                let result = match (request, fingerprint) {
-                    (Some(request), Some(fingerprint)) => result
-                        .child(div().flex_none().mt(u(8.0)).child(text_box(
-                            request.expose(),
-                            text::account::REQUEST_LABEL,
-                            "link-request-text",
-                            theme,
-                        )))
-                        .child(div().flex().flex_none().mt(u(6.0)).child(self.copy_button(
-                            request.expose().to_owned(),
-                            "link-request-copy",
-                            cx,
-                        )))
-                        .child(value_label(text::account::FINGERPRINT, theme).mt(u(8.0)))
-                        .child(mono_value(
-                            fingerprint.clone(),
-                            text::account::FINGERPRINT,
-                            "link-all-fingerprint",
-                            true,
-                            theme,
-                        )),
-                    _ if *all_linked => result.child(
-                        div().flex_none().mt(u(8.0)).child(
-                            Notice::new(text::account::ALL_LINKED)
-                                .icon(Icon::Check)
-                                .selector("link-all-linked"),
-                        ),
-                    ),
-                    _ => result.child(
-                        sentence(text::account::NO_REQUEST, theme)
-                            .mt(u(8.0))
-                            .debug_selector(|| "link-no-request".to_owned()),
-                    ),
-                };
-                column = column.child(result);
-                column = column.child(group_label(text::account::SERVERS, theme));
-                for row in lines {
-                    column = column.child(Self::render_link_line(row, theme));
-                }
+            NewStep::Waiting { server, wait } => {
+                let cycle = self.state.read(cx).hour_cycle();
                 column
+                    .child(
+                        sentence(text::account::code_from(server), theme)
+                            .truncate()
+                            .mb(u(8.0)),
+                    )
+                    .children(wait.as_ref().map(|wait| {
+                        let copies = self.link_wait_copies(wait, cx);
+                        link_wait_block(wait, copies, false, theme, cycle)
+                    }))
                     .children(failure(view.error.as_deref(), "link-all-error"))
                     .child(
                         div()
@@ -869,35 +835,69 @@ impl Shell {
                             .mt(u(12.0))
                             .child(self.start_over(cx))
                             .child(
-                                Button::new("link-retry")
+                                Button::new("link-all-new-code")
                                     .icon(Icon::Retry)
-                                    .label(text::TRY_AGAIN)
-                                    .selector("link-retry")
-                                    .disabled(view.busy || *all_linked)
+                                    .label(text::account::NEW_CODE)
+                                    .selector("link-all-new-code")
+                                    .disabled(view.busy)
                                     .h(u(30.0))
                                     .px(u(12.0))
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.linking.copied = false;
-                                        this.state.update(cx, |state, cx| state.retry_links(cx));
-                                    })),
-                            )
-                            .child(
-                                Button::new("link-check-all")
-                                    .kind(ButtonKind::Primary)
-                                    .label(if view.busy {
-                                        text::account::CHECKING
-                                    } else {
-                                        text::account::CHECK
-                                    })
-                                    .selector("link-check-all")
-                                    .disabled(view.busy || *all_linked)
-                                    .h(u(30.0))
-                                    .px(u(12.0))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.state.update(cx, |state, cx| state.check_links(cx));
+                                        this.state.update(cx, |state, cx| state.new_link_code(cx));
                                     })),
                             ),
                     )
+                    .into_any_element()
+            }
+            NewStep::Linked {
+                server,
+                lines,
+                offer_read,
+                done,
+            } => {
+                let mut column = column.child(
+                    Notice::new(text::account::linked_on(server))
+                        .icon(Icon::Check)
+                        .selector("link-all-first-linked"),
+                );
+                if !lines.is_empty() {
+                    column = column.child(group_label(text::account::SERVERS, theme));
+                }
+                for row in lines {
+                    column = column.child(Self::render_link_line(row, theme));
+                }
+                if !offer_read {
+                    column = column.child(
+                        sentence(text::account::READING_OTHER_SERVERS, theme)
+                            .mt(u(8.0))
+                            .debug_selector(|| "link-reading-offer".to_owned()),
+                    );
+                }
+                let buttons = div().flex().flex_none().gap(u(8.0)).mt(u(12.0));
+                let buttons = if *done {
+                    buttons.child(self.close_button(cx))
+                } else {
+                    buttons.child(
+                        Button::new("link-check-all")
+                            .icon(Icon::Retry)
+                            .label(if view.busy {
+                                text::account::CHECKING
+                            } else {
+                                text::TRY_AGAIN
+                            })
+                            .selector("link-check-all")
+                            .disabled(view.busy)
+                            .h(u(30.0))
+                            .px(u(12.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.check_this_device(cx));
+                            })),
+                    )
+                };
+                column
+                    .children(failure(view.error.as_deref(), "link-all-error"))
+                    .child(buttons)
                     .into_any_element()
             }
         }
@@ -939,7 +939,7 @@ impl Shell {
         self.render_surface(surface, window, cx)
     }
 
-    /// The section "Devices" of the settings: the two ways into the link on all servers.
+    /// The section "Linked devices" of the settings: the two ways into a link.
     pub(crate) fn render_devices_settings(
         &mut self,
         theme: &Theme,
@@ -953,7 +953,7 @@ impl Shell {
                 .h(u(30.0))
                 .px(u(12.0))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_link_all(role, window, cx);
+                    this.open_link_all(role, None, window, cx);
                 }))
         };
         vec![
@@ -979,12 +979,11 @@ impl Shell {
         ]
     }
 
-    /// The third way of the join dialog: a device of an account that exists asks for a
-    /// link code.
+    /// The third way of the join dialog: a device of an account that exists starts the
+    /// link of this device on this server.
     pub(crate) fn render_link_way(
         &mut self,
         busy: bool,
-        requesting: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1000,8 +999,8 @@ impl Shell {
             .pb(u(12.0))
             .rounded(u(theme.metrics.radius))
             .border_1()
-            .border_color(Hsla::from(colors.rule))
-            .bg(Hsla::from(colors.travertine_hi))
+            .border_color(gpui::Hsla::from(colors.rule))
+            .bg(gpui::Hsla::from(colors.travertine_hi))
             .child(
                 div()
                     .flex_1()
@@ -1017,17 +1016,13 @@ impl Shell {
                             .mt(u(2.0))
                             .typeface(theme.types.small, theme)
                             .ink(colors.ink_2)
-                            .child(text::account::LINK_THIS_DEVICE_HELP),
+                            .child(text::account::LINK_WAY_HELP),
                     ),
             )
             .child(
                 Button::new("request-link")
                     .icon(Icon::Link)
-                    .label(if requesting {
-                        text::account::REQUESTING_LINK
-                    } else {
-                        text::account::REQUEST_LINK
-                    })
+                    .label(text::account::REQUEST_LINK)
                     .disabled(busy)
                     .selector("request-link")
                     .h(u(30.0))
@@ -1090,7 +1085,14 @@ impl Shell {
         Some(
             StatePanel::with_detail(
                 text::WAITING_FOR_LINK_TITLE,
-                link_wait_block(&wait, true, &theme, self.state.read(cx).hour_cycle()).mt(u(12.0)),
+                link_wait_block(
+                    &wait,
+                    self.link_wait_copies(&wait, cx),
+                    true,
+                    &theme,
+                    self.state.read(cx).hour_cycle(),
+                )
+                .mt(u(12.0)),
             )
             .icon(Icon::Clock)
             .selector("waiting-for-link")

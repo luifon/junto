@@ -726,7 +726,8 @@ pub async fn look_up_device_link(
 }
 
 /// Adds the device behind a link code to the caller's account. The approval names the public
-/// key of the new device.
+/// key of the new device. With an offer it also creates the relay of the link, in the same
+/// transaction (ADR 0104).
 #[utoipa::path(
     post,
     path = "/api/v1/account/device-links/approve",
@@ -763,7 +764,7 @@ pub async fn approve_device_link(
                 "the link code belongs to another device key",
             ));
         }
-        store::create_device(
+        let device = store::create_device(
             connection,
             now,
             access.account_id,
@@ -771,7 +772,11 @@ pub async fn approve_device_link(
             &device_name,
             DeviceOrigin::Link,
         )
-        .await
+        .await?;
+        if let Some(offer) = &body.relay {
+            super::device_relay::create(&app, connection, &access, device.id, offer).await?;
+        }
+        Ok(device)
     })?;
     Ok((StatusCode::CREATED, Json(device)))
 }

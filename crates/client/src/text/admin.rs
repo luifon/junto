@@ -103,6 +103,7 @@ pub const fn page_name(page: AdminPage) -> &'static str {
         AdminPage::Departure => {
             super::account::page_name(crate::state::account::AccountPage::Departure)
         }
+        AdminPage::OwnNotifications => "Notifications",
     }
 }
 
@@ -124,6 +125,7 @@ pub const fn page_icon(page: AdminPage) -> Icon {
         AdminPage::Devices => Icon::Devices,
         AdminPage::Recoveries => Icon::History,
         AdminPage::Departure => Icon::Leave,
+        AdminPage::OwnNotifications => Icon::Bell,
     }
 }
 
@@ -159,6 +161,7 @@ pub const fn page_selector(page: AdminPage) -> &'static str {
         AdminPage::Devices => "account-nav-devices",
         AdminPage::Recoveries => "account-nav-recoveries",
         AdminPage::Departure => "account-nav-departure",
+        AdminPage::OwnNotifications => "admin-nav-own-notifications",
     }
 }
 

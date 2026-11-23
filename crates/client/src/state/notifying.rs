@@ -350,42 +350,6 @@ impl AppState {
         self.changed(cx);
     }
 
-    /// Sets the level of the members of a workspace who chose none, from the dialog of
-    /// the notification settings. Only an administrator of the server can do this. A
-    /// refusal is told in the dialog.
-    pub fn set_workspace_default(
-        &mut self,
-        server_id: ServerId,
-        workspace_id: WorkspaceId,
-        level: NotificationLevel,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(server) = self.client.server(server_id) else {
-            return;
-        };
-        if !self.begin_default_change(server_id, workspace_id, Some(level)) {
-            return;
-        }
-        let key = (server_id, workspace_id.as_uuid());
-        self.known.notify_refused = None;
-        let api = server.api();
-        cx.spawn(async move |this, cx| {
-            let set = api.set_notification_default(workspace_id, level).await;
-            let _ = this.update(cx, |this, cx| {
-                let receipt = match set {
-                    Ok(set) => Ok(set.receipt),
-                    Err(error) => {
-                        this.known.notify_refused = Some((key.0, key.1, refusal(&error)));
-                        Err(())
-                    }
-                };
-                this.default_answered(server_id, workspace_id, receipt, cx);
-            });
-        })
-        .detach();
-        self.changed(cx);
-    }
-
     /// Notes a change of the level of a workspace. False when a change of that level is on
     /// its way or waits for the state: the new one is not sent.
     pub(super) fn begin_default_change(
@@ -581,7 +545,13 @@ impl AppState {
                         .selection
                         .notify
                         .is_some_and(|(of, shown)| of == server_id && shown.id() == scope.id());
-                    if in_dialog {
+                    // The page of the own levels tells the refusal of each of its rows.
+                    let on_page = this.admin_open()
+                        == Some(super::admin::AdminOpen::Server {
+                            server_id,
+                            page: super::admin::AdminPage::OwnNotifications,
+                        });
+                    if in_dialog || on_page {
                         this.known.notify_refused = Some((server_id, scope.id(), reason));
                     } else if this.navigations == navigation && this.owner(server_id) == owner {
                         // The change came from the menu of a row: no dialog is open
@@ -595,14 +565,20 @@ impl AppState {
         .detach();
     }
 
-    pub fn set_server_hide_text(
+    /// Removes the setting of its own of a channel or a group conversation: its level, its
+    /// mute and its mention switches take their defaults again.
+    pub fn reset_notify_scope(
         &mut self,
         server_id: ServerId,
-        hide: bool,
+        scope: SettingsScope,
         cx: &mut Context<Self>,
     ) {
-        self.change_scope(server_id, SettingsScope::Account, cx, |settings| {
-            settings.hide_text = hide
+        self.change_scope(server_id, scope, cx, |settings| {
+            settings.level = None;
+            settings.mute = false;
+            settings.muted_until = None;
+            settings.role_mentions = None;
+            settings.everyone_mentions = None;
         });
     }
 
@@ -652,6 +628,23 @@ impl AppState {
             settings.muted_until =
                 length.and_then(|length| length.until(OffsetDateTime::now_utc(), zone));
         });
+    }
+
+    /// Mutes a channel or a group conversation for a time, or ends its mute with `None`.
+    pub fn set_scope_mute(
+        &mut self,
+        server_id: ServerId,
+        scope: SettingsScope,
+        length: Option<MuteFor>,
+        cx: &mut Context<Self>,
+    ) {
+        match scope {
+            SettingsScope::Channel(channel_id) => {
+                self.set_channel_mute(server_id, channel_id, length, cx);
+            }
+            SettingsScope::Conversation(id) => self.set_group_mute(server_id, id, length, cx),
+            SettingsScope::Account | SettingsScope::Workspace(_) => {}
+        }
     }
 
     pub fn set_mention_switch(
@@ -771,11 +764,6 @@ impl AppState {
         })
         .detach();
         self.changed(cx);
-    }
-
-    /// Turns "do not disturb" on or off (ADR 0404).
-    pub fn set_do_not_disturb(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.change_quiet(cx, move |settings| settings.do_not_disturb = on);
     }
 
     /// Holds the system notifications and the sounds of messages while the person shares a

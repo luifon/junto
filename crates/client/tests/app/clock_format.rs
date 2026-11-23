@@ -5,7 +5,7 @@ use gpui::TestAppContext;
 fn the_clock_format_is_chosen_in_interface_and_kept_after_restart(cx: &mut TestAppContext) {
     let (directory, mut window) = named(cx, "Member");
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     assert!(window.shows("clock-format-0"));
     window.click("clock-format-1");
     window.run_tasks();
@@ -17,7 +17,7 @@ fn the_clock_format_is_chosen_in_interface_and_kept_after_restart(cx: &mut TestA
     window.close();
     let mut window = open(cx, directory.path());
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     window.click("clock-format-2");
     window.run_tasks();
     assert_eq!(
@@ -150,7 +150,7 @@ fn messages_notices_and_quiet_hour_entry_use_the_chosen_clock(cx: &mut TestAppCo
         state.set_clock_format(ClockFormat::TwelveHour, cx)
     });
     window.click("app-settings");
-    window.click("settings-section-quiet");
+    window.click("settings-section-notifications");
     window.state.update(&mut window.cx, |state, cx| {
         state.set_clock_format(ClockFormat::TwentyFourHour, cx)
     });

@@ -833,11 +833,17 @@ impl OccupantMark {
     }
 }
 
+/// The height of the line of a status text under the name of a person in a voice channel,
+/// in design pixels.
+pub const OCCUPANT_STATUS_LINE: f32 = 15.0;
+
 /// One person in a voice channel.
 #[derive(IntoElement)]
 pub struct OccupantRow {
     id: ElementId,
     name: SharedString,
+    /// The status text of the person, under the name, with the selector of its line.
+    status: Option<(SharedString, SharedString)>,
     seed: u128,
     picture: Option<std::sync::Arc<gpui::RenderImage>>,
     presence: Option<junto_client_core::protocol::presence::Presence>,
@@ -855,6 +861,7 @@ impl OccupantRow {
         Self {
             id: id.into(),
             name: name.into(),
+            status: None,
             seed,
             picture: None,
             presence: None,
@@ -891,6 +898,17 @@ impl OccupantRow {
         self
     }
 
+    /// The status text of the person, as a second line of [`OCCUPANT_STATUS_LINE`] under
+    /// the name (ADR 0401).
+    pub fn status_text(
+        mut self,
+        status: Option<SharedString>,
+        selector: impl Into<SharedString>,
+    ) -> Self {
+        self.status = status.map(|status| (status, selector.into()));
+        self
+    }
+
     pub fn marks(mut self, marks: Vec<OccupantMark>) -> Self {
         self.marks = marks;
         self
@@ -921,6 +939,10 @@ impl RenderOnce for OccupantRow {
         let theme = theme(cx);
         let colors = theme.colors;
         let mut label = self.name.to_string();
+        if let Some((status, _)) = &self.status {
+            label.push_str(", ");
+            label.push_str(status);
+        }
         for mark in &self.marks {
             label.push_str(", ");
             label.push_str(mark.label());
@@ -972,7 +994,12 @@ impl RenderOnce for OccupantRow {
             .flex_none()
             .items_center()
             .gap(u(8.0))
-            .h(u(theme.metrics.occupant_row_height))
+            .h(u(theme.metrics.occupant_row_height
+                + if self.status.is_some() {
+                    OCCUPANT_STATUS_LINE
+                } else {
+                    0.0
+                }))
             .pl(u(37.0))
             .pr(u(10.0))
             .typeface(theme.types.control, &theme)
@@ -1005,12 +1032,28 @@ impl RenderOnce for OccupantRow {
                     .when_some(self.profile, |avatar, profile| avatar.profile(profile)),
             )
             .child(
-                div().flex_1().min_w_0().child(match self.profile {
-                    Some(target) => super::ProfileName::new("person-name", self.name, target)
-                        .role_color(self.name_color)
-                        .into_any_element(),
-                    None => div().truncate().child(self.name).into_any_element(),
-                }),
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(match self.profile {
+                        Some(target) => super::ProfileName::new("person-name", self.name, target)
+                            .role_color(self.name_color)
+                            .into_any_element(),
+                        None => div().truncate().child(self.name).into_any_element(),
+                    })
+                    .when_some(self.status, |column, (status, selector)| {
+                        column.child(
+                            div()
+                                .debug_selector(move || selector.to_string())
+                                .typeface(theme.types.small, &theme)
+                                .line_height(u(OCCUPANT_STATUS_LINE))
+                                .ink(colors.ink_2)
+                                .truncate()
+                                .child(status),
+                        )
+                    }),
             )
             .child(
                 div()
