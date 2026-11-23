@@ -1002,6 +1002,8 @@ The answer is ||a **spoiler** with `code` and [a guide](https://example.test)||.
         Screen::new("messages-editing", with_timeline(general().timeline())),
         move |shell, window, cx| {
             prepare(shell, none(), cx);
+            // The editor of a row edits a message of the list that the window shows.
+            shell.take_state_fixture(window, cx);
             shell.edit_message(Pane::Main, own, window, cx);
         },
     )?;

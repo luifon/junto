@@ -1508,6 +1508,13 @@ impl Shell {
 
     /// Derives the view from the state once for the changes since the last drawing, and
     /// does what a change of the view asks of the window.
+    /// Takes the state as it is now, as the window does before its next frame. The screen
+    /// tool uses it to act on what a fixture shows within one step.
+    #[cfg(feature = "test-support")]
+    pub fn take_state_fixture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.take_state(window, cx);
+    }
+
     fn take_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(feature = "test-support")]
         {
