@@ -70,5 +70,9 @@
   {
     "revision": 23,
     "sha256": "1fd6d85659c67c75f4a3865eb6af6deddeb9b75874e12e08a9d0ec0d885212eb"
+  },
+  {
+    "revision": 24,
+    "sha256": "a39a5c2ec9dbfadadcfd6272612c7be83cee9dd97df4ece5295e5cb6c7bf7734"
   }
 ]
