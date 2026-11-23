@@ -14,7 +14,7 @@ use junto_server::person_rules::{self, Case};
 use serde_json::json;
 
 use crate::support::{Member, TestServer, test_config};
-use crate::upgrades::forget_the_newest_migration;
+use crate::upgrades::forget_the_migrations_after_the_release;
 
 fn set(permissions: &[W]) -> WorkspacePermissions {
     permissions
@@ -342,7 +342,7 @@ async fn the_rules_of_single_members_become_roles_only_when_no_case_waits() {
         .fetch_one(&server.db)
         .await
         .unwrap();
-    forget_the_newest_migration(&server).await;
+    forget_the_migrations_after_the_release(&server).await;
 
     // Ana gains nothing: her rule allows, and its deny takes what no role gives her. Bruno's
     // rule denies what a role grants him. Cara holds "manage roles" by her rule and would
@@ -483,7 +483,7 @@ async fn a_member_who_would_act_on_people_by_a_made_role_waits() {
     let hana = server.join(&owner, "Hana").await;
     let workspace = server.default_workspace(&owner).await;
     let plans = text_channel(&server, &owner, workspace.id, "plans").await;
-    forget_the_newest_migration(&server).await;
+    forget_the_migrations_after_the_release(&server).await;
 
     // Finn's rule allows "mention everyone"; a rule of "plans" gives him "manage channel".
     rule(
@@ -543,7 +543,7 @@ async fn a_banned_member_is_compared_with_the_roles_that_an_unban_restores() {
         .put_empty(&owner, &format!("/api/v1/accounts/{}/ban", ivo.account_id))
         .await
         .empty(StatusCode::NO_CONTENT);
-    forget_the_newest_migration(&server).await;
+    forget_the_migrations_after_the_release(&server).await;
     rule(
         &server,
         workspace.id,

@@ -101,8 +101,6 @@ async fn a_server_with_a_recorder_does_not_start_without_ffmpeg() {
     assert!(junto_server::prepare(database, config, clock).await.is_ok());
 }
 
-/// The newest migration of the database of `server` is forgotten: the database then has
-/// the schema of the version before.
 /// The table of the rules of single members in a workspace as migrations 42 and 43 left it.
 pub(crate) const WORKSPACE_PERSON_RULES: &str = "create table workspace_person_overrides (
     workspace_id uuid not null references workspaces(id) on delete cascade,
@@ -114,24 +112,44 @@ pub(crate) const WORKSPACE_PERSON_RULES: &str = "create table workspace_person_o
     check (allow | deny <> 0)
 )";
 
-pub(crate) async fn forget_the_newest_migration(server: &crate::support::TestServer) -> i64 {
-    // Undo the objects of the last migration as well as its bookkeeping: it removed the
-    // table of the rules of single members in a workspace (ADR 0301).
-    sqlx::raw_sql(WORKSPACE_PERSON_RULES)
+/// The newest migration of the last release (0.2.1).
+const RELEASED_SCHEMA: i64 = 58;
+
+/// The migrations after the last release are undone, the newest first, with their
+/// bookkeeping: the database of `server` then has the schema of the last release, and a start
+/// applies every newer migration in order.
+pub(crate) async fn forget_the_migrations_after_the_release(
+    server: &crate::support::TestServer,
+) -> i64 {
+    let undo = [
+        // 63: the missing sound and the joined job of a recording segment.
+        "alter table recording_segments drop column job_joined, \
+         drop column missing_sound_from, drop column missing_sound_until",
+        // 62: the default language of the recordings of the server.
+        "alter table server_state drop column recording_language",
+        // 61: the relays of the link of a new device.
+        "drop table device_link_relays",
+        // 60: the status text of an account.
+        "drop index accounts_status_text_until; \
+         alter table accounts drop constraint accounts_status_text_shape, \
+         drop column status_text, drop column status_text_until",
+        // 59: the rules of single members in a workspace, which it removed (ADR 0301).
+        WORKSPACE_PERSON_RULES,
+    ];
+    for statement in undo {
+        sqlx::raw_sql(statement).execute(&server.db).await.unwrap();
+    }
+    sqlx::query("delete from _sqlx_migrations where version > $1")
+        .bind(RELEASED_SCHEMA)
         .execute(&server.db)
         .await
         .unwrap();
-    sqlx::query(
-        "delete from _sqlx_migrations
-         where version = (select max(version) from _sqlx_migrations)",
-    )
-    .execute(&server.db)
-    .await
-    .unwrap();
-    sqlx::query_scalar("select max(version) from _sqlx_migrations")
+    let version: i64 = sqlx::query_scalar("select max(version) from _sqlx_migrations")
         .fetch_one(&server.db)
         .await
-        .unwrap()
+        .unwrap();
+    assert_eq!(version, RELEASED_SCHEMA);
+    version
 }
 
 /// ADR 0018: before a migration, the server copies its database on the same PostgreSQL
@@ -153,7 +171,7 @@ async fn the_server_copies_the_database_before_a_migration() {
     let current = copy_before_migration(&options, MigrationCopy::Database).await;
     assert_eq!(current.unwrap(), MigrationCopied::Nothing);
 
-    let version = forget_the_newest_migration(&server).await;
+    let version = forget_the_migrations_after_the_release(&server).await;
     let off = copy_before_migration(&options, MigrationCopy::None).await;
     assert_eq!(off.unwrap(), MigrationCopied::Nothing);
     // The server of the test is connected to the database: PostgreSQL makes no copy, and
@@ -744,7 +762,7 @@ async fn no_copy_is_made_while_a_recording_runs() {
     let studio = Studio::open().await;
     let server = &studio.scene.server;
     studio.record().await;
-    forget_the_newest_migration(server).await;
+    forget_the_migrations_after_the_release(server).await;
     let options = options_of(server);
     let refused = copy_before_migration(&options, MigrationCopy::Database).await;
     assert!(
@@ -842,7 +860,7 @@ async fn a_needed_copy_waits_for_an_ended_servers_connection() {
     use sqlx::{ConnectOptions, Connection};
     let mut server = crate::support::TestServer::start().await;
     let options = options_of(&server);
-    forget_the_newest_migration(&server).await;
+    forget_the_migrations_after_the_release(&server).await;
     server.stop().await;
     server.state.database.close().await;
     let old = options.connect().await.unwrap();
@@ -866,7 +884,7 @@ async fn a_mark_on_a_database_with_data_does_not_skip_the_copy() {
     let mut server = crate::support::TestServer::start().await;
     let owner = server.owner().await;
     server.join(&owner, "Stored member").await;
-    forget_the_newest_migration(&server).await;
+    forget_the_migrations_after_the_release(&server).await;
     let name = name_of(&server).await;
     let options = options_of(&server);
     server.stop().await;
@@ -935,7 +953,7 @@ async fn a_copy_that_stays_blocked_ends_with_the_instruction() {
     use sqlx::{ConnectOptions, Connection};
     let mut server = crate::support::TestServer::start().await;
     let options = options_of(&server);
-    forget_the_newest_migration(&server).await;
+    forget_the_migrations_after_the_release(&server).await;
     server.stop().await;
     server.state.database.close().await;
     let old = options.connect().await.unwrap();
