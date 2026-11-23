@@ -1466,3 +1466,25 @@ fn a_failed_read_of_the_threads_list_is_stated_and_read_again(cx: &mut TestAppCo
         window.shows_named(format!("followed-thread:{root}"))
     });
 }
+
+/// The root of the thread in the thread pane has its read actions only (ADR 0740): its menu
+/// offers no Edit and no Delete of an own root, which the list of the main area offers, and
+/// an action of the root finds the same read-only row.
+#[gpui::test]
+fn the_root_in_the_thread_pane_offers_its_read_actions_only(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, _admin, _directory, mut window, _, _) = with_root(cx, &world);
+    window.write("My plan for the week");
+    let own = window.until_message("My plan for the week").message.id;
+    window.right_click_message(own);
+    assert!(window.shows("message-menu"));
+    assert!(window.shows("message-edit") && window.shows("message-delete"));
+    window.press("escape");
+
+    window.open_thread_of(own);
+    assert!(window.shows("thread-root"));
+    window.right_click_named("thread-root".to_owned());
+    assert!(window.shows("message-menu"));
+    assert!(!window.shows("message-edit") && !window.shows("message-delete"));
+    window.press("escape");
+}

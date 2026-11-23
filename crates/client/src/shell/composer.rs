@@ -1360,13 +1360,7 @@ impl Shell {
     }
 
     fn held_message(&self, pane: Pane, message_id: MessageId) -> Option<Arc<Message>> {
-        self.composer_feed(pane)?
-            .rows
-            .iter()
-            .find_map(|row| match row {
-                FeedRow::Message(row) if row.message.id == message_id => Some(row.message.clone()),
-                _ => None,
-            })
+        self.message_row_of(pane, message_id).map(|row| row.message)
     }
 
     /// Puts the text of the newest own message that the pane lists into the composer, to

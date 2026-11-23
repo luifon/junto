@@ -296,6 +296,18 @@ impl PartialEq for MessageRow {
 impl Eq for MessageRow {}
 
 impl MessageRow {
+    /// The row as a bare message shows it, with its read actions only: the root of the
+    /// thread of the side panel and a message of the pin list (ADR 0740).
+    pub fn read_only(mut self) -> Self {
+        self.can_react = false;
+        self.can_reply = false;
+        self.can_thread = false;
+        self.can_pin = false;
+        self.can_edit = false;
+        self.can_delete = false;
+        self
+    }
+
     /// The message offers at least one action: its bar and its menu have an entry.
     pub fn has_actions(&self) -> bool {
         (!self.message.deleted && self.message.document.is_some())

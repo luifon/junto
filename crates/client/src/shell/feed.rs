@@ -1469,6 +1469,28 @@ impl Shell {
         }
     }
 
+    /// The row of a message that a pane shows: a row of its list, or in the thread pane the
+    /// root of the thread, which stands above the list of its replies with its read actions
+    /// only (ADR 0740). The actions of a message, its edit and the question before its
+    /// deletion find it here, so the root offers no action that its menu does not show.
+    pub(crate) fn message_row_of(&self, pane: Pane, message_id: MessageId) -> Option<MessageRow> {
+        let listed = self.pane_feed(pane)?.rows.iter().find_map(|row| match row {
+            FeedRow::Message(row) if row.message.id == message_id => Some(row.clone()),
+            _ => None,
+        });
+        listed.or_else(|| {
+            let root = self
+                .view
+                .as_ref()?
+                .workspace()?
+                .thread
+                .as_ref()?
+                .root
+                .clone()?;
+            (pane == Pane::Thread && root.message.id == message_id).then(|| root.read_only())
+        })
+    }
+
     /// Takes a new view: each list gets the rows of its feed, and the read position
     /// follows what is shown.
     pub(crate) fn feed_changed(
@@ -4118,15 +4140,11 @@ impl Shell {
         let open_menu = matches!(&self.layer, Layer::MessageMenu(open)
                 if open.message_id == message_id && open.pane == pane && open.read_only == bare);
         let menu = open_menu.then(|| {
-            let mut shown = row.clone();
-            if bare {
-                shown.can_react = false;
-                shown.can_reply = false;
-                shown.can_thread = false;
-                shown.can_pin = false;
-                shown.can_edit = false;
-                shown.can_delete = false;
-            }
+            let shown = if bare {
+                row.clone().read_only()
+            } else {
+                row.clone()
+            };
             self.render_message_menu(&shown, feed, window, cx)
         });
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
@@ -4696,14 +4714,10 @@ impl Shell {
         let theme = theme(cx);
         let server_id = self.pane_feed(Pane::Main).map(|feed| feed.server_id);
         // The deletion of a permanent message is stated with what stays of it (ADR 0402).
-        let permanent = [Pane::Main, Pane::Thread]
-            .into_iter()
-            .filter_map(|pane| self.pane_feed(pane))
-            .flat_map(|feed| feed.rows.iter())
-            .any(|row| {
-                matches!(row, FeedRow::Message(row)
-                    if row.message.id == message_id && row.message.permanent)
-            });
+        let permanent = [Pane::Main, Pane::Thread].into_iter().any(|pane| {
+            self.message_row_of(pane, message_id)
+                .is_some_and(|row| row.message.permanent)
+        });
         let (title, sentence) = if permanent {
             (text::DELETE_PERMANENT_TITLE, text::DELETE_PERMANENT_CONFIRM)
         } else {
