@@ -126,15 +126,17 @@ impl AppState {
                 .filter(|((held, _), _)| *held == server_id)
                 .map(|(_, threads)| threads)
                 .unwrap_or_default();
-            // The followed threads of the workspace of the dialog, of every channel (ADR 0747).
-            let of_workspace = self
+            // The followed threads of the workspaces of the server of the dialog, of every
+            // channel, as far as their pages were read (ADR 0740).
+            let of_workspaces: Vec<MessageId> = self
                 .known
                 .followed
                 .forward
-                .held()
+                .values()
+                .filter_map(|list| list.held())
                 .filter(|((held, _), _)| *held == server_id)
-                .map(|(_, threads)| threads)
-                .unwrap_or_default();
+                .flat_map(|(_, threads)| threads.iter().map(|thread| thread.root_id))
+                .collect();
             let roots = model
                 .timelines
                 .iter()
@@ -144,7 +146,7 @@ impl AppState {
                 })
                 .chain(model.threads.iter().map(|thread| thread.root_id))
                 .chain(followed.iter().map(|thread| thread.root_id))
-                .chain(of_workspace.iter().map(|thread| thread.root_id));
+                .chain(of_workspaces.iter().copied());
             for root_id in roots {
                 let root: Option<&Message> = model
                     .timelines

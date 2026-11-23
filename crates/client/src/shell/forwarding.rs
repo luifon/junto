@@ -170,19 +170,11 @@ impl Shell {
             _find: subscription,
         };
         self.open_layer(Layer::Forward(Box::new(dialog)), window, cx);
-        // The dialog offers the followed threads of the shown workspace (ADR 0747).
-        let workspace = self
-            .view
-            .as_ref()
-            .filter(|view| {
-                view.selected
-                    .as_ref()
-                    .is_some_and(|server| server.id == server_id)
-            })
-            .and_then(|view| view.workspace())
-            .map(|workspace| (server_id, workspace.id));
-        self.state
-            .update(cx, |state, cx| state.show_forward_threads(workspace, cx));
+        // The dialog offers the followed threads of the workspaces of the server of the
+        // message (ADR 0740).
+        self.state.update(cx, |state, cx| {
+            state.show_forward_threads(Some(server_id), cx)
+        });
         self.focus_field(&find, window, cx);
     }
 
@@ -262,6 +254,25 @@ impl Shell {
                     .p(u(12.0))
                     .ink(theme.colors.ink_3)
                     .child(text::FORWARD_NONE),
+            );
+        }
+        // A workspace whose server lists more followed threads offers their next page.
+        for (workspace_id, name) in self.state.read(cx).forward_threads_with_more() {
+            let selector = format!("forward-more-threads:{workspace_id}");
+            let element_id = gpui::ElementId::Name(selector.clone().into());
+            choices = choices.child(
+                div().debug_selector(move || selector.clone()).child(
+                    ChannelRow::new(
+                        element_id,
+                        Icon::ChevronDown,
+                        text::forward_more_threads(&name),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state.update(cx, |state, cx| {
+                            state.read_more_forward_threads(workspace_id, cx)
+                        });
+                    })),
+                ),
             );
         }
         Dialog::new(text::FORWARD_MESSAGE, self.layer_focus())

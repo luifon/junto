@@ -649,3 +649,84 @@ fn the_forward_dialog_offers_a_read_followed_thread_of_another_channel(cx: &mut 
         ))
     });
 }
+
+/// The forward dialog offers the followed threads of every workspace of the server of the
+/// message, the first page of each; a workspace with more shows a row that reads the next
+/// page (ADR 0740).
+#[gpui::test]
+fn the_forward_dialog_offers_the_followed_threads_of_every_workspace_page_by_page(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::protocol::message::SendMessage;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = crate::admin_pages::owner_window(cx, &server);
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let general = window.selected_channel();
+    let studio = window.view().workspace().unwrap().id;
+    let lab = world
+        .run(owner.api().create_workspace("Lab".to_owned()))
+        .unwrap()
+        .id;
+    let notes = crate::admin_pages::text_channel(&world, &owner, lab, "lab-notes");
+    let followed_root = |channel, text: String| {
+        let root = world
+            .run(owner.api().send_message(
+                PlaceId::Channel(channel),
+                &SendMessage {
+                    document: document(&text),
+                    reply_to: None,
+                    attachments: Vec::new(),
+                    comment: None,
+                },
+            ))
+            .unwrap();
+        // A followed thread is listed once it has a reply; its writer follows it.
+        world
+            .run(owner.api().send_message(
+                PlaceId::Thread {
+                    channel_id: channel,
+                    root_id: root.id,
+                },
+                &SendMessage {
+                    document: document("A reply"),
+                    reply_to: None,
+                    attachments: Vec::new(),
+                    comment: None,
+                },
+            ))
+            .unwrap();
+        root.id
+    };
+    let topics: Vec<_> = (0..51)
+        .map(|index| followed_root(general, format!("Topic {index:02}")))
+        .collect();
+    let lab_topic = followed_root(notes, "Lab topic".to_owned());
+    let server_id = owner.id();
+    let destination = |root| format!("forward-destination:{server_id}:thread:{root}");
+
+    window.until_message("Topic 50");
+    window.right_click_message(topics[50]);
+    window.click("message-forward");
+    // The thread of the other workspace is offered.
+    window.type_into("forward-find", "Lab topic");
+    window.until("the thread of the other workspace is offered", |window| {
+        window.shows_named(destination(lab_topic))
+    });
+    // The first page of the shown workspace leaves one thread for its row of more.
+    window.click("forward-find");
+    window.press("secondary-a");
+    window.press("backspace");
+    window.type_into("forward-find", "Topic 00");
+    window.until("the row of more threads of the workspace", |window| {
+        window.shows_named(format!("forward-more-threads:{studio}"))
+    });
+    assert!(!window.shows_named(destination(topics[0])));
+    window.click_named(format!("forward-more-threads:{studio}"));
+    window.until("the next page is offered", |window| {
+        window.shows_named(destination(topics[0]))
+            && !window.shows_named(format!("forward-more-threads:{studio}"))
+    });
+}

@@ -7,7 +7,7 @@
 //! late, for an earlier request or for a thread or a channel that is not shown any more,
 //! changes nothing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::Context;
@@ -828,10 +828,11 @@ pub struct Followed {
     pub list: FollowedList,
     /// The followed threads of the workspace that the side panel "Threads" shows.
     pub workspace: FollowedList<WorkspaceId>,
-    /// The followed threads of the workspace of the forward dialog, for its destinations.
-    pub forward: FollowedList<WorkspaceId>,
-    /// The workspace of the forward dialog while it is open.
-    pub forward_target: Option<(ServerId, WorkspaceId)>,
+    /// The followed threads of each workspace of the server of the forward dialog that the
+    /// account reads, for its destinations (ADR 0740).
+    pub forward: BTreeMap<WorkspaceId, FollowedList<WorkspaceId>>,
+    /// The server of the forward dialog while it is open.
+    pub forward_server: Option<ServerId>,
     /// The channel of each thread of the workspace lists, as the server stated it.
     pub workspace_channels: HashMap<(ServerId, MessageId), ChannelId>,
     pub roots: Roots,
@@ -845,19 +846,64 @@ pub struct Followed {
 pub(crate) enum WorkspaceList {
     /// The list of the side panel "Threads".
     Panel,
-    /// The list of the destinations of the forward dialog.
-    Forward,
+    /// The list of a workspace for the destinations of the forward dialog.
+    Forward(WorkspaceId),
 }
 
-/// The most followed threads that the forward dialog reads of a workspace.
-pub(crate) const FORWARD_THREADS_MOST: usize = 500;
-
 impl Followed {
-    pub(crate) fn workspace_list(&mut self, kind: WorkspaceList) -> &mut FollowedList<WorkspaceId> {
+    pub(crate) fn workspace_list(
+        &mut self,
+        kind: WorkspaceList,
+    ) -> Option<&mut FollowedList<WorkspaceId>> {
         match kind {
-            WorkspaceList::Panel => &mut self.workspace,
-            WorkspaceList::Forward => &mut self.forward,
+            WorkspaceList::Panel => Some(&mut self.workspace),
+            WorkspaceList::Forward(workspace_id) => self.forward.get_mut(&workspace_id),
         }
+    }
+
+    /// The lists of the forward dialog take the workspaces of its server that the account
+    /// reads now; a list of another workspace goes.
+    pub(crate) fn show_forward(&mut self, server: Option<(ServerId, Vec<WorkspaceId>)>) {
+        let (server_id, workspaces) = server.unzip();
+        let workspaces = workspaces.unwrap_or_default();
+        self.forward
+            .retain(|workspace_id, _| workspaces.contains(workspace_id));
+        if let Some(server_id) = server_id {
+            for workspace_id in workspaces {
+                self.forward
+                    .entry(workspace_id)
+                    .or_default()
+                    .show(Some((server_id, workspace_id)));
+            }
+        }
+    }
+
+    /// Why followed threads are missing from the destinations of the forward dialog: the
+    /// failure of one of its lists.
+    pub(crate) fn forward_failure(&self) -> Option<ListFailure> {
+        self.forward
+            .values()
+            .filter_map(FollowedList::failure)
+            .find(|failure| *failure == ListFailure::Failed)
+    }
+
+    /// Every list of the forward dialog that failed is read again.
+    pub(crate) fn retry_forward(&mut self) -> bool {
+        let mut retried = false;
+        for list in self.forward.values_mut() {
+            retried |= list.retry();
+        }
+        retried
+    }
+
+    /// The workspaces of the forward dialog whose server lists more followed threads than
+    /// the dialog read.
+    pub(crate) fn forward_with_more(&self) -> Vec<WorkspaceId> {
+        self.forward
+            .iter()
+            .filter(|(_, list)| list.has_more() && !list.is_reading())
+            .map(|(workspace_id, _)| *workspace_id)
+            .collect()
     }
 
     /// Drops what is held of every server that is not one of these.
@@ -884,7 +930,9 @@ impl Followed {
             self.thread.forget(server_id);
             self.list.forget(server_id);
             self.workspace.forget(server_id);
-            self.forward.forget(server_id);
+            for list in self.forward.values_mut() {
+                list.forget(server_id);
+            }
             self.roots.forget(server_id);
             if self
                 .menu
@@ -907,7 +955,10 @@ impl Followed {
         let thread = self.thread.told(server_id, root_id, following, setting);
         let list = self.list.told(server_id, root_id, following);
         let workspace = self.workspace.told(server_id, root_id, following);
-        let forward = self.forward.told(server_id, root_id, following);
+        let mut forward = false;
+        for list in self.forward.values_mut() {
+            forward |= list.told(server_id, root_id, following);
+        }
         let menu = self
             .menu
             .follow
@@ -930,7 +981,10 @@ impl Followed {
         let thread = self.thread.stale(server_id);
         let list = self.list.trigger(server_id);
         let workspace = self.workspace.trigger(server_id);
-        let forward = self.forward.trigger(server_id);
+        let mut forward = false;
+        for list in self.forward.values_mut() {
+            forward |= list.trigger(server_id);
+        }
         let roots = self.roots.stale(server_id);
         let menu = self.menu.follow.stale(server_id);
         thread || list || workspace || forward || roots || menu
@@ -972,17 +1026,23 @@ impl Followed {
             Some(_) if overtaken && followed == core_model::Followed::Unknown => {
                 self.list.trigger(ask.server_id);
                 self.workspace.trigger(ask.server_id);
-                self.forward.trigger(ask.server_id);
+                for list in self.forward.values_mut() {
+                    list.trigger(ask.server_id);
+                }
             }
             Some(Some((following, _))) => {
                 self.list.told(ask.server_id, ask.root_id, following);
                 self.workspace.told(ask.server_id, ask.root_id, following);
-                self.forward.told(ask.server_id, ask.root_id, following);
+                for list in self.forward.values_mut() {
+                    list.told(ask.server_id, ask.root_id, following);
+                }
             }
             Some(None) => {
                 self.list.trigger(ask.server_id);
                 self.workspace.trigger(ask.server_id);
-                self.forward.trigger(ask.server_id);
+                for list in self.forward.values_mut() {
+                    list.trigger(ask.server_id);
+                }
             }
             None => {}
         }
@@ -1341,20 +1401,49 @@ impl AppState {
         );
         followed.list.show(shown.server.zip(shown.channel));
         followed.workspace.show(self.selection.threads);
-        followed.forward.show(followed.forward_target);
+        // The forward dialog offers the followed threads of every workspace of its server
+        // that the account reads (ADR 0740).
+        let forward = self.known.followed.forward_server.and_then(|server_id| {
+            let (_, model) = self.followed_source(server_id)?;
+            let workspaces = model
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.workspace.id)
+                .collect();
+            Some((server_id, workspaces))
+        });
+        self.known.followed.show_forward(forward);
         self.read_followed(cx);
         self.read_thread_menu(cx);
     }
 
-    /// The forward dialog opens for a workspace, or closes: its destinations offer the
-    /// followed threads of that workspace (ADR 0747).
+    /// The forward dialog opens for the server of its message, or closes: its destinations
+    /// offer the followed threads of the workspaces of that server (ADR 0740).
     pub(crate) fn show_forward_threads(
         &mut self,
-        target: Option<(ServerId, WorkspaceId)>,
+        server: Option<ServerId>,
         cx: &mut Context<Self>,
     ) {
-        if self.known.followed.forward_target != target {
-            self.known.followed.forward_target = target;
+        if self.known.followed.forward_server != server {
+            self.known.followed.forward_server = server;
+            self.changed(cx);
+        }
+    }
+
+    /// The person reads the next page of the followed threads of a workspace of the
+    /// forward dialog.
+    pub(crate) fn read_more_forward_threads(
+        &mut self,
+        workspace_id: WorkspaceId,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .known
+            .followed
+            .forward
+            .get_mut(&workspace_id)
+            .is_some_and(FollowedList::expand)
+        {
             self.changed(cx);
         }
     }
@@ -1411,12 +1500,32 @@ impl AppState {
             })
             .detach();
         }
-        // A server of an earlier release does not list the threads of a workspace.
-        for kind in [WorkspaceList::Panel, WorkspaceList::Forward] {
-            if !server.entry().capabilities.workspace_threads {
-                self.known.followed.workspace_list(kind).unsupported();
+        // A server of an earlier release does not list the threads of a workspace. The
+        // lists of the forward dialog are read one at a time.
+        let forward: Vec<WorkspaceId> = self.known.followed.forward.keys().copied().collect();
+        let forward_reading = self
+            .known
+            .followed
+            .forward
+            .values()
+            .any(FollowedList::is_reading);
+        let kinds = std::iter::once(WorkspaceList::Panel)
+            .chain(forward.into_iter().map(WorkspaceList::Forward));
+        let mut forward_sent = forward_reading;
+        for kind in kinds {
+            if !server.entry().capabilities.workspace_threads
+                && let Some(list) = self.known.followed.workspace_list(kind)
+            {
+                list.unsupported();
             }
-            self.read_workspace_threads(&server, kind, cx);
+            if matches!(kind, WorkspaceList::Forward(_)) {
+                if forward_sent {
+                    continue;
+                }
+                forward_sent = self.read_workspace_threads(&server, kind, cx);
+            } else {
+                self.read_workspace_threads(&server, kind, cx);
+            }
         }
         let followed = &mut self.known.followed;
         let missing = shown
@@ -1426,8 +1535,9 @@ impl AppState {
         // The roots of the followed threads of the workspace list that the state does not
         // hold, for their titles.
         let mut missing = missing;
-        let lists = [followed.workspace.held(), followed.forward.held()];
-        for ((held_server, _), threads) in lists.into_iter().flatten() {
+        let lists = std::iter::once(followed.workspace.held())
+            .chain(followed.forward.values().map(FollowedList::held));
+        for ((held_server, _), threads) in lists.flatten() {
             if held_server != server_id {
                 continue;
             }
@@ -1458,21 +1568,25 @@ impl AppState {
         }
     }
 
-    /// Sends the next read of a list of the followed threads of a workspace. The list of
-    /// the forward dialog is read page after page up to [`FORWARD_THREADS_MOST`] threads,
-    /// so that the dialog offers the followed threads of every channel (ADR 0747).
+    /// Sends the next read of a list of the followed threads of a workspace: the first page,
+    /// and a further page when the person asks for it. True when a read was sent.
     fn read_workspace_threads(
         &mut self,
         server: &ServerHandle,
         kind: WorkspaceList,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let server_id = server.id();
-        let Some(read) = self.known.followed.workspace_list(kind).next_read() else {
-            return;
+        let Some(read) = self
+            .known
+            .followed
+            .workspace_list(kind)
+            .and_then(FollowedList::next_read)
+        else {
+            return false;
         };
         if read.server_id != server_id {
-            return;
+            return false;
         }
         let api = server.api();
         cx.spawn(async move |this, cx| {
@@ -1486,7 +1600,10 @@ impl AppState {
             let _ = this.update(cx, |this, cx| {
                 let followed = &mut this.known.followed;
                 let Ok(page) = page else {
-                    if followed.workspace_list(kind).failed(read.number) {
+                    if followed
+                        .workspace_list(kind)
+                        .is_some_and(|list| list.failed(read.number))
+                    {
                         this.followed_changed(cx);
                     }
                     return;
@@ -1505,20 +1622,16 @@ impl AppState {
                     more: page.more,
                     next: page.next,
                 };
-                let list = followed.workspace_list(kind);
-                if list.answered(read.number, Some(page)) {
-                    let held = list.held().map_or(0, |(_, threads)| threads.len());
-                    if kind == WorkspaceList::Forward
-                        && list.has_more()
-                        && held < FORWARD_THREADS_MOST
-                    {
-                        list.expand();
-                    }
+                if followed
+                    .workspace_list(kind)
+                    .is_some_and(|list| list.answered(read.number, Some(page)))
+                {
                     this.followed_changed(cx);
                 }
             });
         })
         .detach();
+        true
     }
 
     /// What is held of followed threads changed: the next reads are sent, and the window
@@ -2231,6 +2344,38 @@ mod tests {
         assert!(list.retry());
         let again = list.next_read().unwrap();
         assert_eq!(again.before, None);
+    }
+
+    #[test]
+    fn the_forward_dialog_holds_one_list_per_workspace_and_reads_further_pages_on_request() {
+        let (server_id, _) = channel();
+        let (studio, lab) = (WorkspaceId::generate(), WorkspaceId::generate());
+        let mut followed = Followed::default();
+        followed.show_forward(Some((server_id, vec![studio, lab])));
+        assert_eq!(followed.forward.len(), 2);
+        let list = followed.forward.get_mut(&studio).unwrap();
+        let read = list.next_read().unwrap();
+        list.answered(read.number, Some(page(states(50), Some("after-50"))));
+        // Nothing reads a further page by itself: the dialog shows a row for it.
+        assert_eq!(followed.forward_with_more(), vec![studio]);
+        let list = followed.forward.get_mut(&studio).unwrap();
+        assert_eq!(list.next_read(), None);
+        assert!(list.expand());
+        let further = list.next_read().unwrap();
+        assert_eq!(further.before.as_deref(), Some("after-50"));
+        // A failed list is told and read again.
+        assert!(list.failed(further.number));
+        assert_eq!(followed.forward_failure(), Some(ListFailure::Failed));
+        assert!(followed.retry_forward());
+        assert_eq!(followed.forward_failure(), None);
+        // A workspace that the account no longer reads loses its list.
+        followed.show_forward(Some((server_id, vec![lab])));
+        assert_eq!(
+            followed.forward.keys().copied().collect::<Vec<_>>(),
+            vec![lab]
+        );
+        followed.show_forward(None);
+        assert!(followed.forward.is_empty());
     }
 
     #[test]

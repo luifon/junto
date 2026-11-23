@@ -70,12 +70,38 @@ impl AppState {
     /// Reads the followed threads of the side panel "Threads" again after a failed read.
     /// Why the followed threads of the forward dialog are missing from its destinations.
     pub(crate) fn forward_threads_failure(&self) -> Option<super::followed::ListFailure> {
-        self.known.followed.forward.failure()
+        self.known.followed.forward_failure()
+    }
+
+    /// The workspaces of the forward dialog that have further followed threads, with their
+    /// names, for the rows that read them (ADR 0740).
+    pub(crate) fn forward_threads_with_more(
+        &self,
+    ) -> Vec<(junto_client_core::protocol::ids::WorkspaceId, String)> {
+        let followed = &self.known.followed;
+        let Some(model) = followed
+            .forward_server
+            .and_then(|server_id| self.client.server(server_id))
+            .and_then(|server| server.live().view().model)
+        else {
+            return Vec::new();
+        };
+        followed
+            .forward_with_more()
+            .into_iter()
+            .filter_map(|workspace_id| {
+                let workspace = model
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace.id == workspace_id)?;
+                Some((workspace_id, workspace.workspace.name.clone()))
+            })
+            .collect()
     }
 
     /// The person reads the followed threads of the forward dialog again.
     pub(crate) fn retry_forward_threads(&mut self, cx: &mut Context<Self>) {
-        if self.known.followed.forward.retry() {
+        if self.known.followed.retry_forward() {
             self.changed(cx);
         }
     }
