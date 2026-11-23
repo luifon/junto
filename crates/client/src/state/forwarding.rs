@@ -625,7 +625,13 @@ fn snapshot(origin: &Origin, id: MessageId, message: &Message, names: &Names) ->
         message_id: id,
         verified: false,
     }];
-    for block in message.document.iter().flat_map(Document::content_blocks) {
+    // The comment of a forward that is forwarded again stays above its content (ADR 0408).
+    for block in message
+        .comment
+        .iter()
+        .chain(message.document.iter())
+        .flat_map(Document::content_blocks)
+    {
         blocks.push(match block {
             Block::Heading {
                 level,

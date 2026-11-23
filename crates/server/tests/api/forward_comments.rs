@@ -152,3 +152,99 @@ async fn the_comment_of_a_forward_is_searched_and_leaves_with_its_deleted_messag
         .ok(StatusCode::OK);
     assert!(after.results.is_empty());
 }
+
+/// A forward that is forwarded again carries the comment of its source above the forwarded
+/// content, with its references as text; the new sender's comment stays apart (ADR 0408).
+#[tokio::test]
+async fn a_forward_of_a_forward_keeps_the_comment_of_its_source() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let copier = server.join(&owner, "Copier").await;
+    let channel = channel(&server, &owner, "text").await;
+    let source = send(&server, &owner, &channel, "the source text").await;
+    let path = format!("/api/v1/channels/{}/messages", channel.id);
+    let mut body = forwarded(source.id, None);
+    body["comment"] = json!({"blocks":[{"kind":"paragraph", "content":[
+        {"kind":"text", "text":"ask "},
+        {"kind":"account", "account_id": owner.account_id}
+    ]}]});
+    let first: Message = server
+        .post(&copier, &path, &body)
+        .await
+        .ok(StatusCode::CREATED);
+    let second: Message = server
+        .post(&owner, &path, &forwarded(first.id, Some("again")))
+        .await
+        .ok(StatusCode::CREATED);
+    let document = serde_json::to_value(&second.document).unwrap();
+    let blocks = document["blocks"].as_array().unwrap();
+    assert_eq!(blocks[0]["kind"], "forward");
+    // The comment of the source comes first, with the mention frozen as text.
+    let comment = serde_json::to_string(&blocks[1]).unwrap();
+    assert!(comment.contains("ask "), "{comment}");
+    assert!(!comment.contains("\"account\""), "{comment}");
+    assert!(words(&second.document).contains("the source text"));
+    assert!(words(&second.comment).contains("again"));
+    assert!(!words(&second.document).contains("again"));
+}
+
+/// An edit that removes the forward origin and keeps the comment is refused, also when it
+/// does not name the comment (ADR 0408).
+#[tokio::test]
+async fn an_edit_that_removes_the_origin_and_keeps_the_comment_is_refused() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let channel = channel(&server, &owner, "text").await;
+    let source = send(&server, &owner, &channel, "the source text").await;
+    let path = format!("/api/v1/channels/{}/messages", channel.id);
+    let copy: Message = server
+        .post(&owner, &path, &forwarded(source.id, Some("see this")))
+        .await
+        .ok(StatusCode::CREATED);
+    server
+        .put(
+            &owner,
+            &message(copy.id),
+            &json!({"document": paragraph("an ordinary message")}),
+        )
+        .await
+        .error(ErrorCode::InvalidRequest);
+    // With the comment removed, the edit is taken.
+    let ordinary: Message = server
+        .put(
+            &owner,
+            &message(copy.id),
+            &json!({"document": paragraph("an ordinary message"), "comment": {"blocks": []}}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(ordinary.comment, None);
+}
+
+/// "Has a link" finds a forward whose only link is in its comment.
+#[tokio::test]
+async fn a_link_in_the_comment_of_a_forward_counts_for_has_a_link() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let channel = channel(&server, &owner, "text").await;
+    let source = send(&server, &owner, &channel, "the source text").await;
+    let path = format!("/api/v1/channels/{}/messages", channel.id);
+    let copy: Message = server
+        .post(
+            &owner,
+            &path,
+            &forwarded(source.id, Some("read https://example.test/plan")),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let found: SearchPage = server
+        .get(&owner, "/api/v1/search?has_link=true")
+        .await
+        .ok(StatusCode::OK);
+    assert!(
+        found
+            .results
+            .iter()
+            .any(|result| result.message_id == Some(copy.id))
+    );
+}

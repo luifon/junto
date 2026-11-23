@@ -393,11 +393,13 @@ pub async fn edit_message(
         if !document::has_content(&body.document) && message.attachments.is_empty() {
             return Err(ApiError::invalid("a message needs text or an attachment"));
         }
-        // A forward keeps its comment unless the edit names a new one (ADR 0408).
-        let comment = match &body.comment {
-            Some(comment) => messages::forwarding::comment(&body.document, Some(comment))?,
-            None => message.comment.clone(),
-        };
+        // A forward keeps its comment unless the edit names a new one (ADR 0408). The kept
+        // comment is checked against the new content too: an edit that removes the forward
+        // origin and keeps the comment is refused.
+        let comment = messages::forwarding::comment(
+            &body.document,
+            body.comment.as_ref().or(message.comment.as_ref()),
+        )?;
         let content_unchanged = message.document.as_ref() == Some(&body.document);
         if content_unchanged && comment == message.comment {
             return Ok(message);

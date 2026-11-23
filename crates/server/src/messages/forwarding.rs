@@ -99,10 +99,13 @@ pub async fn prepare(
             message_id: id,
             verified: true,
         }];
+        // The comment of a forward that is forwarded again stays above its content: it is
+        // part of that message (ADR 0408). Its references are frozen with the rest.
         blocks.extend(
             source
-                .document
+                .comment
                 .iter()
+                .chain(source.document.iter())
                 .flat_map(Document::content_blocks)
                 .cloned(),
         );

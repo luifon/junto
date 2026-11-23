@@ -159,7 +159,7 @@ pub async fn search(
              from messages m where m.place_id=any($2) and not m.deleted and m.author_id is
              not null and (m.readers is null or $3=any(m.readers))
              and (not $12 or exists(select 1 from attachments a where a.message_id=m.id and a.complete and a.removed_at is null))
-             and (not $13 or jsonb_path_exists(m.document,'lax $.** ? (@.kind == \"link\" || (@.kind == \"text\" && @.text like_regex \"(https?|junto)://[^[:space:]]+\"))'))
+             and (not $13 or exists(select 1 from (values (m.document),(m.comment)) d(doc) where d.doc is not null and jsonb_path_exists(d.doc,'lax $.** ? (@.kind == \"link\" || (@.kind == \"text\" && @.text like_regex \"(https?|junto)://[^[:space:]]+\"))')))
              and (not $14 or exists(select 1 from attachments a where a.message_id=m.id and a.complete and a.removed_at is null and a.media_type like 'image/%'))
              and (not $15 or notification_mentioned($3,m.id,true,true))
              and (not $16 or exists(select 1 from conversations c where c.id=m.place_id)) union all select
