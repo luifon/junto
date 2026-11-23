@@ -122,6 +122,19 @@ pub(crate) async fn forget_the_migrations_after_the_release(
     server: &crate::support::TestServer,
 ) -> i64 {
     let undo = [
+        // 65: a group may have no name.
+        "alter table conversations drop constraint conversation_kind; \
+         alter table conversations add constraint conversation_kind check ( \
+             (name is null and low_account_id is not null and high_account_id is not null) \
+             or (name is not null and char_length(name) between 1 and 80 \
+                 and low_account_id is null and high_account_id is null))",
+        // 64: the comment of a forward, which the search vector of a message reads.
+        "drop index messages_search; \
+         alter table messages drop column search_vector; \
+         alter table messages drop column comment; \
+         alter table messages add column search_vector tsvector generated always as \
+             (to_tsvector('simple', coalesce(message_search_text(document), ''))) stored; \
+         create index messages_search on messages using gin(search_vector)",
         // 63: the missing sound and the joined job of a recording segment.
         "alter table recording_segments drop column job_joined, \
          drop column missing_sound_from, drop column missing_sound_until",
