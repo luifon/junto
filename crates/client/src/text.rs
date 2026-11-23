@@ -3033,7 +3033,7 @@ pub const FILTERS_UNCONFIRMED: &str = "Server search support has not been confir
 pub fn search_in(place: &str) -> String {
     format!("Search {place}")
 }
-pub const FILTER_AUTHOR: &str = "Author";
+pub const FILTER_AUTHOR: &str = "From";
 pub const FILTER_DATE: &str = "Date";
 pub const FILTER_ALL_CHANNELS: &str = "All";
 pub const FILTER_ANYONE: &str = "Anyone";

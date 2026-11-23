@@ -160,12 +160,27 @@ impl Shell {
         let Some(feed) = self.pane_feed(pane).cloned() else {
             return;
         };
-        let Some(row) = feed.rows.iter().find_map(|row| match row {
-            crate::state::feed::FeedRow::Message(row) if row.message.id == message_id => {
-                Some(row.clone())
-            }
-            _ => None,
-        }) else {
+        // The message is a row of the list of the pane, or the root of the thread that the
+        // side panel shows, which stands above the list of its replies.
+        let thread_root = || {
+            self.view
+                .as_ref()
+                .and_then(|view| view.workspace())
+                .and_then(|workspace| workspace.thread.as_ref())
+                .and_then(|thread| thread.root.clone())
+                .filter(|root| pane == Pane::Thread && root.message.id == message_id)
+        };
+        let Some(row) = feed
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                crate::state::feed::FeedRow::Message(row) if row.message.id == message_id => {
+                    Some(row.clone())
+                }
+                _ => None,
+            })
+            .or_else(thread_root)
+        else {
             return;
         };
         if feed.server_id != server_id
