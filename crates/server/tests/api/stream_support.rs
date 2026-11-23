@@ -104,7 +104,11 @@ fn request(server: &TestServer, token: Option<&str>) -> tungstenite::handshake::
     let mut request = url.into_client_request().unwrap();
     request.headers_mut().insert(
         junto_protocol::message::GROUPS_HEADER,
-        junto_protocol::message::GROUPS_WITH_OPTIONAL_NAMES
+        junto_protocol::message::GROUPS_READ.parse().unwrap(),
+    );
+    request.headers_mut().insert(
+        junto_protocol::message::GROUP_NAMES_HEADER,
+        junto_protocol::message::GROUP_NAMES_OPTIONAL
             .parse()
             .unwrap(),
     );
@@ -149,12 +153,9 @@ impl TestServer {
     pub async fn stream_with_required_group_names(&self, member: &Member) -> Stream {
         let tcp = TcpStream::connect(self.address).await.unwrap();
         let mut request = request(self, Some(&member.token));
-        request.headers_mut().insert(
-            junto_protocol::message::GROUPS_HEADER,
-            junto_protocol::message::GROUPS_WITH_REQUIRED_NAMES
-                .parse()
-                .unwrap(),
-        );
+        request
+            .headers_mut()
+            .remove(junto_protocol::message::GROUP_NAMES_HEADER);
         let (socket, _) = tokio_tungstenite::client_async(request, Wire::of(tcp))
             .await
             .unwrap();

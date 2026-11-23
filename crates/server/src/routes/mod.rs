@@ -530,9 +530,20 @@ fn documented_routes() -> OpenApiRouter<AppState> {
 /// The OpenAPI document of every route that [`router`] serves.
 pub fn openapi() -> utoipa::openapi::OpenApi {
     let mut document = documented_routes().into_openapi();
-    let group_capability = document.paths.paths.get("/api/v1/snapshot").and_then(|item| item.get.as_ref())
-        .and_then(|operation| operation.parameters.as_ref())
-        .and_then(|parameters| parameters.iter().find(|parameter| matches!(parameter, utoipa::openapi::RefOr::T(value) if value.name.eq_ignore_ascii_case(junto_protocol::message::GROUPS_HEADER)))).cloned();
+    // The headers of the group conversations, as the snapshot documents them, belong to every
+    // route of messages, calls, events and exports (ADR 0302).
+    let snapshot_parameter = |name: &str| {
+        document.paths.paths.get("/api/v1/snapshot").and_then(|item| item.get.as_ref())
+            .and_then(|operation| operation.parameters.as_ref())
+            .and_then(|parameters| parameters.iter().find(|parameter| matches!(parameter, utoipa::openapi::RefOr::T(value) if value.name.eq_ignore_ascii_case(name)))).cloned()
+    };
+    let group_capabilities: Vec<_> = [
+        junto_protocol::message::GROUPS_HEADER,
+        junto_protocol::message::GROUP_NAMES_HEADER,
+    ]
+    .into_iter()
+    .filter_map(|name| snapshot_parameter(name).map(|parameter| (name, parameter)))
+    .collect();
     for item in document.paths.paths.values_mut() {
         for operation in [
             &mut item.get,
@@ -547,10 +558,11 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
             if operation.tags.as_ref().is_some_and(|tags| {
                 tags.iter()
                     .any(|tag| matches!(tag.as_str(), "messages" | "calls" | "events" | "exports"))
-            }) && let Some(capability) = &group_capability
-            {
+            }) {
                 let parameters = operation.parameters.get_or_insert_with(Vec::new);
-                if !parameters.iter().any(|parameter| matches!(parameter, utoipa::openapi::RefOr::T(value) if value.name.eq_ignore_ascii_case(junto_protocol::message::GROUPS_HEADER))) { parameters.push(capability.clone()); }
+                for (name, capability) in &group_capabilities {
+                    if !parameters.iter().any(|parameter| matches!(parameter, utoipa::openapi::RefOr::T(value) if value.name.eq_ignore_ascii_case(name))) { parameters.push(capability.clone()); }
+                }
             }
             for (status, response) in &mut operation.responses.responses {
                 if status.starts_with('2')

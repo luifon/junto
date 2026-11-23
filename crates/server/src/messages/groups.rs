@@ -50,22 +50,29 @@ pub async fn negotiate(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    use junto_protocol::message::{GROUPS_WITH_OPTIONAL_NAMES, GROUPS_WITH_REQUIRED_NAMES};
-    let value = request
-        .headers()
-        .get(junto_protocol::message::GROUPS_HEADER)
-        .and_then(|value| value.to_str().ok());
-    let support = Support {
-        groups: !request.uri().path().starts_with("/api/v1/")
-            || request
-                .uri()
-                .path()
-                .starts_with("/api/v1/group-conversations")
-            || matches!(
-                value,
-                Some(GROUPS_WITH_REQUIRED_NAMES | GROUPS_WITH_OPTIONAL_NAMES)
-            ),
-        optional_names: value != Some(GROUPS_WITH_REQUIRED_NAMES),
+    use junto_protocol::message::{
+        GROUP_NAMES_HEADER, GROUP_NAMES_OPTIONAL, GROUPS_HEADER, GROUPS_READ,
+    };
+    let support = {
+        let header = |name: &str| {
+            request
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+        };
+        let reads_groups = header(GROUPS_HEADER) == Some(GROUPS_READ);
+        Support {
+            groups: !request.uri().path().starts_with("/api/v1/")
+                || request
+                    .uri()
+                    .path()
+                    .starts_with("/api/v1/group-conversations")
+                || reads_groups,
+            // A client that reads groups gets a name for a group without one, unless it
+            // states that it reads such a group: a client of 0.2 requires the name.
+            optional_names: !reads_groups
+                || header(GROUP_NAMES_HEADER) == Some(GROUP_NAMES_OPTIONAL),
+        }
     };
     with_support(support, next.run(request)).await
 }

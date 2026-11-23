@@ -1042,7 +1042,11 @@ impl TestServer {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             junto_protocol::message::GROUPS_HEADER,
-            junto_protocol::message::GROUPS_WITH_OPTIONAL_NAMES
+            junto_protocol::message::GROUPS_READ.parse().unwrap(),
+        );
+        headers.insert(
+            junto_protocol::message::GROUP_NAMES_HEADER,
+            junto_protocol::message::GROUP_NAMES_OPTIONAL
                 .parse()
                 .unwrap(),
         );

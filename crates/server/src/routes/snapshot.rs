@@ -99,7 +99,7 @@ async fn own_entry_requests(
     path = "/api/v1/snapshot",
     tag = "events",
     security(("session" = [])),
-    params(("Junto-Notification-Preferences" = Option<String>, Header, description = "1 includes the text privacy and presentation preferences"),("Junto-Group-Conversations"=Option<String>,Header,description="1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels")),
+    params(("Junto-Notification-Preferences" = Option<String>, Header, description = "1 includes the text privacy and presentation preferences"),("Junto-Group-Conversations"=Option<String>,Header,description="1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels"),("Junto-Group-Names"=Option<String>,Header,description="optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group")),
     responses((status = 200, body = SnapshotResponse), ApiError)
 )]
 pub async fn get_snapshot(

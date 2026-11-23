@@ -1294,7 +1294,7 @@ async fn a_group_may_have_no_name() {
 #[tokio::test]
 async fn a_client_that_requires_a_group_name_receives_the_names_of_the_other_members() {
     use junto_protocol::events::{Event, Level};
-    use junto_protocol::message::{GROUPS_HEADER, GROUPS_WITH_REQUIRED_NAMES};
+    use junto_protocol::message::{GROUPS_HEADER, GROUPS_READ};
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let writer = server.join(&owner, "Writer").await;
@@ -1310,7 +1310,7 @@ async fn a_client_that_requires_a_group_name_receives_the_names_of_the_other_mem
     let older_read = |path: &'static str| {
         let request = reqwest::Client::new()
             .get(format!("{}{path}", server.base))
-            .header(GROUPS_HEADER, GROUPS_WITH_REQUIRED_NAMES)
+            .header(GROUPS_HEADER, GROUPS_READ)
             .bearer_auth(&reader.token);
         async move { request.send().await.unwrap().json::<Value>().await.unwrap() }
     };
