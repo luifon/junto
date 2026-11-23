@@ -214,8 +214,8 @@ fn the_notices_open_in_the_panel_of_the_call(cx: &mut TestAppContext) {
     });
     assert!(window.shows("notices-count"));
 
-    // The toolbar row of the column holds Pins and Search of the channel and then the bell
-    // (ADR 0742), on one line.
+    // The row under the tabs holds Pins and Search of the channel and then the bell, on one
+    // line (ADR 0742); the tabs keep their row with their labels and counts.
     let toolbar = ["call-pins", "call-search", "activity-button"]
         .map(|name| window.cx.debug_bounds(name).expect(name));
     assert!(toolbar[0].right() <= toolbar[1].left() && toolbar[1].right() <= toolbar[2].left());
@@ -224,6 +224,8 @@ fn the_notices_open_in_the_panel_of_the_call(cx: &mut TestAppContext) {
             .iter()
             .all(|bounds| bounds.center().y == toolbar[0].center().y)
     );
+    let tabs = window.cx.debug_bounds("call-tabs").expect("call-tabs");
+    assert!(toolbar.iter().all(|bounds| bounds.top() >= tabs.bottom()));
     // The bell opens the notices in the panel of the call, beside the stage.
     window.click("activity-button");
     window.until(

@@ -931,6 +931,7 @@ impl Shell {
         };
         let tabs = div()
             .id("call-tabs")
+            .debug_selector(|| "call-tabs".to_owned())
             .role(Role::TabList)
             .aria_label(SharedString::from(panel.place_name().to_owned()))
             .flex()
@@ -965,7 +966,6 @@ impl Shell {
                         cx,
                     )),
             )
-            .children(self.render_call_column_icons(view, panel, cx))
             // The panel closes in every window, as the server book does; the stage then
             // takes its width (round 2 item 16).
             .child(
@@ -981,6 +981,23 @@ impl Shell {
                         })),
                 ),
             );
+        // Pins, Search and the bell stand in a row of their own under the tabs: beside them
+        // the labels of the tabs and their counts did not fit whole in the column (ADR 0742).
+        let toolbar = self.render_call_column_icons(view, panel, cx).map(|icons| {
+            div()
+                .id("call-toolbar")
+                .debug_selector(|| "call-toolbar".to_owned())
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_end()
+                .h(u(34.0))
+                .px(u(8.0))
+                .border_b_1()
+                .border_color(Hsla::from(colors.rule))
+                .bg(Hsla::from(colors.limestone))
+                .child(icons)
+        });
         // A thread, the pin list or the transcript of a recording of the channel of the
         // call opens over its chat, with a way back to the chat (ADR 0741).
         // They belong to the Chat tab: "In the call" shows the people whatever is open.
@@ -1023,6 +1040,7 @@ impl Shell {
             .border_l_1()
             .border_color(Hsla::from(colors.rule))
             .child(tabs)
+            .children(toolbar)
             .children(search)
             .child(pane)
             .into_any_element()
@@ -1040,8 +1058,8 @@ impl Shell {
             .filter(|workspace| workspace.channel.as_ref().map(|row| row.id) == Some(channel_id))
     }
 
-    /// Pins and Search of the channel of the call, and Activity, as icons beside the tabs of
-    /// the right column (ADR 0741).
+    /// Pins and Search of the channel of the call, and Activity, as icons in the row under the
+    /// tabs of the right column (ADR 0741, ADR 0742).
     fn render_call_column_icons(
         &mut self,
         view: &ShellView,
