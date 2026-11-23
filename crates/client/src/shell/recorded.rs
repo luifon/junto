@@ -23,8 +23,8 @@ use crate::assets::Icon;
 use crate::state::RecordedFile;
 use crate::state::feed::RecordingRow;
 use crate::state::recorded::{
-    CardDetail, CardState, FileKind, FileRow, LineFrom, LineRow, RecordingCard, SHOWN_LINES,
-    TranscriptRequest, TranscriptShown, When, line_row,
+    CardDetail, CardState, FileKind, FileRow, LineFrom, LineRow, RecordingCard, TranscriptRequest,
+    TranscriptShown, When, line_row,
 };
 use crate::state::transcript_work::TranscriptChange;
 use crate::state::view::{TranscriptPanel, TranscriptPanelState};
@@ -201,6 +201,18 @@ impl Shell {
         line: Option<u32>,
         cx: &mut Context<Self>,
     ) {
+        // The call window opens the transcript in its own panel, of the channel of its call
+        // (ADR 0741).
+        if self.detached {
+            self.show_call_tab(super::call::CallTab::Chat, cx);
+            self.state.update(cx, |state, cx| {
+                state.open_in_call_window(
+                    crate::state::call_window::CallWindowShows::Transcript(recording_id),
+                    cx,
+                )
+            });
+            return;
+        }
         let view = self.state.read(cx).view();
         let Some((workspace_id, channel_id)) = view
             .workspace()
@@ -638,39 +650,6 @@ impl Shell {
         .into_any_element()
     }
 
-    /// One line of a transcript (view G of the design): its time, its speaker with the
-    /// source of the sound, and its text.
-    fn transcript_line(
-        row: &LineRow,
-        picture: Option<Arc<RenderImage>>,
-        (faces, server): (&crate::state::people::ServerFaces, ServerId),
-        wide: bool,
-        marked: bool,
-        theme: &Theme,
-        identity: impl FnMut(&'static str, AnyElement) -> AnyElement,
-    ) -> AnyElement {
-        let corrected = row.corrected.then(|| {
-            div()
-                .flex_none()
-                .text_size(u(12.5))
-                .font_weight(FontWeight::NORMAL)
-                .ink(theme.colors.ink_3)
-                .child(text::LINE_CORRECTED)
-                .into_any_element()
-        });
-        let spoken = div()
-            .flex_1()
-            .min_w_0()
-            .text_size(u(14.5))
-            .line_height(u(22.0))
-            .ink(theme.colors.ink)
-            .child(SharedString::from(row.text.clone()))
-            .into_any_element();
-        Self::line_frame(
-            row, picture, faces, server, wide, marked, theme, corrected, spoken, None, identity,
-        )
-    }
-
     /// A line of a transcript with the parts that the card or the side panel give it: the
     /// mark of a correction beside the speaker, the text, and a control at the right.
     /// `picture` is the picture of the person of a microphone line (ADR 0783).
@@ -997,83 +976,6 @@ impl Shell {
     }
 
     /// Opens the parts of a recording with their time ranges, at its card.
-    pub fn open_recording_menu(
-        &mut self,
-        recording_id: RecordingId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if std::mem::take(&mut self.recording_menu_closed_by_press) {
-            return;
-        }
-        self.open_layer(Layer::RecordingMenu(recording_id), window, cx);
-    }
-
-    /// "More actions" of a recording card: copy its link, and remove it for a person who
-    /// may (ADR 0790).
-    fn render_recording_menu(
-        &mut self,
-        card: &RecordingCard,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let (server_id, recording_id) = (card.server_id, card.recording_id);
-        let mut items: Vec<AnyElement> = vec![
-            MenuItem::new("recording-menu-copy-link", text::COPY_TARGET_LINK)
-                .icon(Icon::Link)
-                .selector("recording-menu-copy-link")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    let link = this.state.read(cx).recording_link(server_id, recording_id);
-                    if let Some(link) = link {
-                        this.copy_text(link, cx);
-                    }
-                }))
-                .into_any_element(),
-        ];
-        if card.may_remove {
-            items.push(
-                MenuItem::new(
-                    "remove-recording",
-                    if card.removing {
-                        text::RECORDING_REMOVING
-                    } else {
-                        text::REMOVE
-                    },
-                )
-                .icon(Icon::Trash)
-                .disabled(card.removing)
-                .selector("remove-recording")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    this.ask_to_remove_recording(server_id, recording_id, window, cx);
-                }))
-                .into_any_element(),
-            );
-        }
-        div()
-            .absolute()
-            .right_0()
-            .top(u(32.0))
-            .child(deferred(
-                anchored()
-                    .anchor(gpui::Anchor::TopRight)
-                    .snap_to_window()
-                    .child(
-                        Menu::new("recording-menu", text::MORE_ACTIONS, self.layer_focus())
-                            .width(240.0)
-                            .selector("recording-menu")
-                            .on_close(Self::handler(cx, |this, window, cx| {
-                                this.recording_menu_closed_by_press =
-                                    !window.last_input_was_keyboard();
-                                this.close_layer(window, cx);
-                            }))
-                            .children(items)
-                            .child(div().h(u(4.0))),
-                    ),
-            ))
-            .into_any_element()
-    }
-
     /// The card of a finished recording, in place of the system line that posted it.
     pub(crate) fn render_recording_card(
         &mut self,
@@ -1083,8 +985,13 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (server_id, recording_id) = (row.card.server_id, row.card.recording_id);
+        let shown = matches!(row.card.state, CardState::Shown(_));
+        let (may_remove, removing) = (row.card.may_remove, row.card.removing);
+        // One menu of the card for "⋯", right-click, the menu key and Shift+F10: the
+        // buttons of the card, "Copy link", and "Remove" for a person who may (ADR 0744).
         let (content, actions) = crate::ui::collect_actions(|| {
-            if matches!(row.card.state, CardState::Shown(_)) {
+            let content = self.recording_card_content(index, row, window, cx);
+            if shown {
                 crate::ui::RowAction::new(
                     text::COPY_TARGET_LINK,
                     cx.listener(move |this, _, _, cx| {
@@ -1096,23 +1003,43 @@ impl Shell {
                 )
                 .register();
             }
-            self.recording_card_content(index, row, window, cx)
+            if shown && may_remove {
+                let mut remove = crate::ui::RowAction::new(
+                    text::REMOVE,
+                    cx.listener(move |this, _, window, cx| {
+                        this.ask_to_remove_recording(server_id, recording_id, window, cx);
+                    }),
+                );
+                remove.disabled = removing;
+                remove.register();
+            }
+            content
         });
         let theme = theme(cx);
         let ring =
             crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
         let key = SharedString::from(format!("recording-actions:{recording_id}"));
+        let focus = crate::ui::row_focus(key.clone(), window, cx);
+        let focused = focus.is_focused(window);
         let frame = div()
             .id(key.clone())
+            .relative()
             .w_full()
             .min_w_0()
             .role(Role::Group)
             .aria_label(text::RECORDING)
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
             .focus_visible(move |style| style.shadow(ring))
             .child(content);
-        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
+        crate::ui::bind_row_action_menu(
+            frame,
+            key,
+            crate::ui::RowMenu::overlay(focused).selector("recording-more"),
+            actions,
+            window,
+            cx,
+        )
+        .into_any_element()
     }
 
     fn recording_card_content(
@@ -1343,27 +1270,6 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        actions.push(div().flex_1().into_any_element());
-        let more_open = matches!(&self.layer, Layer::RecordingMenu(open) if *open == recording_id);
-        let more = more_open.then(|| self.render_recording_menu(card, cx));
-        actions.push(
-            div()
-                .relative()
-                .flex_none()
-                .child(
-                    Button::new(("recording-more", index))
-                        .kind(ButtonKind::Ghost)
-                        .icon(Icon::Dots)
-                        .tooltip(text::MORE_ACTIONS)
-                        .accessible_label(text::MORE_ACTIONS)
-                        .selector("recording-more")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_recording_menu(recording_id, window, cx);
-                        })),
-                )
-                .children(more)
-                .into_any_element(),
-        );
         // The files that are saved, and what happened to each.
         let mut downloads: Vec<AnyElement> = Vec::new();
         for (position, file) in detail.files.iter().enumerate() {
@@ -1949,10 +1855,7 @@ impl Shell {
                     .icon(Icon::X)
                     .tooltip(text::CLOSE_TRANSCRIPT)
                     .selector("close-transcript")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state
-                            .update(cx, |state, cx| state.close_transcript(cx));
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.close_side_view(cx))),
             );
         let note = |sentence: &'static str| {
             div()

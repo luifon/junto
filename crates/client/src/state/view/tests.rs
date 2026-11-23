@@ -1552,7 +1552,7 @@ pub(super) mod calls {
     }
 
     #[test]
-    fn the_thread_and_the_pins_of_the_channel_of_the_call_are_shown_in_the_call() {
+    fn the_thread_the_pins_and_a_transcript_of_the_channel_of_the_call_are_shown_in_the_call() {
         use junto_client_core::model::Named;
         use junto_client_core::protocol::message::{MessagePlace, ThreadState};
 
@@ -1608,6 +1608,16 @@ pub(super) mod calls {
         selection.pins = Some((server.id, daily));
         let inside = derive(servers, &selection, &known);
         assert!(inside.workspace().unwrap().pins.is_some());
+        // The transcript of a finished recording of the channel opens during the call too.
+        selection.pins = None;
+        selection.transcript = Some((
+            server.id,
+            daily,
+            junto_client_core::protocol::ids::RecordingId::generate(),
+        ));
+        let inside = derive(servers, &selection, &known);
+        assert!(inside.lists().unwrap().call.is_some());
+        assert!(inside.workspace().unwrap().transcript.is_some());
     }
 
     #[test]

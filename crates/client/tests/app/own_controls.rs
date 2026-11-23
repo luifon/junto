@@ -120,4 +120,41 @@ fn the_row_of_own_controls_lies_under_the_call_and_narrows_into_its_menu(cx: &mu
     }
     window.press("escape");
     assert!(!window.shows("own-more-menu"));
+    // An item of "⋮" shows the keys of its action, and follows a change of them.
+    window.click("own-more");
+    assert!(window.shows("more-devices-keys"));
+    window.press("escape");
+    let changed: junto_client_core::global_keys::KeyCombo = "control+alt+y".parse().unwrap();
+    window.state.update(&mut window.cx, |state, cx| {
+        state
+            .change_keybinds(
+                junto_client::state::KeybindChange::Set(
+                    junto_client_core::keybinds::KeyAction::OpenSettings,
+                    Some(changed.clone()),
+                ),
+                cx,
+            )
+            .unwrap();
+    });
+    window.click("own-more");
+    let keys = window
+        .cx
+        .update(|_, cx| cx.global::<junto_client::ui::BoundKeys>().0.clone());
+    assert_eq!(
+        keys.get(junto_client_core::keybinds::KeyAction::OpenSettings)
+            .keys,
+        Some(changed)
+    );
+    assert!(window.shows("more-devices-keys"));
+    window.press("escape");
+
+    // "View" of "⋮" opens the View menu at "⋮", and its choices work.
+    window.click("own-more");
+    window.click("more-view");
+    assert!(window.shows("view-menu"));
+    window.click("view-hide-without-video");
+    assert!(!window.shows("view-menu"));
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        state.voice().hide_people_without_video
+    }));
 }

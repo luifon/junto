@@ -81,9 +81,7 @@ impl Shell {
                             .icon(Icon::X)
                             .tooltip(text::CLOSE_THREAD)
                             .selector("close-thread")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.state.update(cx, |state, cx| state.close_thread(cx));
-                            })),
+                            .on_click(cx.listener(|this, _, _, cx| this.close_side_view(cx))),
                     ),
             );
         let gone = thread.feed.as_ref().is_some_and(|feed| {
@@ -537,9 +535,7 @@ impl Shell {
                     .icon(Icon::X)
                     .tooltip(text::CLOSE_PINS)
                     .selector("close-pins")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.update(cx, |state, cx| state.close_pins(cx));
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.close_side_view(cx))),
             );
         let note = |sentence: &'static str| {
             div()
@@ -845,8 +841,31 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.members_open = false;
-        self.state
-            .update(cx, |state, cx| state.open_pins(server_id, channel_id, cx));
+        // The call window shows the pins of the channel of its call in its own panel
+        // (ADR 0741).
+        if self.detached {
+            self.show_call_tab(super::call::CallTab::Chat, cx);
+            self.state.update(cx, |state, cx| {
+                state.open_in_call_window(crate::state::call_window::CallWindowShows::Pins, cx)
+            });
+        } else {
+            self.state
+                .update(cx, |state, cx| state.open_pins(server_id, channel_id, cx));
+        }
         cx.notify();
+    }
+
+    /// Closes the thread, the pin list or the transcript of the side panel; in the call
+    /// window those of its own panel.
+    pub(crate) fn close_side_view(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            if self.detached {
+                state.close_in_call_window(cx);
+            } else {
+                state.close_thread(cx);
+                state.close_pins(cx);
+                state.close_transcript(cx);
+            }
+        });
     }
 }

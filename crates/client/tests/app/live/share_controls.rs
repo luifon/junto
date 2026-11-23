@@ -99,8 +99,11 @@ fn stopping_a_share_returns_to_people_and_either_window_can_watch_again(cx: &mut
 pub(super) fn share_sound_keyboard_paths(window: &mut Window) {
     let panel_was_open = window.shows("close-call-panel");
     for key in ["enter", "space"] {
-        window.tab_to("share-mute-header");
+        window.tab_to("share-sound-control");
         window.press(key);
+        assert!(window.shows("share-sound-menu"));
+        window.tab_to("share-sound-mute");
+        window.press("enter");
         window.until(
             "the key on the sound control mutes the share and keeps the picture",
             |window| {
@@ -108,8 +111,10 @@ pub(super) fn share_sound_keyboard_paths(window: &mut Window) {
             },
         );
         assert!(!window.shows("account-menu"));
-        window.tab_to("share-mute-header");
+        window.tab_to("share-sound-control");
         window.press(key);
+        window.tab_to("share-sound-mute");
+        window.press("enter");
         window.until("the key restores share sound", |window| {
             heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
         });
@@ -124,9 +129,11 @@ pub(super) fn share_sound_keyboard_paths(window: &mut Window) {
     let microphone = window.state.read_with(&window.cx, |state, _| {
         state.voice().volume(server, share.account_id)
     });
-    window.tab_to("share-mute-header");
-    window.press("shift-f10");
-    window.tab_to("call-menu-volume");
+    // The volume is in the menu of the speaker of the watched share: the slider after the
+    // mute.
+    window.tab_to("share-sound-control");
+    window.press("enter");
+    window.tab_to("share-volume");
     window.press("left");
     window.until("the share volume responds to its menu key", |window| {
         stage(window).is_some_and(|stage| stage.shares[0].sound_setting.volume == before - 10)
@@ -143,7 +150,7 @@ pub(super) fn share_sound_keyboard_paths(window: &mut Window) {
         stage(window).is_some_and(|stage| stage.shares[0].sound_setting.volume == before)
     });
     window.press("escape");
-    assert!(!window.shows("account-menu"));
+    assert!(!window.shows("share-sound-menu"));
     if panel_was_open {
         window.click("open-call-members");
     }

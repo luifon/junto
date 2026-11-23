@@ -743,8 +743,8 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     });
     assert!(!scene.window.shows("meeting-allow"));
     scene.window.right_click_named(format!("occupant:{ada}"));
-    assert!(scene.window.shows("menu-allow-speak"));
-    assert!(!scene.window.shows("menu-mute"));
+    assert!(scene.window.shows("call-menu-allow-speak"));
+    assert!(!scene.window.shows("call-menu-block-microphone"));
     scene.window.press("escape");
     // Ada raises a hand, and the person allows her to speak.
     scene.world.run(api.raise_hand()).unwrap();
@@ -981,16 +981,22 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     });
 
     // A member without moderation gets volume and identity actions. The own row has
-    // identity actions without the moderation menu.
+    // identity actions without the moderation menu. The row of a person in the call opens
+    // the menu that the tile and the list of the call open (ADR 0735).
     scene.window.right_click_named(ada_row());
-    assert!(scene.window.shows("person-menu") && scene.window.shows("menu-volume"));
-    for absent in ["menu-invite", "menu-move", "menu-mute", "menu-disconnect"] {
+    assert!(scene.window.shows("account-menu") && scene.window.shows("call-menu-volume"));
+    for absent in [
+        "call-menu-invite",
+        "call-menu-move",
+        "call-menu-block-microphone",
+        "call-menu-disconnect",
+    ] {
         assert!(!scene.window.shows(absent), "{absent}");
     }
     scene.window.press("escape");
-    assert!(!scene.window.shows("person-menu"));
+    assert!(!scene.window.shows("account-menu"));
     scene.window.right_click_named(format!("occupant:{luca}"));
-    assert!(!scene.window.shows("person-menu"));
+    assert!(!scene.window.shows("person-menu") && !scene.window.shows("call-menu-volume"));
     scene.allow_everyone(&[
         WorkspacePermission::MuteMembers,
         WorkspacePermission::DeafenMembers,
@@ -1011,8 +1017,8 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
             .find(|occupant| occupant.account_id == ada)
     };
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-mute");
-    assert!(!scene.window.shows("person-menu"));
+    scene.window.click("call-menu-block-microphone");
+    assert!(!scene.window.shows("account-menu"));
     scene
         .window
         .until("the microphone of Ada is blocked", |window| {
@@ -1025,12 +1031,12 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
                 .is_some_and(|call| call.microphone_block.is_some())
         });
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-mute");
+    scene.window.click("call-menu-block-microphone");
     scene.window.until("the block is removed", |window| {
         ada_shown(window).is_some_and(|ada| matches!(ada.microphone, Microphone::Open { .. }))
     });
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-block-sound");
+    scene.window.click("call-menu-block-sound");
     scene.window.until("the sound of Ada is blocked", |window| {
         ada_shown(window).is_some_and(|ada| ada.sound_blocked)
             && calls
@@ -1039,7 +1045,7 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
                 .is_some_and(|call| call.sound_block.is_some())
     });
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-block-sound");
+    scene.window.click("call-menu-block-sound");
     scene.window.until("the sound block is removed", |window| {
         ada_shown(window).is_some_and(|ada| !ada.sound_blocked && !ada.sound_off)
     });
@@ -1047,27 +1053,27 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     // A moderator lowers the raised hand of Ada without meeting mode (ADR 0516). While no
     // hand is raised, the item is drawn and does nothing.
     scene.window.right_click_named(ada_row());
-    assert!(scene.window.shows("menu-lower-hand"));
-    scene.window.click("menu-lower-hand");
-    assert!(scene.window.shows("person-menu"));
+    assert!(scene.window.shows("call-menu-lower-hand"));
+    scene.window.click("call-menu-lower-hand");
+    assert!(scene.window.shows("account-menu"));
     scene.window.press("escape");
     scene.world.run(api.raise_hand()).unwrap();
     scene.window.until("the hand of Ada is raised", |window| {
         ada_shown(window).is_some_and(|ada| ada.hand_raised)
     });
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-lower-hand");
-    assert!(!scene.window.shows("person-menu"));
+    scene.window.click("call-menu-lower-hand");
+    assert!(!scene.window.shows("account-menu"));
     scene.window.until("the hand of Ada is lowered", |window| {
         ada_shown(window).is_some_and(|ada| !ada.hand_raised)
     });
 
     // The move: the menu lists the other voice channels, and Ada is in the chosen one.
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-move");
-    assert!(scene.window.shows("person-menu") && scene.window.shows("menu-back"));
+    scene.window.click("call-menu-move");
+    assert!(scene.window.shows("menu-back"));
     scene.window.click_named(format!("move-to:{}", other.id));
-    assert!(!scene.window.shows("person-menu"));
+    assert!(!scene.window.shows("menu-back"));
     scene
         .window
         .until("Ada is in the other voice channel", |window| {
@@ -1093,29 +1099,25 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     // The keyboard opens the menu of the row that holds the focus: Shift and F10, the
     // Menu key, Enter and Space. Escape closes the menu and returns the focus to the row.
     scene.window.click_named(ada_row());
-    assert!(!scene.window.shows("person-menu"));
+    assert!(!scene.window.shows("account-menu"));
     for keys in ["shift-f10", "enter", "space"] {
         scene.window.press(keys);
-        assert!(scene.window.shows("person-menu"), "{keys}");
+        assert!(scene.window.shows("account-menu"), "{keys}");
         assert!(
             scene
                 .window
                 .in_shell(|shell, window, cx| shell.layer_holds_focus(window, cx)),
             "{keys}"
         );
-        assert_eq!(
-            scene.window.in_shell(|shell, _, _| shell.person_menu_of()),
-            Some((voice, ada))
-        );
         scene.window.press("escape");
-        assert!(!scene.window.shows("person-menu"), "{keys}");
+        assert!(!scene.window.shows("account-menu"), "{keys}");
     }
     // Another key opens nothing.
     scene.window.press("f10");
-    assert!(!scene.window.shows("person-menu"));
+    assert!(!scene.window.shows("account-menu"));
     // The removal from the call.
     scene.window.right_click_named(ada_row());
-    scene.window.click("menu-disconnect");
+    scene.window.click("call-menu-disconnect");
     scene.window.until("Ada is removed", |window| {
         !ada_in(window, voice) && calls.view().call.is_none()
     });
@@ -1322,8 +1324,8 @@ fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
         .click_row_padding(crate::harness::selector(format!("occupant:{person}")));
     assert!(!scene.window.shows("profile-card"));
     scene.window.press("shift-f10");
-    assert!(scene.window.shows("menu-move"));
-    choose_in_person_menu(&mut scene.window, "menu-move");
+    assert!(scene.window.shows("call-menu-move"));
+    choose_in_person_menu(&mut scene.window, "call-menu-move");
     assert!(scene.window.shows("menu-back"));
     scene.window.press("down down enter");
     scene
@@ -1656,9 +1658,9 @@ fn a_move_that_the_moved_device_cannot_join_is_told_to_the_mover(cx: &mut TestAp
     };
     assert_eq!(failures(proxy), 0);
 
-    // Luca moves Ada with the menu of her row.
+    // Luca moves Ada with the menu of her row, the menu of the call.
     scene.window.right_click_named(format!("occupant:{ada}"));
-    scene.window.click("menu-move");
+    scene.window.click("call-menu-move");
     scene.window.click_named(format!("move-to:{}", other.id));
     scene
         .window
@@ -2587,8 +2589,9 @@ fn voice_person_menus_copy_identities_and_open_directs_without_leaving_the_call(
             .iter()
             .any(|person| person.account_id == ada && person.name.as_deref() == Some("Ada"))
     });
+    // The row of a person in the drawn call opens the menu of the call (ADR 0735).
     scene.window.right_click_named(format!("occupant:{ada}"));
-    scene.window.click("person-copy-name");
+    scene.window.click_named(format!("account-copy-name:{ada}"));
     assert_eq!(
         scene
             .window
@@ -2601,7 +2604,7 @@ fn voice_person_menus_copy_identities_and_open_directs_without_leaving_the_call(
     );
     assert!(scene.window.shows("copied-confirmation"));
     scene.window.right_click_named(format!("occupant:{ada}"));
-    scene.window.click("person-copy-id");
+    scene.window.click_named(format!("account-copy-id:{ada}"));
     assert_eq!(
         scene
             .window
@@ -2627,7 +2630,7 @@ fn voice_person_menus_copy_identities_and_open_directs_without_leaving_the_call(
         own.to_string()
     );
     scene.window.right_click_named(format!("occupant:{ada}"));
-    scene.window.click("person-message");
+    scene.window.click_named(format!("account-message:{ada}"));
     scene
         .window
         .until("the person's direct conversation is open", |window| {
@@ -3332,25 +3335,30 @@ fn an_early_entry_answer_still_notifies_after_the_request_response(cx: &mut Test
     scene.world.run(scene.caller.calls.leave());
 }
 
-/// Chooses an item of the open menu of a person with the keyboard. The volume comes first,
-/// then the moderation items that the person may use, then "Move to" and the invitation
-/// (ADR 0735).
+/// Chooses an item of the open menu of a person with the keyboard: the menu of a channel row
+/// (`menu-…`) or the menu of a person in the call (`call-menu-…`), whose order is the same.
+/// The volume comes first, then the pin of a person in the call, the moderation items that
+/// the person may use, "Move to" and the invitation (ADR 0735).
 fn choose_in_person_menu(window: &mut crate::harness::Window, item: &'static str) {
-    let order = [
-        "menu-volume",
-        "menu-allow-speak",
-        "menu-mute",
-        "menu-lower-hand",
-        "menu-block-sound",
-        "menu-move",
-        "menu-disconnect",
-        "menu-invite",
+    let order: [&[&'static str]; 10] = [
+        &["menu-volume", "call-menu-volume"],
+        &["call-person-pin", "call-person-unpin"],
+        &["menu-allow-speak", "call-menu-allow-speak"],
+        &["menu-mute", "call-menu-block-microphone"],
+        &["menu-lower-hand", "call-menu-lower-hand"],
+        &["menu-block-sound", "call-menu-block-sound"],
+        &["menu-move", "call-menu-move"],
+        &["menu-disconnect", "call-menu-disconnect"],
+        &["menu-invite", "call-menu-invite"],
+        &["call-menu-withdraw-invitation"],
     ];
-    let target = order.iter().position(|name| *name == item).unwrap();
+    let target = order
+        .iter()
+        .position(|names| names.contains(&item))
+        .unwrap();
     let before = order[..target]
         .iter()
-        .copied()
-        .filter(|name| window.shows(*name))
+        .filter(|names| names.iter().any(|name| window.shows(name)))
         .count();
     window.press(&format!("{}enter", "down ".repeat(before + 1)));
 }

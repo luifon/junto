@@ -449,6 +449,23 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
     let row: &'static str = Box::leak(format!("call-member:{}", ada.account_id).into_boxed_str());
     // The volume of a person is in the menu of the person, not on the row (ADR 0735).
     assert!(window.shows(row) && !window.shows_named(format!("volume:{}", ada.account_id)));
+    // One menu of a person in a call: the row of the list, the tile and the row of the
+    // channel give the same items in the same order (ADR 0735).
+    let mut menus = Vec::new();
+    for target in [
+        format!("call-member:{}", ada.account_id),
+        format!("call-tile:{}", ada.account_id),
+        format!("occupant:{}", ada.account_id),
+    ] {
+        window.right_click_named(target.clone());
+        assert!(window.shows("account-menu"), "{target}");
+        menus.push((target, person_menu_items(&mut window)));
+        window.press("escape");
+    }
+    assert!(menus[0].1.contains(&"call-menu-volume"), "{menus:?}");
+    for (target, items) in &menus[1..] {
+        assert_eq!(items, &menus[0].1, "{target}");
+    }
     let full = heard(&window.sound, ADMIN_TONE_HZ);
     window.right_click_named(format!("call-member:{}", ada.account_id));
     let slider = "call-menu-volume";
@@ -911,7 +928,10 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
         "the window plays the share of the administrator",
         |window| heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS,
     );
-    window.click("share-mute-header");
+    // The speaker of the watched share opens its mute and its volume (ADR 0738).
+    window.click("share-sound-control");
+    assert!(window.shows("share-sound-menu") && window.shows("share-volume"));
+    window.click("share-sound-mute");
     window.until(
         "the received share is muted without losing its picture",
         |window| {
@@ -920,7 +940,10 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
                 && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
         },
     );
-    window.tab_to("share-mute-header");
+    window.tab_to("share-sound-control");
+    window.press("enter");
+    assert!(window.shows("share-sound-menu"));
+    window.tab_to("share-sound-mute");
     window.press("enter");
     window.until("the share is audible again", |window| {
         heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
@@ -928,12 +951,16 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     share_controls::share_sound_keyboard_paths(&mut window);
     window.click("detach-call");
     let mut detached = window.call_window();
-    detached.click("share-mute-header");
+    detached.click("share-sound-control");
+    detached.click("share-sound-mute");
     detached.until("the detached share is muted", |window| {
         window.shows("share-picture") && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
     });
-    detached.tab_to("share-mute-header");
+    detached.tab_to("share-sound-control");
     detached.press("space");
+    assert!(detached.shows("share-sound-menu"));
+    detached.tab_to("share-sound-mute");
+    detached.press("enter");
     detached.until("the detached share is audible again", |window| {
         heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
     });
@@ -1215,10 +1242,15 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
     });
 
     let volume = stage(&mut window).unwrap().volume;
+    // The menu of the watched share has no sound control: the volume is in the menu of
+    // its speaker (ADR 0738).
     window.right_click_named("share-viewport".to_owned());
-    assert!(window.shows("call-menu-volume"));
-    window.press("down right");
-    window.until("the share menu changes shared sound volume", |window| {
+    assert!(!window.shows("call-menu-volume") && !window.shows("call-menu-mute-share"));
+    window.press("escape");
+    window.click("share-sound-control");
+    window.tab_to("share-volume");
+    window.press("right");
+    window.until("the speaker menu changes shared sound volume", |window| {
         stage(window).is_some_and(|stage| stage.volume == volume + 10)
     });
     window.press("escape");
@@ -1739,4 +1771,32 @@ fn stop_the_one_share(window: &mut Window) {
         .expect("an own share");
     assert!(!window.shows("share-stop-all"));
     window.click_named(format!("share-stop:{slot}"));
+}
+
+/// The items of the open menu of a person in a call, in their order on the screen.
+fn person_menu_items(window: &mut Window) -> Vec<&'static str> {
+    let names = [
+        "call-menu-volume",
+        "call-person-pin",
+        "call-person-unpin",
+        "call-menu-allow-speak",
+        "call-menu-block-microphone",
+        "call-menu-lower-hand",
+        "call-menu-block-sound",
+        "call-menu-move",
+        "call-menu-disconnect",
+        "call-menu-invite",
+    ];
+    window.settle();
+    let mut shown: Vec<(f32, &'static str)> = names
+        .into_iter()
+        .filter_map(|name| {
+            window
+                .cx
+                .debug_bounds(name)
+                .map(|bounds| (f32::from(bounds.top()), name))
+        })
+        .collect();
+    shown.sort_by(|first, second| first.0.total_cmp(&second.0));
+    shown.into_iter().map(|(_, name)| name).collect()
 }

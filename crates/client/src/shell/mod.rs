@@ -162,7 +162,6 @@ pub(crate) enum Layer {
     /// The list of the files of a recording, at its card.
     RecordingFiles(junto_client_core::protocol::ids::RecordingId),
     /// The parts of a recording with their time ranges, at its card (ADR 0616).
-    RecordingMenu(junto_client_core::protocol::ids::RecordingId),
     /// The languages of the speech of a new recording, at the button that records
     /// (ADR 0616).
     RecordLanguage,
@@ -175,6 +174,9 @@ pub(crate) enum Layer {
     /// The controls of the row of own controls that a narrow stage leaves out, and the
     /// window controls of the call window (ADR 0735, ADR 0772).
     OwnControlsMore,
+    /// The sound of the watched share of another person: its mute and its volume, at the
+    /// speaker control of the line of the share (ADR 0738).
+    ShareSound,
     /// The question before a recording is removed.
     ConfirmRemoveRecording(ServerId, junto_client_core::protocol::ids::RecordingId),
     /// The administration of a server, or the settings of a channel. The state of the
@@ -220,12 +222,12 @@ impl Layer {
             | Layer::DirectMenu(..)
             | Layer::SearchFilter(..)
             | Layer::RecordingFiles(..)
-            | Layer::RecordingMenu(..)
             | Layer::RecordLanguage
             | Layer::JoinMenu(..)
             | Layer::RoomSettings
             | Layer::ViewMenu
-            | Layer::OwnControlsMore => false,
+            | Layer::OwnControlsMore
+            | Layer::ShareSound => false,
             Layer::Welcome
             | Layer::Settings
             | Layer::ReleaseNotes(..)
@@ -553,7 +555,6 @@ pub struct Shell {
     /// The press that closed the parts of a recording, or the languages of a new
     /// recording, was on the button that opens them: the click that follows does not open
     /// them again.
-    pub(crate) recording_menu_closed_by_press: bool,
     pub(crate) record_language_closed_by_press: bool,
     pub(crate) join_menu_closed_by_press: bool,
     pub(crate) room_settings_closed_by_press: bool,
@@ -1072,7 +1073,6 @@ impl Shell {
             transcript_list: recorded::TranscriptList::new(),
             transcript_edit,
             recording_files_closed_by_press: false,
-            recording_menu_closed_by_press: false,
             record_language_closed_by_press: false,
             join_menu_closed_by_press: false,
             room_settings_closed_by_press: false,
@@ -2301,7 +2301,6 @@ impl Shell {
         self.recording_details_closed_by_press = false;
         self.filter_closed_by_press = false;
         self.recording_files_closed_by_press = false;
-        self.recording_menu_closed_by_press = false;
         self.record_language_closed_by_press = false;
         self.join_menu_closed_by_press = false;
         self.room_settings_closed_by_press = false;
@@ -2400,7 +2399,7 @@ impl Shell {
             Layer::ConfirmRemoveRecording(server_id, recording_id) => {
                 !view.may_remove_recording(*server_id, *recording_id)
             }
-            Layer::RecordingFiles(recording_id) | Layer::RecordingMenu(recording_id) => !view
+            Layer::RecordingFiles(recording_id) => !view
                 .lists()
                 .and_then(|lists| lists.feed.as_ref())
                 .is_some_and(|feed| {
@@ -2424,7 +2423,7 @@ impl Shell {
             // has left it or is in a call without a room.
             Layer::RoomSettings => !matches!(view.call_room, Some(CallRoom::Channel(_))),
             // The menus of the row of own controls belong to the call of this device.
-            Layer::ViewMenu | Layer::OwnControlsMore => view.call.is_none(),
+            Layer::ViewMenu | Layer::OwnControlsMore | Layer::ShareSound => view.call.is_none(),
             // The menu lists the shares of this device, and every share has ended.
             Layer::ShareMenu => view
                 .call
@@ -2518,12 +2517,12 @@ impl Shell {
             | Layer::DirectMenu(_)
             | Layer::SearchFilter(_)
             | Layer::RecordingFiles(_)
-            | Layer::RecordingMenu(_)
             | Layer::RecordLanguage
             | Layer::JoinMenu(_)
             | Layer::RoomSettings
             | Layer::ViewMenu
             | Layer::OwnControlsMore
+            | Layer::ShareSound
             | Layer::ShareMenu => div().into_any_element(),
             Layer::ConfirmRemoveRecording(server_id, recording_id) => {
                 self.render_confirm_remove_recording(*server_id, *recording_id, cx)

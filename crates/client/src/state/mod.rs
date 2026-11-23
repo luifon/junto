@@ -722,6 +722,12 @@ pub struct AppState {
     call_window_active: bool,
     /// The panel of the call window shows the notices of the server of the call.
     call_window_notices: bool,
+    /// The thread, the pin list or the transcript that the panel of the call window shows
+    /// over its chat, of the channel of the call: its own scope, whatever the main window
+    /// shows (ADR 0741).
+    call_window_panel: Option<call_window::CallWindowPanel>,
+    /// The pin list that the call window holds open for that panel.
+    open_call_window_pins: Option<((ServerId, ChannelId), Task<()>)>,
     /// The main area showed the view of the call of this device at the last change.
     call_shown: bool,
     /// The shown server and place and the call of this device at the last change.
@@ -1185,6 +1191,8 @@ impl AppState {
             startup: startup::StartupState::default(),
             call_window_active: false,
             call_window_notices: false,
+            call_window_panel: None,
+            open_call_window_pins: None,
             call_shown: false,
             shown_with_call: (None, None, None),
             seen: HashMap::new(),
@@ -3141,6 +3149,7 @@ impl AppState {
         self.known.clock = Some(now);
         self.known.today = Some(self.known.zone.local(now).date());
         self.follow_owners();
+        self.follow_channel_recordings_owner();
         let snapshots = self.snapshots();
         self.keep_typing_owners(&snapshots);
         self.settle_conversation_visibility(&snapshots);
@@ -3914,6 +3923,6 @@ pub mod event_alerts;
 mod camera;
 
 mod call_pin;
-mod call_window;
+pub mod call_window;
 
 pub mod role_appearance;

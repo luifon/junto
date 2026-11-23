@@ -739,7 +739,9 @@ impl Shell {
         }
     }
 
-    /// Opens the menu of a person in a voice channel of the workspace that is shown.
+    /// Opens the menu of a person in a voice channel of the workspace that is shown. A person
+    /// in the call of this device gets the menu that the tile and the list of the call open:
+    /// one menu of a person in a call (ADR 0735).
     pub fn open_person_menu(
         &mut self,
         channel_id: ChannelId,
@@ -747,6 +749,32 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let inside = self
+            .view
+            .as_ref()
+            .and_then(|view| view.lists())
+            .and_then(|lists| lists.call.as_ref())
+            .is_some_and(|panel| {
+                panel
+                    .people
+                    .iter()
+                    .any(|person| person.account_id == account_id && !person.is_self)
+            });
+        if inside {
+            let name = self
+                .view
+                .as_ref()
+                .and_then(|view| view.person_menu(channel_id, account_id))
+                .and_then(|menu| menu.name)
+                .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned());
+            if let Some(mut open) =
+                self.call_account_menu(account_id, name, super::account_menus::CallSurface::Row, cx)
+            {
+                open.position = window.mouse_position();
+                self.open_account_menu(open, window, cx);
+                return;
+            }
+        }
         self.open_layer(
             Layer::PersonMenu(PersonMenuOpen {
                 channel_id,

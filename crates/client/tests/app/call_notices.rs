@@ -745,7 +745,7 @@ fn a_received_share_has_a_keyboard_reachable_sound_control(cx: &mut TestAppConte
     });
     call.watched = Some(junto_media::engine::ShareId::of(account_id, 0));
     give_calls(&mut window, call);
-    assert!(window.shows("share-mute-header"));
+    assert!(window.shows("share-sound-control"));
     let members = if window.shows("open-call-members") {
         "open-call-members"
     } else {
@@ -757,7 +757,7 @@ fn a_received_share_has_a_keyboard_reachable_sound_control(cx: &mut TestAppConte
     assert!(!window.shows("member-share-sound"));
     window.click("detach-call");
     let mut detached = window.call_window();
-    assert!(detached.shows("share-mute-header"));
+    assert!(detached.shows("share-sound-control"));
     detached.click("open-call-members");
     assert!(!detached.shows("member-share-sound"));
 }

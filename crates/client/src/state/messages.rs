@@ -208,6 +208,7 @@ impl AppState {
                     .map(move |place| (server_id, place))
             })
             .chain(call_window)
+            .chain(self.call_window_thread_place())
             .collect();
         let gone: Vec<(ServerId, PlaceId)> = self
             .open_places
@@ -251,6 +252,7 @@ impl AppState {
             self.open_places.insert(key, task);
         }
         self.follow_pins(shown, cx);
+        self.follow_call_window_panel(cx);
     }
 
     fn follow_pins(&mut self, shown: Shown, cx: &mut Context<Self>) {

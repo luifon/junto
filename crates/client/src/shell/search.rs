@@ -988,6 +988,90 @@ impl Shell {
     /// The tab "Recordings" of the Files panel of a voice channel (ADR 0784): its
     /// recordings, newest first, each with its transcript, its card in the chat and its
     /// files.
+    /// The files of a recording of the tab "Recordings", each with a control that saves it,
+    /// and the downloads with their progress, as the card of the recording has them.
+    fn render_channel_recording_files(
+        &mut self,
+        index: usize,
+        card: &crate::state::recorded::RecordingCard,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::state::RecordedFile;
+        use crate::state::recorded::{CardState, FileKind};
+        let colors = theme.colors;
+        let (server_id, recording_id) = (card.server_id, card.recording_id);
+        let panel = div()
+            .flex()
+            .flex_col()
+            .gap(u(4.0))
+            .debug_selector(move || format!("channel-recording-files:{recording_id}"));
+        let detail = match &card.state {
+            CardState::Shown(detail) => detail,
+            _ => {
+                return panel
+                    .child(
+                        div()
+                            .typeface(theme.types.small, theme)
+                            .ink(colors.ink_2)
+                            .child(text::RECORDING_READING),
+                    )
+                    .into_any_element();
+            }
+        };
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (position, file) in detail.files.iter().enumerate() {
+            let (segment_id, stem) = (file.segment_id, file.stem.clone());
+            let title = super::recorded::file_title(file);
+            rows.push(
+                div()
+                    .debug_selector(move || {
+                        format!("channel-recording-file:{recording_id}:{position}")
+                    })
+                    .child(
+                        Button::new(("channel-recording-file", index * 1000 + position))
+                            .kind(ButtonKind::Ghost)
+                            .icon(match file.kind {
+                                FileKind::Video => Icon::Play,
+                                FileKind::Microphone => Icon::Microphone,
+                                FileKind::ShareSound => Icon::Screen,
+                            })
+                            .label(format!("{title} · {}", text::file_size(file.bytes)))
+                            .when_some(file.problem.clone(), |button, problem| {
+                                button.tooltip(problem)
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.save_recording_file(
+                                        server_id,
+                                        recording_id,
+                                        RecordedFile::Segment(segment_id),
+                                        &stem,
+                                        false,
+                                        cx,
+                                    );
+                                });
+                            })),
+                    )
+                    .into_any_element(),
+            );
+            if let Some(progress) = &file.download
+                && progress.stage != junto_client_core::transfers::DownloadStage::Cancelled
+            {
+                let control = self.recorded_download(
+                    card,
+                    RecordedFile::Segment(segment_id),
+                    index * 1000 + position,
+                    progress,
+                    theme,
+                    cx,
+                );
+                rows.push(Self::download_row(title, control, position, theme));
+            }
+        }
+        panel.children(rows).into_any_element()
+    }
+
     fn render_channel_recordings(
         &mut self,
         server_id: ServerId,
@@ -998,13 +1082,28 @@ impl Shell {
     ) -> AnyElement {
         let colors = theme.colors;
         let state = self.state.read(cx);
-        let list = state.channel_recordings().clone();
-        if list
-            .key
-            .is_none_or(|(server, _, _, channel)| (server, channel) != (server_id, channel_id))
-        {
+        // The list of this channel, read for the account that the device has now. A tab
+        // that stays open while another voice channel is shown reads that channel.
+        let Some(list) = state
+            .channel_recordings_of(server_id, workspace_id, channel_id)
+            .cloned()
+        else {
+            let app = self.state.downgrade();
+            cx.defer(move |cx| {
+                let _ = app.update(cx, |state, cx| {
+                    if state
+                        .channel_recordings_of(server_id, workspace_id, channel_id)
+                        .is_none()
+                    {
+                        state.show_channel_recordings(server_id, workspace_id, channel_id, cx);
+                    }
+                });
+            });
             return div().into_any_element();
-        }
+        };
+        let files_card = list
+            .files_open
+            .and_then(|recording_id| state.channel_recording_card(recording_id));
         let address = state.server(server_id).map(|server| server.entry().address);
         let rows: Vec<AnyElement> = list
             .recordings
@@ -1024,6 +1123,15 @@ impl Shell {
                     .collect::<Vec<_>>()
                     .join(" · ");
                 let address = address.clone();
+                let saved = matches!(
+                    recording.state,
+                    junto_client_core::protocol::recording::RecordingState::Ready
+                        | junto_client_core::protocol::recording::RecordingState::PartlyFailed
+                );
+                let files = files_card
+                    .as_ref()
+                    .filter(|card| card.recording_id == id)
+                    .map(|card| self.render_channel_recording_files(index, card, theme, cx));
                 div()
                     .id(("channel-recording", index))
                     .role(Role::ListItem)
@@ -1100,8 +1208,31 @@ impl Shell {
                                             ),
                                     )
                                 },
-                            ),
+                            )
+                            // The files of the recording, saved through the flow of its card
+                            // (ADR 0784).
+                            .when(saved, |actions| {
+                                actions.child(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("channel-recording-download:{id}")
+                                        })
+                                        .child(
+                                            Button::new(("channel-recording-download", index))
+                                                .kind(ButtonKind::Ghost)
+                                                .icon(Icon::Download)
+                                                .label(text::DOWNLOAD)
+                                                .tooltip(text::RECORDING_FILES)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.state.update(cx, |state, cx| {
+                                                        state.toggle_channel_recording_files(id, cx);
+                                                    });
+                                                })),
+                                        ),
+                                )
+                            }),
                     )
+                    .children(files)
                     .into_any_element()
             })
             .collect();

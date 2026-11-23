@@ -3270,7 +3270,7 @@ fn workspace_view(
     let transcript = selection
         .transcript
         .filter(|(of, channel_id, _)| *of == server_id && Some(*channel_id) == shown)
-        .filter(|_| thread.is_none() && pins.is_none() && call.is_none())
+        .filter(|_| thread.is_none() && pins.is_none())
         .zip(channel.as_ref())
         .map(|((_, _, recording_id), row)| TranscriptPanel {
             recording_id,

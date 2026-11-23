@@ -62,8 +62,10 @@ impl Shell {
                 .shares
                 .iter()
                 .find(|share| share.id == *id)
+                // The volume of a watched share is on its line (ADR 0738).
                 .filter(|share| {
-                    share.sound != Some(junto_client_core::protocol::call::ShareAudio::None)
+                    !share.watched
+                        && share.sound != Some(junto_client_core::protocol::call::ShareAudio::None)
                 })
                 .map(|share| share.sound_setting.volume);
         }
@@ -171,6 +173,21 @@ impl Shell {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+impl CallMenuAction {
+    /// The action of the keyboard that does the same, whose keys the menu item shows.
+    fn shortcut(&self) -> Option<junto_client_core::keybinds::KeyAction> {
+        use junto_client_core::keybinds::KeyAction;
+        match self {
+            CallMenuAction::Microphone(_) => Some(KeyAction::ToggleMute),
+            CallMenuAction::Sound(_) => Some(KeyAction::ToggleSoundOff),
+            CallMenuAction::Camera(_) => Some(KeyAction::ToggleCamera),
+            CallMenuAction::Leave => Some(KeyAction::LeaveCall),
+            CallMenuAction::StopWatching(_) => Some(KeyAction::StopWatching),
+            _ => None,
+        }
     }
 }
 
@@ -297,7 +314,9 @@ impl Shell {
                 detail: None,
             });
         }
-        if *account_id != open.owner.account_id {
+        // The sound of a watched share is on its line; the menu of a share that is not
+        // watched has it (ADR 0738).
+        if *account_id != open.owner.account_id && !share.watched {
             items.push(CallControl {
                 id: "call-menu-mute-share",
                 label: if share.sound_setting.muted {
@@ -441,6 +460,9 @@ impl Shell {
                 crate::ui::MenuItem::new(control.id, control.label)
                     .selector(control.id)
                     .disabled(control.disabled)
+                    .when_some(control.action.shortcut(), |item, action| {
+                        item.shortcut(action)
+                    })
                     .when(
                         matches!(
                             &control.action,
@@ -617,14 +639,9 @@ impl Shell {
             disabled: false,
             detail: None,
         };
+        // The moderation group in the order of every menu of a person (ADR 0735): speech,
+        // the hand, sound, the move, the disconnection.
         let mut items = Vec::new();
-        if !menu.destinations.is_empty() {
-            items.push(make(
-                "call-menu-move",
-                text::MOVE_TO,
-                ParticipantAction::Move,
-            ));
-        }
         if menu.allow_to_speak {
             items.push(make(
                 "call-menu-allow-speak",
@@ -642,6 +659,16 @@ impl Shell {
                 ParticipantAction::Microphone(!blocked),
             ));
         }
+        if let Some(raised) = menu.hand_raised {
+            let mut item = make(
+                "call-menu-lower-hand",
+                text::LOWER_HAND_OF_PERSON,
+                ParticipantAction::LowerHand,
+            );
+            item.disabled = !raised;
+            item.detail = (!raised).then(|| text::NO_RAISED_HAND.to_owned());
+            items.push(item);
+        }
         if let Some(blocked) = menu.sound_blocked {
             items.push(make(
                 "call-menu-block-sound",
@@ -653,15 +680,12 @@ impl Shell {
                 ParticipantAction::Sound(!blocked),
             ));
         }
-        if let Some(raised) = menu.hand_raised {
-            let mut item = make(
-                "call-menu-lower-hand",
-                text::LOWER_HAND_OF_PERSON,
-                ParticipantAction::LowerHand,
-            );
-            item.disabled = !raised;
-            item.detail = (!raised).then(|| text::NO_RAISED_HAND.to_owned());
-            items.push(item);
+        if !menu.destinations.is_empty() {
+            items.push(make(
+                "call-menu-move",
+                text::MOVE_TO,
+                ParticipantAction::Move,
+            ));
         }
         if menu.disconnect {
             items.push(make(

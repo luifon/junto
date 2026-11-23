@@ -707,13 +707,6 @@ fn draw_changes(studio: &mut Studio) -> Result<(), String> {
             shell.open_transcript_form(server_id(), recording_id(), what, None, window, cx);
         },
     )?;
-    studio.draw(
-        Screen::new("recording-menu", acme(Some(changed()), may_remove)),
-        |shell, window, cx| {
-            show(shell, |_| {}, cx);
-            shell.open_recording_menu(recording_id(), window, cx);
-        },
-    )?;
     let mut failed = open(RecordingState::Ready, TranscriptState::Failed);
     if let Loadable::Loaded(transcript) = &mut failed.transcript {
         transcript.failure = Some(TranscriptFailure::JobRefused);

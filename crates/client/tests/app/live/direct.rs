@@ -794,7 +794,8 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
         },
     );
     // The volume of the watched share, and the quality of the own share.
-    // The slider is on the line of the watched share (ADR 0738).
+    // The slider is in the menu of the speaker of the watched share (ADR 0738).
+    window.click("share-sound-control");
     window.tab_to("share-volume");
     window.press(&["left"; 20].join(" "));
     window.until("the share is not played", |window| {

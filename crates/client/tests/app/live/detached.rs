@@ -596,6 +596,22 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     call.write("Hello from the call window");
     call.until_message("Hello from the call window");
 
+    // The pins of the channel of the call open in the panel of the call window and stay
+    // there while the main window shows another channel: the call window has its own
+    // scope (ADR 0741). The main window opens no pin list.
+    call.click("call-pins");
+    call.until("the pins open over the chat of the call window", |call| {
+        call.shows("pins-panel") && call.shows("call-back-to-chat")
+    });
+    window.click_channel("Daily");
+    window.click_channel("general");
+    assert!(call.shows("pins-panel"));
+    assert!(window.view().workspace().unwrap().pins.is_none());
+    call.click("call-back-to-chat");
+    call.until("the chat of the call window returns", |call| {
+        call.shows("call-chat") && !call.shows("pins-panel")
+    });
+
     // The volume of Ada.
     call.click("call-tab-members");
     call.until("Ada is listed", |call| {

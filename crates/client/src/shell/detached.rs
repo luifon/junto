@@ -34,6 +34,10 @@ const RECORDING_LINE_HEIGHT: f32 = 40.0;
 /// a running recording with its words and the action after it.
 const RECORDING_BESIDE_CONTROLS: f32 = 600.0;
 
+/// The width of the call window from which the shared controls of its header carry their
+/// labels, in design pixels.
+const SHARED_LABELS_FROM: f32 = 520.0;
+
 /// The narrowest stage that the call window draws beside the panel of the call, in pixels
 /// of the design. A narrower window draws the panel over the stage.
 const STAGE_BESIDE_PANEL: f32 = 480.0;
@@ -205,6 +209,9 @@ impl Shell {
             .as_ref()
             .is_some_and(|strip| strip.channel_id.is_some());
         let recording_beside = super::logical_width(window) >= RECORDING_BESIDE_CONTROLS;
+        // The shared controls keep their labels, as in the main window, unless the window
+        // is too narrow for them even on a line of their own.
+        let compact = super::logical_width(window) < SHARED_LABELS_FROM;
         let recording = records.then(|| {
             div()
                 .flex()
@@ -217,12 +224,16 @@ impl Shell {
                     panel
                         .and_then(|panel| panel.channel())
                         .map(|channel| {
-                            let mut shared =
-                                self.render_recording_control(&channel.recording, &theme, true, cx);
+                            let mut shared = self.render_recording_control(
+                                &channel.recording,
+                                &theme,
+                                compact,
+                                cx,
+                            );
                             shared.extend(self.render_room_controls(
                                 &channel.room,
                                 &theme,
-                                true,
+                                compact,
                                 cx,
                             ));
                             shared

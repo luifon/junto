@@ -974,16 +974,16 @@ impl Shell {
             );
         // A thread, the pin list or the transcript of a recording of the channel of the
         // call opens over its chat, with a way back to the chat (ADR 0741).
-        let over = self.render_call_column_view(view, panel, theme, window, cx);
-        let pane = match (&notices, over, self.call_tab) {
-            (Some((shown, server_id)), ..) => {
-                self.render_notices_panel(*server_id, shown, true, cx)
+        // They belong to the Chat tab: "In the call" shows the people whatever is open.
+        let pane = match (&notices, self.call_tab) {
+            (Some((shown, server_id)), _) => self.render_notices_panel(*server_id, shown, true, cx),
+            (None, CallTab::Chat) => {
+                match self.render_call_column_view(view, panel, theme, window, cx) {
+                    Some(over) => over,
+                    None => self.render_call_chat(view, panel, theme, window, cx),
+                }
             }
-            (None, Some(over), _) => over,
-            (None, None, CallTab::Chat) => self.render_call_chat(view, panel, theme, window, cx),
-            (None, None, CallTab::Members) => {
-                self.render_call_members(view, panel, theme, window, cx)
-            }
+            (None, CallTab::Members) => self.render_call_members(view, panel, theme, window, cx),
         };
         let search = self
             .call_search_open
@@ -1060,8 +1060,9 @@ impl Shell {
                 .selector("call-pins")
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if pins_open {
-                        this.state.update(cx, |state, cx| state.close_pins(cx));
+                        this.close_side_view(cx);
                     } else {
+                        this.show_call_tab(CallTab::Chat, cx);
                         this.open_pins(server_id, channel_id, cx);
                     }
                 }))
@@ -1141,11 +1142,7 @@ impl Shell {
                                 .accessible_label(text::BACK_TO_CHAT)
                                 .selector("call-back-to-chat")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.state.update(cx, |state, cx| {
-                                        state.close_thread(cx);
-                                        state.close_pins(cx);
-                                        state.close_transcript(cx);
-                                    });
+                                    this.close_side_view(cx);
                                     this.show_call_tab(CallTab::Chat, cx);
                                 })),
                         ),
@@ -2157,7 +2154,9 @@ impl Shell {
                         .update(cx, |state, cx| state.set_hand(!raised, cx));
                 }))
         });
-        let view_menu = matches!(self.layer, Layer::ViewMenu).then(|| self.render_view_menu(cx));
+        // The View menu opens at its button, or at "⋮" when a narrow stage put View there.
+        let view_menu =
+            (matches!(self.layer, Layer::ViewMenu) && !narrow).then(|| self.render_view_menu(cx));
         let view_button = div()
             .relative()
             .flex_none()
@@ -2218,8 +2217,13 @@ impl Shell {
         // Microphone, sound, camera, share and Leave stay in view; the others move into
         // "⋮" on a narrow stage. The call window keeps its window controls there.
         let more = (narrow || self.detached).then(|| {
-            let menu = matches!(self.layer, Layer::OwnControlsMore)
-                .then(|| self.render_own_controls_more(narrow, strip.hand_raised, cx));
+            let menu = match self.layer {
+                Layer::OwnControlsMore => {
+                    Some(self.render_own_controls_more(narrow, strip.hand_raised, cx))
+                }
+                Layer::ViewMenu if narrow => Some(self.render_view_menu(cx)),
+                _ => None,
+            };
             div()
                 .relative()
                 .flex_none()
@@ -2289,7 +2293,12 @@ impl Shell {
 
     /// Opens a menu of the row of own controls; a press on the button of the open menu
     /// closes it and does not open it again.
-    fn open_own_menu(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_own_menu(
+        &mut self,
+        layer: Layer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if std::mem::take(&mut self.own_menu_closed_by_press) {
             return;
         }
@@ -2456,6 +2465,7 @@ impl Shell {
             items.push(
                 crate::ui::MenuItem::new("more-devices", text::YOUR_DEVICES)
                     .icon(Icon::Sliders)
+                    .shortcut(junto_client_core::keybinds::KeyAction::OpenSettings)
                     .selector("more-devices")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.close_layer(window, cx);

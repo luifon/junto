@@ -390,7 +390,7 @@ impl RenderOnce for Menu {
 /// The key bindings that menu items show beside their actions (ADR 0777). The state
 /// replaces them at the start and at each change of a binding.
 #[derive(Default)]
-pub struct BoundKeys(junto_client_core::keybinds::Keybinds);
+pub struct BoundKeys(pub junto_client_core::keybinds::Keybinds);
 impl gpui::Global for BoundKeys {}
 
 pub fn set_bound_keys(bindings: &junto_client_core::keybinds::Keybinds, cx: &mut App) {
