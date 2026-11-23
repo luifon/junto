@@ -555,3 +555,80 @@ fn the_people_panel_belongs_to_the_group_that_is_shown(cx: &mut TestAppContext) 
             .any(|held| held.id == first.id && held.account_ids.contains(&writer))
     );
 }
+
+/// A group without a name is named by its present members with one rule on every surface:
+/// after a member deletes the account, the conversation list, Activity and search all leave
+/// that person out (ADR 0302).
+#[gpui::test]
+fn an_unnamed_group_leaves_a_departed_member_out_of_its_name_on_every_surface(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::state::notices::Whereabouts;
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let mut members = Vec::new();
+    for name in ["Reader", "Third", "Fourth"] {
+        let code = invite(&world, &admin.handle, Vec::new());
+        members.push(joined(&world, &server, &code, name));
+    }
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Writer");
+    let writer = window.own_account();
+    let (reader, third, fourth) = (&members[0].1, &members[1].1, &members[2].1);
+    let group = world
+        .run(reader.api().create_group(
+            String::new(),
+            vec![writer, logged_in(third), logged_in(fourth)],
+        ))
+        .unwrap();
+    world
+        .run(reader.api().send_message(
+            PlaceId::Direct(group.id),
+            &SendMessage {
+                document: document("The plan for Friday"),
+                reply_to: None,
+                attachments: Vec::new(),
+                comment: None,
+            },
+        ))
+        .unwrap();
+    world.run(third.api().delete_account()).unwrap();
+    let row_name = |window: &mut crate::harness::Window| {
+        window.view().lists().and_then(|lists| {
+            lists
+                .directs
+                .iter()
+                .find(|row| row.id == group.id)
+                .and_then(|row| row.name.clone())
+        })
+    };
+    window.until("the row leaves the departed member out", |window| {
+        row_name(window).is_some_and(|name| name.contains("Reader") && !name.contains("Third"))
+    });
+    let shown = row_name(&mut window).unwrap();
+
+    window.open_notices();
+    window.until("Activity names the group as the row does", |window| {
+        window.notices().is_some_and(|panel| {
+            panel.rows.iter().any(|row| {
+                matches!(&row.place, Whereabouts::Direct { name: Some(name) } if *name == shown)
+            })
+        })
+    });
+    window.press("escape");
+
+    window.click_named(format!("direct-row:{}", group.id));
+    window.search_here_for("plan");
+    let panel = window.until_searched();
+    assert!(
+        panel.results.iter().any(|row| {
+            matches!(&row.place, Whereabouts::Direct { name: Some(name) } if *name == shown)
+        }),
+        "{:?}",
+        panel
+            .results
+            .iter()
+            .map(|row| &row.place)
+            .collect::<Vec<_>>()
+    );
+}

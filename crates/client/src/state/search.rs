@@ -410,6 +410,7 @@ fn place_of(
     place_id: Uuid,
     model: &ServerModel,
     accounts: &HashMap<AccountId, String>,
+    (server_id, known): (ServerId, &super::Known),
 ) -> (Whereabouts, Option<(WorkspaceId, ChannelId)>) {
     let channel_id = ChannelId::from_uuid(place_id);
     if let Some(channel) = model.readable_channel(channel_id) {
@@ -427,12 +428,10 @@ fn place_of(
         .find(|group| group.id.as_uuid() == place_id)
     {
         return (
+            // One naming rule for a group on every surface (ADR 0302).
             Whereabouts::Direct {
-                name: Some(text::conversations::group_title(
-                    &group.name,
-                    &group.account_ids,
-                    model.account.id,
-                    |id| accounts.get(&id).cloned(),
+                name: Some(super::view::group_title(
+                    server_id, group, None, model, known,
                 )),
             },
             None,
@@ -549,7 +548,7 @@ fn panel(
             }
             continue;
         }
-        let (place, channel) = place_of(hit.place_id, model, &accounts);
+        let (place, channel) = place_of(hit.place_id, model, &accounts, (server_id, known));
         if place == Whereabouts::Unknown {
             continue;
         }

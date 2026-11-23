@@ -180,6 +180,7 @@ pub fn whereabouts(
     place: &MessagePlace,
     model: &ServerModel,
     accounts: &HashMap<AccountId, String>,
+    (server_id, known): (ServerId, &super::Known),
 ) -> Whereabouts {
     match place {
         // A channel of the lists, or an archived channel that the state knows (ADR 0762).
@@ -194,12 +195,10 @@ pub fn whereabouts(
             .group_conversations
             .iter()
             .find(|group| group.id == *conversation_id)
+            // One naming rule for a group on every surface (ADR 0302).
             .map(|group| Whereabouts::Direct {
-                name: Some(text::conversations::group_title(
-                    &group.name,
-                    &group.account_ids,
-                    model.account.id,
-                    |id| accounts.get(&id).cloned(),
+                name: Some(super::view::group_title(
+                    server_id, group, None, model, known,
                 )),
             })
             .unwrap_or(Whereabouts::Unknown),
@@ -353,7 +352,7 @@ pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) ->
                         ArchivedList::Settled => {}
                     }
                 }
-                let place = whereabouts(&message.place, model, &accounts);
+                let place = whereabouts(&message.place, model, &accounts, (server_id, known));
                 if place == Whereabouts::Unknown {
                     continue;
                 }
@@ -1342,7 +1341,12 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
                 if message.deleted || muted(scene, message) || in_view(scene, message) {
                     continue;
                 }
-                let place = whereabouts(&message.place, model, accounts());
+                let place = whereabouts(
+                    &message.place,
+                    model,
+                    accounts(),
+                    (scene.server_id, scene.known),
+                );
                 if place == Whereabouts::Unknown {
                     continue;
                 }
