@@ -1692,7 +1692,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -1746,7 +1746,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -1812,7 +1812,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -1896,7 +1896,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -1971,7 +1971,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -2048,7 +2048,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -2133,7 +2133,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -2197,7 +2197,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -2259,7 +2259,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -2601,7 +2601,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -2665,7 +2665,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -2723,7 +2723,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -2781,7 +2781,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -2841,7 +2841,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -2889,7 +2889,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -2938,7 +2938,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3013,7 +3013,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3082,7 +3082,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3147,7 +3147,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3205,7 +3205,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3274,7 +3274,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3331,7 +3331,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3400,7 +3400,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3450,7 +3450,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3510,7 +3510,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3570,7 +3570,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3900,7 +3900,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -3965,7 +3965,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4030,7 +4030,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4125,7 +4125,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4190,7 +4190,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4246,7 +4246,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4304,7 +4304,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4360,7 +4360,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4426,7 +4426,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4492,7 +4492,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4558,7 +4558,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4622,7 +4622,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4688,7 +4688,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4771,7 +4771,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -4835,7 +4835,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -5000,7 +5000,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -5075,7 +5075,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -5225,7 +5225,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -5287,7 +5287,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -5361,7 +5361,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -5423,7 +5423,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -5550,7 +5550,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6030,7 +6030,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6147,7 +6147,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6213,7 +6213,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6270,7 +6270,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6345,7 +6345,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6495,7 +6495,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6557,7 +6557,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6631,7 +6631,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6693,7 +6693,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6767,7 +6767,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6903,7 +6903,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -6968,7 +6968,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7017,7 +7017,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7071,7 +7071,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7176,7 +7176,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7333,7 +7333,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group conversation messages and calls; omitted readers receive pairs and channels",
+            "description": "1 enables group conversation messages and calls and gives a group without a name the names of its other members; 2 enables them and reads a group without a name; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7376,7 +7376,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7444,7 +7444,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7507,7 +7507,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7577,7 +7577,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7654,7 +7654,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7711,7 +7711,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7777,7 +7777,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7844,7 +7844,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7938,7 +7938,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -8002,7 +8002,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -8076,7 +8076,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -8729,7 +8729,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -8791,7 +8791,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -8863,7 +8863,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -8920,7 +8920,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -8994,7 +8994,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9049,7 +9049,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9106,7 +9106,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9181,7 +9181,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9289,7 +9289,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9422,7 +9422,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9484,7 +9484,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9559,7 +9559,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9632,7 +9632,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9689,7 +9689,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9751,7 +9751,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9825,7 +9825,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9896,7 +9896,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -9971,7 +9971,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -10062,7 +10062,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -10119,7 +10119,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -10194,7 +10194,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -11103,7 +11103,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -11648,7 +11648,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -11824,7 +11824,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -12092,7 +12092,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -12154,7 +12154,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -13293,7 +13293,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -13355,7 +13355,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -14296,7 +14296,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -14359,7 +14359,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -14432,7 +14432,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -14489,7 +14489,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -14551,7 +14551,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -15092,7 +15092,7 @@
           {
             "name": "Junto-Group-Conversations",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "1 enables group places on existing routes and gives a group without a name the names of its other members; 2 enables group places and reads a group without a name; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -18391,6 +18391,10 @@
           },
           "search": {
             "$ref": "#/components/schemas/SearchCapabilities"
+          },
+          "workspace_threads": {
+            "type": "boolean",
+            "description": "The server lists the followed threads of a workspace\n(`GET /api/v1/workspaces/{workspace_id}/threads`, ADR 0413)."
           }
         }
       },

@@ -26,6 +26,10 @@ pub struct Capabilities {
     pub message_format: crate::message::DocumentFormat,
     #[serde(default)]
     pub search: crate::discovery::SearchCapabilities,
+    /// The server lists the followed threads of a workspace
+    /// (`GET /api/v1/workspaces/{workspace_id}/threads`, ADR 0413).
+    #[serde(default)]
+    pub workspace_threads: bool,
 }
 
 /// What the health route reports when the server can serve requests.

@@ -1286,45 +1286,64 @@ fn thread_menu_actions_read_and_follow_their_target_without_opening_its_panel(
                 .thread_menu_control(owner, root))
             .is_some()
     );
-    assert!(window.state.update(&mut window.cx, |state, cx| {
-        state.mark_thread_menu_read(owner, root, cx)
-    }));
+    // The menu of the row of an unread thread offers "Mark as read" alone; its press marks
+    // the thread read on the server and keeps the selection (ADR 0742).
+    window.right_click_named(format!("thread-row:{root}"));
+    assert!(window.shows("thread-read") && !window.shows("thread-unread"));
+    window.click("thread-read");
     window.until("the target is marked read", |window| {
-        window
-            .channels()
-            .iter()
-            .flat_map(|channel| &channel.threads)
-            .all(|thread| thread.root_id != root || thread.unread == 0)
-            && window
-                .state
-                .read_with(&window.cx, |state, _| {
-                    state.thread_menu_control(owner, root)
-                })
-                .is_some_and(|control| !control.busy)
-    });
-    assert_eq!(
         world
             .run(window.handle().api().thread_state(root))
             .unwrap()
-            .unread,
-        0
-    );
-    // A thread with nothing unread is marked unread from its newest reply.
-    assert!(window.state.update(&mut window.cx, |state, cx| {
-        state.mark_thread_menu_unread(owner, root, cx)
-    }));
+            .unread
+            == 0
+    });
+    // A read thread has no row under its channel (ADR 0796).
+    window.until("the read thread leaves the channel column", |window| {
+        !window.shows_named(format!("thread-row:{root}"))
+    });
+    assert!(!window.shows("thread-panel"));
+    assert_eq!(window.selected_channel(), channel);
+    // The menu of the thread header offers "Mark as unread" alone for a read thread; its
+    // press marks the thread unread from its newest reply.
+    let server_id = window.view().selected.as_ref().unwrap().id;
+    window.in_shell(|shell, window, cx| shell.open_thread(server_id, channel, root, window, cx));
+    window.until("the thread panel is open", |window| {
+        window.shows("thread-more")
+    });
+    window.click("thread-more");
+    assert!(window.shows(crate::harness::selector(format!(
+        "context-action:{}",
+        junto_client::text::MARK_AS_UNREAD
+    ))));
+    assert!(!window.shows(crate::harness::selector(format!(
+        "context-action:{}",
+        junto_client::text::MARK_AS_READ
+    ))));
+    window.click(crate::harness::selector(format!(
+        "context-action:{}",
+        junto_client::text::MARK_AS_UNREAD
+    )));
     window.until("the target is marked unread", |window| {
+        world
+            .run(window.handle().api().thread_state(root))
+            .unwrap()
+            .unread
+            == 1
+    });
+    assert_eq!(window.selected_channel(), channel);
+    window.click("close-thread");
+    // The follow choices of the menu of the row, through the state of the menu.
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.begin_thread_menu(owner, root, cx)
+    }));
+    window.until("the target follow state is read again", |window| {
         window
             .state
             .read_with(&window.cx, |state, _| {
                 state.thread_menu_control(owner, root)
             })
             .is_some_and(|control| !control.busy)
-            && world
-                .run(window.handle().api().thread_state(root))
-                .unwrap()
-                .unread
-                == 1
     });
     for following in [false, true] {
         assert!(window.state.update(&mut window.cx, |state, cx| {

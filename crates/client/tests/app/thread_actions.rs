@@ -31,18 +31,12 @@ impl Window {
             .map(|control| (control.following, control.setting))
     }
 
-    /// The roots of the threads that the channel column lists under a channel, and whether
-    /// it offers the further followed threads.
-    fn threads_under(&mut self, channel_id: ChannelId) -> (Vec<MessageId>, bool) {
+    /// The roots of the threads that the channel column lists under a channel.
+    fn threads_under(&mut self, channel_id: ChannelId) -> Vec<MessageId> {
         self.channels()
             .into_iter()
             .find(|row| row.id == channel_id)
-            .map(|row| {
-                (
-                    row.threads.iter().map(|entry| entry.root_id).collect(),
-                    row.more_followed.is_some(),
-                )
-            })
+            .map(|row| row.threads.iter().map(|entry| entry.root_id).collect())
             .unwrap_or_default()
     }
 
@@ -179,84 +173,48 @@ fn use_the_default_gives_the_following_of_a_thread_back_to_the_rule_of_the_serve
 }
 
 #[gpui::test]
-fn the_followed_threads_after_the_first_eight_are_listed_when_the_person_asks(
+fn read_followed_threads_are_listed_in_the_threads_panel_and_not_under_their_channel(
     cx: &mut TestAppContext,
 ) {
     let world = World::new();
     let (_server, admin, _directory, mut window, general, _) = with_root(cx, &world);
     let api = window.handle().api();
-    // The member writes in a thread and follows it by the rule; an own reply is not
-    // unread, so the thread is listed as a followed thread without a sign.
-    let follow = |world: &World, count: usize, from: usize| -> Vec<MessageId> {
-        (from..from + count)
-            .map(|number| {
-                let root = admin.send(world, general, document(&format!("Topic {number}")));
-                let reply = SendMessage {
-                    document: document(&format!("Answer {number}")),
-                    reply_to: None,
-                    attachments: Vec::new(),
-                    comment: None,
-                };
-                world.run(api.reply_in_thread(root.id, &reply)).unwrap();
-                root.id
-            })
-            .collect()
-    };
-
-    // Ten followed threads: the channel lists eight and offers the other two.
-    let first = follow(&world, 10, 0);
-    window.until("eight followed threads and the offer", |window| {
-        let (listed, more) = window.threads_under(general);
-        listed.len() == 8 && more
+    // The member writes in ten threads and follows them by the rule; an own reply is not
+    // unread, so each thread is a read followed thread.
+    let roots: Vec<MessageId> = (0..10)
+        .map(|number| {
+            let root = admin.send(&world, general, document(&format!("Topic {number}")));
+            let reply = SendMessage {
+                document: document(&format!("Answer {number}")),
+                reply_to: None,
+                attachments: Vec::new(),
+                comment: None,
+            };
+            world.run(api.reply_in_thread(root.id, &reply)).unwrap();
+            root.id
+        })
+        .collect();
+    // The channel column lists none of them, and offers no further row (ADR 0796).
+    window.click("threads-row");
+    window.until("the panel lists the ten threads", |window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.followed.clone())
+            .is_some_and(|panel| panel.rows.len() == 10)
     });
-    let more = window
-        .channels()
-        .into_iter()
-        .find(|row| row.id == general)
-        .and_then(|row| row.more_followed)
-        .unwrap();
-    assert_eq!(more.count, Some(2));
-    window.click_named(format!("followed-more:{general}"));
-    window.until("the ten followed threads", |window| {
-        let (listed, more) = window.threads_under(general);
-        listed.len() == 10 && !more
-    });
-    let (listed, _) = window.threads_under(general);
-    assert!(first.iter().all(|root| listed.contains(root)), "{listed:?}");
-    assert!(!window.shows_named(format!("followed-more:{general}")));
-
-    // More followed threads than the server gives in a page: the window lists the threads
-    // of the page that it read and offers the rest without a count.
-    let later = follow(&world, 45, 10);
-    window.until("a page of followed threads and the offer", |window| {
-        let (listed, more) = window.threads_under(general);
-        listed.len() == 50 && more
-    });
-    let more = window
-        .channels()
-        .into_iter()
-        .find(|row| row.id == general)
-        .and_then(|row| row.more_followed)
-        .unwrap();
-    assert_eq!(more.count, None);
-    // The offer is at the end of the long list. The press reads the next page from the
-    // server.
-    let offer = selector(format!("followed-more:{general}"));
-    window.wheel_to("channel-list", offer);
-    window.click(offer);
-    window.until("every followed thread", |window| {
-        let (listed, more) = window.threads_under(general);
-        listed.len() == 55 && !more
-    });
-    let (listed, _) = window.threads_under(general);
-    assert!(
-        first.iter().chain(&later).all(|root| listed.contains(root)),
-        "{listed:?}"
-    );
+    assert!(window.threads_under(general).is_empty());
+    let listed: Vec<MessageId> = window
+        .view()
+        .workspace()
+        .and_then(|workspace| workspace.followed.clone())
+        .map(|panel| panel.rows.iter().map(|row| row.root_id).collect())
+        .unwrap_or_default();
+    assert!(roots.iter().all(|root| listed.contains(root)), "{listed:?}");
     let stored = world
         .run(api.followed_threads(general, None, Some(200)))
         .unwrap();
-    assert_eq!(stored.threads.len(), 55);
+    assert_eq!(stored.threads.len(), 10);
 }
 
 #[gpui::test]

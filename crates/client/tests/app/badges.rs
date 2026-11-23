@@ -357,11 +357,9 @@ fn a_thread_row_counts_the_mentions_of_its_thread_and_a_read_takes_the_count_awa
         .run(window.handle().api().reply_in_thread(followed, &answer))
         .unwrap();
     let followed_row = selector(format!("thread-row:{followed}"));
-    window.until(
-        "the followed thread is listed under its channel",
-        |window| window.shows(followed_row),
-    );
-    assert!(window.drawn_mentions(followed_row).is_none());
+    // A read followed thread has no row under its channel (ADR 0796).
+    window.settle();
+    assert!(!window.shows(followed_row));
     let other = admin.send(&world, general, document("Mixdown when?")).id;
     let other_row = selector(format!("thread-row:{other}"));
     let channel_row = selector(format!("channel-row:{general}"));
@@ -389,8 +387,10 @@ fn a_thread_row_counts_the_mentions_of_its_thread_and_a_read_takes_the_count_awa
     window.until("the other thread is read", |window| {
         window.shows(other_row) && window.drawn_mentions(other_row).is_none()
     });
-    assert!(window.shows(followed_row));
-    assert!(window.drawn_mentions(followed_row).is_none());
+    // The followed thread is read and no longer open: it leaves the channel column.
+    window.until("the read followed thread leaves the column", |window| {
+        !window.shows(followed_row)
+    });
     window.until("the row of the channel counts no mention", |window| {
         window.drawn_mentions(channel_row).is_none()
     });

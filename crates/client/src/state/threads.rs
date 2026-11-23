@@ -67,6 +67,13 @@ impl AppState {
     }
 
     /// Reads the page of the followed threads of the workspace after the listed ones.
+    /// Reads the followed threads of the side panel "Threads" again after a failed read.
+    pub fn retry_followed_threads(&mut self, cx: &mut Context<Self>) {
+        if self.known.followed.workspace.retry() {
+            self.changed(cx);
+        }
+    }
+
     pub fn read_more_followed_threads(&mut self, cx: &mut Context<Self>) {
         if self.known.followed.workspace.expand() {
             self.changed(cx);

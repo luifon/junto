@@ -957,7 +957,39 @@ impl Shell {
                             .update(cx, |state, cx| state.close_followed_threads(cx));
                     })),
             );
-        let body: AnyElement = if panel.rows.is_empty() && panel.reading {
+        let body: AnyElement = if let Some(failure) =
+            panel.failure.filter(|_| panel.rows.is_empty())
+        {
+            // An older server does not list these threads; a failed read can be read again
+            // (ADR 0796).
+            match failure {
+                crate::state::followed::ListFailure::Unsupported => StatePanel::new(
+                    text::FOLLOWED_THREADS_UNSUPPORTED_TITLE,
+                    text::FOLLOWED_THREADS_UNSUPPORTED,
+                )
+                .selector("followed-unsupported")
+                .into_any_element(),
+                crate::state::followed::ListFailure::Failed => div()
+                    .flex()
+                    .flex_col()
+                    .gap(u(8.0))
+                    .px(u(14.0))
+                    .pt(u(12.0))
+                    .child(crate::ui::Notice::error(text::FOLLOWED_THREADS_FAILED))
+                    .child(
+                        div().flex().child(
+                            Button::new("followed-retry")
+                                .label(text::TRY_AGAIN)
+                                .selector("followed-retry")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state
+                                        .update(cx, |state, cx| state.retry_followed_threads(cx));
+                                })),
+                        ),
+                    )
+                    .into_any_element(),
+            }
+        } else if panel.rows.is_empty() && panel.reading {
             div()
                 .px(u(14.0))
                 .pt(u(12.0))
@@ -970,63 +1002,41 @@ impl Shell {
                 .selector("no-followed-threads")
                 .into_any_element()
         } else {
+            // Each row is a row of the channel column: it takes the focus with Tab, shows the
+            // focus ring, and opens its thread with Enter or Space (ADR 0796).
             let rows = panel.rows.iter().map(|row| {
                 let (root_id, channel_id) = (row.root_id, row.channel_id);
                 let title = row.title.clone().unwrap_or_else(|| text::THREAD.to_owned());
                 let unread = row.unread.max(row.mentions);
+                let sign = (unread > 0).then(|| crate::ui::UnreadSign {
+                    mentions: (row.mentions > 0).then(|| text::unread_count(row.mentions).into()),
+                    label: text::followed_thread_label(&title, &row.channel_name, unread).into(),
+                });
                 div()
-                    .id(("followed-thread", root_id.as_uuid().as_u128() as u64))
-                    .role(Role::ListItem)
-                    .aria_label(text::followed_thread_label(
-                        &title,
-                        &row.channel_name,
-                        unread,
-                    ))
+                    .flex_none()
                     .debug_selector(move || format!("followed-thread:{root_id}"))
-                    .flex()
-                    .items_center()
-                    .gap(u(9.0))
-                    .px(u(14.0))
-                    .py(u(7.0))
-                    .border_b_1()
-                    .border_color(Hsla::from(colors.rule_soft))
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(Hsla::from(colors.row_hover)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let (Some(server_id), Some(workspace_id)) = (server_id, workspace_id)
-                        else {
-                            return;
-                        };
-                        this.state.update(cx, |state, cx| {
-                            state.select_channel(workspace_id, channel_id, cx)
-                        });
-                        this.open_thread(server_id, channel_id, root_id, window, cx);
-                    }))
-                    .child(icon(Icon::Chat, 15.0, colors.ink_2))
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .when(unread > 0, |line| line.font_weight(FontWeight::BOLD))
-                                    .ink(colors.ink)
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .typeface(theme.types.small, &theme)
-                                    .ink(colors.ink_2)
-                                    .child(format!("# {}", row.channel_name)),
-                            ),
+                        crate::ui::ChannelRow::new(
+                            ("followed-thread", root_id.as_uuid().as_u128() as u64),
+                            Icon::Chat,
+                            title,
+                        )
+                        .detail(format!("# {}", row.channel_name))
+                        .unread(sign)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                let (Some(server_id), Some(workspace_id)) =
+                                    (server_id, workspace_id)
+                                else {
+                                    return;
+                                };
+                                this.state.update(cx, |state, cx| {
+                                    state.select_channel(workspace_id, channel_id, cx)
+                                });
+                                this.open_thread(server_id, channel_id, root_id, window, cx);
+                            },
+                        )),
                     )
-                    .when(unread > 0, |entry| {
-                        entry.child(crate::ui::Badge::new(text::unread_count(unread)))
-                    })
                     .into_any_element()
             });
             ScrollArea::new("followed-threads", &self.followed_scroll, text::THREADS)

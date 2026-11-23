@@ -22,7 +22,7 @@ mod device_checks;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
-mod followed;
+pub(crate) mod followed;
 pub(crate) mod forwarding;
 pub mod linking;
 pub mod logo;

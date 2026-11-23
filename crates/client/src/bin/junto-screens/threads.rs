@@ -307,14 +307,6 @@ fn draw_followed(studio: &mut Studio) -> Result<(), String> {
             follow(state, false, None),
         )?;
     }
-    // The side panel "Threads" of the workspace, before its list arrives.
-    studio.draw(
-        Screen::new("threads-followed-panel", servers.clone()),
-        |shell, _, cx| {
-            prepare(shell, none(), cx);
-            shell.toggle_followed_threads(cx);
-        },
-    )?;
     // A change on its way, and a change that the server refused.
     studio.draw(
         Screen::new("follow-sending", servers.clone()),
@@ -377,35 +369,30 @@ fn draw_followed(studio: &mut Studio) -> Result<(), String> {
             follow_setting: None,
         })
         .collect();
-    let list = |expanded: bool, more: bool| {
+    // The side panel "Threads" of the workspace lists the followed threads of every
+    // channel, the unread one first (ADR 0796); a read followed thread has no row under its
+    // channel.
+    let list = |more: bool| {
         let (threads, roots) = (followed.clone(), roots.clone());
         move |shell: &mut Shell, _: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
             prepare(shell, none(), cx);
             shell.state().clone().update(cx, |app, cx| {
                 app.show_followed_fixture(
-                    (server_id(), general_id()),
-                    threads,
+                    (server_id(), id(10)),
+                    threads
+                        .into_iter()
+                        .map(|state| (general_id(), state))
+                        .collect(),
                     more,
-                    expanded,
                     roots,
                     cx,
                 );
             });
         }
     };
-    studio.draw(
-        Screen::new("follow-list", unread.clone()),
-        list(false, false),
-    )?;
-    studio.draw(
-        Screen::new("follow-list-expanded", unread.clone()),
-        list(true, false),
-    )?;
-    // The server lists further pages: the row stays after the held threads are listed.
-    studio.draw(
-        Screen::new("follow-list-more-pages", unread),
-        list(true, true),
-    )
+    studio.draw(Screen::new("follow-list", unread.clone()), list(false))?;
+    // The server lists further pages: the panel offers them.
+    studio.draw(Screen::new("follow-list-more-pages", unread), list(true))
 }
 
 pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {

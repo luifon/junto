@@ -126,6 +126,15 @@ impl AppState {
                 .filter(|((held, _), _)| *held == server_id)
                 .map(|(_, threads)| threads)
                 .unwrap_or_default();
+            // The followed threads of the workspace of the dialog, of every channel (ADR 0747).
+            let of_workspace = self
+                .known
+                .followed
+                .forward
+                .held()
+                .filter(|((held, _), _)| *held == server_id)
+                .map(|(_, threads)| threads)
+                .unwrap_or_default();
             let roots = model
                 .timelines
                 .iter()
@@ -134,7 +143,8 @@ impl AppState {
                     _ => None,
                 })
                 .chain(model.threads.iter().map(|thread| thread.root_id))
-                .chain(followed.iter().map(|thread| thread.root_id));
+                .chain(followed.iter().map(|thread| thread.root_id))
+                .chain(of_workspace.iter().map(|thread| thread.root_id));
             for root_id in roots {
                 let root: Option<&Message> = model
                     .timelines

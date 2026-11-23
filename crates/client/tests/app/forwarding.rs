@@ -620,3 +620,32 @@ fn a_forward_carries_a_comment_above_the_forwarded_content(cx: &mut TestAppConte
     assert!(shown.contains("please read this first"), "{shown}");
     assert!(shown.contains("the quarterly plan"), "{shown}");
 }
+
+/// The forward dialog offers the followed threads of the workspace in every channel, also
+/// a read one that the window never opened (ADR 0747).
+#[gpui::test]
+fn the_forward_dialog_offers_a_read_followed_thread_of_another_channel(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    let source = admin.send(&world, general, document("the plan to share"));
+    let mixing = admin.text_channel(&world, &mut window, "mixing");
+    let root = admin.send(&world, mixing, document("Which compressor?"));
+    let reply = admin.reply(&world, root.id, document("The second one."));
+    let api = window.handle().api();
+    world.run(api.set_thread_follow(root.id, true)).unwrap();
+    let position = world.run(api.message(reply)).unwrap().position;
+    world.run(api.mark_thread_read(root.id, position)).unwrap();
+    window.until_message("the plan to share");
+    window.right_click_message(source.id);
+    window.click("message-forward");
+    let server_id = window.view().selected.as_ref().unwrap().id;
+    window.until("the read followed thread is a destination", |window| {
+        window.shows_named(format!(
+            "forward-destination:{server_id}:thread:{}",
+            root.id
+        ))
+    });
+}

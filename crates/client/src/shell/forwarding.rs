@@ -170,6 +170,19 @@ impl Shell {
             _find: subscription,
         };
         self.open_layer(Layer::Forward(Box::new(dialog)), window, cx);
+        // The dialog offers the followed threads of the shown workspace (ADR 0747).
+        let workspace = self
+            .view
+            .as_ref()
+            .filter(|view| {
+                view.selected
+                    .as_ref()
+                    .is_some_and(|server| server.id == server_id)
+            })
+            .and_then(|view| view.workspace())
+            .map(|workspace| (server_id, workspace.id));
+        self.state
+            .update(cx, |state, cx| state.show_forward_threads(workspace, cx));
         self.focus_field(&find, window, cx);
     }
 

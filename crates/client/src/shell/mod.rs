@@ -1766,6 +1766,10 @@ impl Shell {
         {
             self.memberships.reset();
         }
+        if matches!(self.layer, Layer::Forward(_)) {
+            self.state
+                .update(cx, |state, cx| state.show_forward_threads(None, cx));
+        }
         self.layer = layer;
         self.layer_focus.focus(window, cx);
         cx.notify();
@@ -1813,6 +1817,10 @@ impl Shell {
         if matches!(self.layer, Layer::NewDirect) {
             self.groups.reset();
             self.state.update(cx, |state, cx| state.close_contacts(cx));
+        }
+        if matches!(self.layer, Layer::Forward(_)) {
+            self.state
+                .update(cx, |state, cx| state.show_forward_threads(None, cx));
         }
         if matches!(self.layer, Layer::LinkAll) {
             // The request with its link codes is gone with the layer.

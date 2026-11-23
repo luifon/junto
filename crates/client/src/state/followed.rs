@@ -22,12 +22,9 @@ use junto_client_core::protocol::message::{FollowedThreads, Message, ThreadState
 use junto_client_core::{Owner, ServerHandle};
 
 use super::AppState;
-use super::view::{FollowControl, MoreFollowed, ShellView};
+use super::view::{FollowControl, ShellView};
 use crate::text;
 
-/// The followed threads without something unread that a channel lists before the person
-/// asks for the further ones.
-pub const FOLLOWED_SHOWN: usize = 8;
 /// The threads of one page of the followed threads of a channel.
 const PAGE: u32 = 50;
 /// The most threads that the server gives in one page (ADR 0413).
@@ -319,6 +316,15 @@ struct ListReading {
 /// The threads of the shown channel that the account follows, as far as their pages were
 /// read (ADR 0413). The list of the followed threads of a workspace, which the side panel
 /// "Threads" shows, is the same list with the workspace in place of the channel.
+/// Why a list of followed threads holds no answer (ADR 0796).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListFailure {
+    /// The server does not list the followed threads of a workspace: it is older.
+    Unsupported,
+    /// The read failed. The person can read the list again.
+    Failed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FollowedList<K = ChannelId> {
     channel: Option<(ServerId, K)>,
@@ -327,8 +333,6 @@ pub struct FollowedList<K = ChannelId> {
     /// The server lists more followed threads after the held ones.
     more: bool,
     next: Option<String>,
-    /// The person asked for the further threads. It ends when another channel is shown.
-    expanded: bool,
     reading: Option<ListReading>,
     /// The list is read from its start: a trigger arrived.
     wanted: bool,
@@ -337,6 +341,8 @@ pub struct FollowedList<K = ChannelId> {
     seen: Seen,
     /// The number of the last read.
     reads: u64,
+    /// Why the list holds no answer, until a read succeeds or another key is shown.
+    failure: Option<ListFailure>,
 }
 
 /// The threads that a read of the list from its start asks for: as many pages as are
@@ -348,12 +354,12 @@ impl<K> Default for FollowedList<K> {
             threads: Vec::new(),
             more: false,
             next: None,
-            expanded: false,
             reading: None,
             wanted: false,
             wanted_further: false,
             seen: Seen::default(),
             reads: 0,
+            failure: None,
         }
     }
 }
@@ -456,22 +462,61 @@ impl<K: Copy + PartialEq> FollowedList<K> {
         self.seen = seen;
     }
 
-    /// The person asks for the further followed threads: the held ones are all listed,
-    /// and the next page is read when the server has one.
+    /// The person asks for the further followed threads: the next page is read when the
+    /// server has one.
     pub fn expand(&mut self) -> bool {
         if self.channel.is_none() {
             return false;
         }
-        self.expanded = true;
         self.wanted_further = self.more;
         true
     }
 
+    /// Why the list holds no answer.
+    pub fn failure(&self) -> Option<ListFailure> {
+        self.failure
+    }
+
+    /// The read with this number failed: the list states it until the person reads it
+    /// again.
+    pub fn failed(&mut self, number: u64) -> bool {
+        let Some(reading) = self.reading.filter(|reading| reading.number == number) else {
+            return false;
+        };
+        self.reading = None;
+        // A read that was sent for another key fails for nobody.
+        if !reading.dropped {
+            self.failure = Some(ListFailure::Failed);
+        }
+        true
+    }
+
+    /// The server does not list these threads: nothing is read.
+    pub fn unsupported(&mut self) -> bool {
+        if self.channel.is_none() || self.failure == Some(ListFailure::Unsupported) {
+            return false;
+        }
+        self.failure = Some(ListFailure::Unsupported);
+        self.wanted = false;
+        self.wanted_further = false;
+        true
+    }
+
+    /// The person reads a list that failed again.
+    pub fn retry(&mut self) -> bool {
+        if self.failure != Some(ListFailure::Failed) {
+            return false;
+        }
+        self.failure = None;
+        self.wanted = true;
+        true
+    }
+
     /// The read to send now. One read is on its way at a time; the list from its start
-    /// comes before a further page.
+    /// comes before a further page. A failed list is read again only when the person asks.
     pub fn next_read(&mut self) -> Option<ListRead<K>> {
         let (server_id, channel_id) = self.channel?;
-        if self.reading.is_some() {
+        if self.reading.is_some() || self.failure.is_some() {
             return None;
         }
         let (further, before, limit) = if self.wanted {
@@ -510,6 +555,7 @@ impl<K: Copy + PartialEq> FollowedList<K> {
         let Some(page) = page.filter(|_| !reading.dropped) else {
             return true;
         };
+        self.failure = None;
         if !reading.further {
             self.threads.clear();
         }
@@ -528,43 +574,17 @@ impl<K: Copy + PartialEq> FollowedList<K> {
         true
     }
 
-    /// The followed threads of a channel that its rows list after the threads in
-    /// `listed`, which the rows before them show as unread: the first
-    /// [`FOLLOWED_SHOWN`] of them, or all of them after the person asked for the further
-    /// ones. With them, the row that offers the further ones. `open`: the thread of the
-    /// side panel, which has a row of its own when it is not among the listed ones.
-    pub fn listed(
-        &self,
-        channel: (ServerId, K),
-        listed: &[MessageId],
-        open: Option<MessageId>,
-    ) -> (Vec<&ThreadState>, Option<MoreFollowed>) {
+    /// The followed threads of a channel that are not among `listed`, which the rows of
+    /// the channel already show. The rows under a channel show unread threads only
+    /// (ADR 0796): the caller keeps the ones with unread replies.
+    pub fn listed(&self, channel: (ServerId, K), listed: &[MessageId]) -> Vec<&ThreadState> {
         if self.channel != Some(channel) {
-            return (Vec::new(), None);
+            return Vec::new();
         }
-        let mut further: Vec<&ThreadState> = self
-            .threads
+        self.threads
             .iter()
             .filter(|state| !listed.contains(&state.root_id))
-            .collect();
-        let shown = if self.expanded {
-            further.len()
-        } else {
-            further.len().min(FOLLOWED_SHOWN)
-        };
-        let hidden = further
-            .split_off(shown)
-            .into_iter()
-            .filter(|state| Some(state.root_id) != open)
-            .count();
-        let more = if self.more {
-            Some(MoreFollowed { count: None })
-        } else {
-            (hidden > 0).then_some(MoreFollowed {
-                count: Some(hidden),
-            })
-        };
-        (further, more)
+            .collect()
     }
 }
 
@@ -794,7 +814,11 @@ pub struct Followed {
     pub list: FollowedList,
     /// The followed threads of the workspace that the side panel "Threads" shows.
     pub workspace: FollowedList<WorkspaceId>,
-    /// The channel of each thread of the workspace list, as the server stated it.
+    /// The followed threads of the workspace of the forward dialog, for its destinations.
+    pub forward: FollowedList<WorkspaceId>,
+    /// The workspace of the forward dialog while it is open.
+    pub forward_target: Option<(ServerId, WorkspaceId)>,
+    /// The channel of each thread of the workspace lists, as the server stated it.
     pub workspace_channels: HashMap<(ServerId, MessageId), ChannelId>,
     pub roots: Roots,
     menu: ThreadMenu,
@@ -802,7 +826,26 @@ pub struct Followed {
     owners: HashMap<ServerId, AccountId>,
 }
 
+/// One of the two lists of the followed threads of a workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceList {
+    /// The list of the side panel "Threads".
+    Panel,
+    /// The list of the destinations of the forward dialog.
+    Forward,
+}
+
+/// The most followed threads that the forward dialog reads of a workspace.
+pub(crate) const FORWARD_THREADS_MOST: usize = 500;
+
 impl Followed {
+    pub(crate) fn workspace_list(&mut self, kind: WorkspaceList) -> &mut FollowedList<WorkspaceId> {
+        match kind {
+            WorkspaceList::Panel => &mut self.workspace,
+            WorkspaceList::Forward => &mut self.forward,
+        }
+    }
+
     /// Drops what is held of every server that is not one of these.
     pub fn retain(&mut self, servers: &HashSet<ServerId>) {
         self.owners
@@ -827,6 +870,7 @@ impl Followed {
             self.thread.forget(server_id);
             self.list.forget(server_id);
             self.workspace.forget(server_id);
+            self.forward.forget(server_id);
             self.roots.forget(server_id);
             if self
                 .menu
@@ -849,11 +893,12 @@ impl Followed {
         let thread = self.thread.told(server_id, root_id, following, setting);
         let list = self.list.told(server_id, root_id, following);
         let workspace = self.workspace.told(server_id, root_id, following);
+        let forward = self.forward.told(server_id, root_id, following);
         let menu = self
             .menu
             .follow
             .told(server_id, root_id, following, setting);
-        thread || list || workspace || menu
+        thread || list || workspace || forward || menu
     }
 
     /// An event of a server that tells nothing about a followed thread. `changed`: the
@@ -871,9 +916,10 @@ impl Followed {
         let thread = self.thread.stale(server_id);
         let list = self.list.trigger(server_id);
         let workspace = self.workspace.trigger(server_id);
+        let forward = self.forward.trigger(server_id);
         let roots = self.roots.stale(server_id);
         let menu = self.menu.follow.stale(server_id);
-        thread || list || workspace || roots || menu
+        thread || list || workspace || forward || roots || menu
     }
 
     /// The answer to a change of the thread of the side panel. The list of the channel
@@ -912,27 +958,30 @@ impl Followed {
             Some(_) if overtaken && followed == core_model::Followed::Unknown => {
                 self.list.trigger(ask.server_id);
                 self.workspace.trigger(ask.server_id);
+                self.forward.trigger(ask.server_id);
             }
             Some(Some((following, _))) => {
                 self.list.told(ask.server_id, ask.root_id, following);
                 self.workspace.told(ask.server_id, ask.root_id, following);
+                self.forward.told(ask.server_id, ask.root_id, following);
             }
             Some(None) => {
                 self.list.trigger(ask.server_id);
                 self.workspace.trigger(ask.server_id);
+                self.forward.trigger(ask.server_id);
             }
             None => {}
         }
         true
     }
 
-    /// The roots of the followed threads that the rows of a channel list now and that
-    /// the state of the server does not hold, in the order of the rows.
+    /// The roots of the unread followed threads that the rows of a channel list now and
+    /// that the state of the server does not hold, in the order of the rows. A read
+    /// followed thread has no row under its channel (ADR 0796).
     pub fn missing_roots(
         &self,
         model: &ServerModel,
         channel: (ServerId, ChannelId),
-        open: Option<MessageId>,
     ) -> Vec<MessageId> {
         let unread: Vec<MessageId> = model
             .threads
@@ -940,9 +989,13 @@ impl Followed {
             .map(|state| state.root_id)
             .filter(|root_id| listed_as_unread(model, channel.1, *root_id))
             .collect();
-        let (further, _) = self.list.listed(channel, &unread, open);
-        further
+        self.list
+            .listed(channel, &unread)
             .into_iter()
+            .filter(|state| match model.thread_state(state.root_id) {
+                Some(held) => held.unread > 0 || held.mentions > 0,
+                None => model.threads_more && (state.unread > 0 || state.mentions > 0),
+            })
             .map(|state| state.root_id)
             .filter(|root_id| held_root(model, channel.1, *root_id).is_none())
             .collect()
@@ -1274,8 +1327,22 @@ impl AppState {
         );
         followed.list.show(shown.server.zip(shown.channel));
         followed.workspace.show(self.selection.threads);
+        followed.forward.show(followed.forward_target);
         self.read_followed(cx);
         self.read_thread_menu(cx);
+    }
+
+    /// The forward dialog opens for a workspace, or closes: its destinations offer the
+    /// followed threads of that workspace (ADR 0747).
+    pub(crate) fn show_forward_threads(
+        &mut self,
+        target: Option<(ServerId, WorkspaceId)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.known.followed.forward_target != target {
+            self.known.followed.forward_target = target;
+            self.changed(cx);
+        }
     }
 
     /// The server of the requests with its state, when the state is the one of the
@@ -1330,55 +1397,26 @@ impl AppState {
             })
             .detach();
         }
-        if let Some(read) = followed.workspace.next_read()
-            && read.server_id == server_id
-        {
-            let api = server.api();
-            cx.spawn(async move |this, cx| {
-                let page = api
-                    .workspace_followed_threads(
-                        read.channel_id,
-                        read.before.as_deref(),
-                        Some(read.limit),
-                    )
-                    .await
-                    .ok();
-                let _ = this.update(cx, |this, cx| {
-                    let followed = &mut this.known.followed;
-                    let page = page.map(|page| {
-                        for thread in &page.threads {
-                            followed
-                                .workspace_channels
-                                .insert((read.server_id, thread.state.root_id), thread.channel_id);
-                        }
-                        FollowedThreads {
-                            threads: page
-                                .threads
-                                .into_iter()
-                                .map(|thread| thread.state)
-                                .collect(),
-                            more: page.more,
-                            next: page.next,
-                        }
-                    });
-                    if followed.workspace.answered(read.number, page) {
-                        this.followed_changed(cx);
-                    }
-                });
-            })
-            .detach();
+        // A server of an earlier release does not list the threads of a workspace.
+        for kind in [WorkspaceList::Panel, WorkspaceList::Forward] {
+            if !server.entry().capabilities.workspace_threads {
+                self.known.followed.workspace_list(kind).unsupported();
+            }
+            self.read_workspace_threads(&server, kind, cx);
         }
-        let open = shown.thread.map(|(_, root_id)| root_id);
+        let followed = &mut self.known.followed;
         let missing = shown
             .channel
-            .map(|channel_id| followed.missing_roots(&model, (server_id, channel_id), open))
+            .map(|channel_id| followed.missing_roots(&model, (server_id, channel_id)))
             .unwrap_or_default();
         // The roots of the followed threads of the workspace list that the state does not
         // hold, for their titles.
         let mut missing = missing;
-        if let Some(((held_server, _), threads)) = followed.workspace.held()
-            && held_server == server_id
-        {
+        let lists = [followed.workspace.held(), followed.forward.held()];
+        for ((held_server, _), threads) in lists.into_iter().flatten() {
+            if held_server != server_id {
+                continue;
+            }
             for state in threads {
                 let channel = followed
                     .workspace_channels
@@ -1404,6 +1442,69 @@ impl AppState {
             })
             .detach();
         }
+    }
+
+    /// Sends the next read of a list of the followed threads of a workspace. The list of
+    /// the forward dialog is read page after page up to [`FORWARD_THREADS_MOST`] threads,
+    /// so that the dialog offers the followed threads of every channel (ADR 0747).
+    fn read_workspace_threads(
+        &mut self,
+        server: &ServerHandle,
+        kind: WorkspaceList,
+        cx: &mut Context<Self>,
+    ) {
+        let server_id = server.id();
+        let Some(read) = self.known.followed.workspace_list(kind).next_read() else {
+            return;
+        };
+        if read.server_id != server_id {
+            return;
+        }
+        let api = server.api();
+        cx.spawn(async move |this, cx| {
+            let page = api
+                .workspace_followed_threads(
+                    read.channel_id,
+                    read.before.as_deref(),
+                    Some(read.limit),
+                )
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let followed = &mut this.known.followed;
+                let Ok(page) = page else {
+                    if followed.workspace_list(kind).failed(read.number) {
+                        this.followed_changed(cx);
+                    }
+                    return;
+                };
+                for thread in &page.threads {
+                    followed
+                        .workspace_channels
+                        .insert((read.server_id, thread.state.root_id), thread.channel_id);
+                }
+                let page = FollowedThreads {
+                    threads: page
+                        .threads
+                        .into_iter()
+                        .map(|thread| thread.state)
+                        .collect(),
+                    more: page.more,
+                    next: page.next,
+                };
+                let list = followed.workspace_list(kind);
+                if list.answered(read.number, Some(page)) {
+                    let held = list.held().map_or(0, |(_, threads)| threads.len());
+                    if kind == WorkspaceList::Forward
+                        && list.has_more()
+                        && held < FORWARD_THREADS_MOST
+                    {
+                        list.expand();
+                    }
+                    this.followed_changed(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// What is held of followed threads changed: the next reads are sent, and the window
@@ -1518,14 +1619,6 @@ impl AppState {
         cx.notify();
     }
 
-    /// Lists every followed thread of the shown channel that was read, and reads the next
-    /// page of them.
-    pub fn show_more_followed(&mut self, cx: &mut Context<Self>) {
-        if self.known.followed.list.expand() {
-            self.followed_changed(cx);
-        }
-    }
-
     /// Draws this follow state of the thread of the side panel in place of what the
     /// server told. The screen tool uses it.
     #[cfg(feature = "test-support")]
@@ -1555,39 +1648,43 @@ impl AppState {
         self.changed(cx);
     }
 
-    /// Draws these followed threads under a channel in place of what the server told,
-    /// with these roots as the ones that were read. The screen tool uses it.
+    /// Opens the side panel "Threads" of a workspace with these followed threads in place
+    /// of what the server told, each with its channel, and these roots as the ones that
+    /// were read. The screen tool uses it.
     #[cfg(feature = "test-support")]
     pub fn show_followed_fixture(
         &mut self,
-        channel: (ServerId, ChannelId),
-        threads: Vec<ThreadState>,
+        workspace: (ServerId, WorkspaceId),
+        threads: Vec<(ChannelId, ThreadState)>,
         more: bool,
-        expanded: bool,
         roots: Vec<Message>,
         cx: &mut Context<Self>,
     ) {
-        let mut list = FollowedList::default();
-        list.show(Some(channel));
+        let server_id = workspace.0;
+        let mut list = FollowedList::<WorkspaceId>::default();
+        list.show(Some(workspace));
+        for (channel_id, state) in &threads {
+            self.known
+                .followed
+                .workspace_channels
+                .insert((server_id, state.root_id), *channel_id);
+        }
         if let Some(read) = list.next_read() {
             let page = FollowedThreads {
-                threads,
+                threads: threads.into_iter().map(|(_, state)| state).collect(),
                 more,
                 next: more.then(|| "next".to_owned()),
             };
             list.answered(read.number, Some(page));
         }
-        if expanded {
-            list.expand();
-        }
-        self.known.followed.list = list;
+        self.known.followed.workspace = list;
         let ids: Vec<MessageId> = roots.iter().map(|root| root.id).collect();
         let mut given: HashMap<MessageId, Message> =
             roots.into_iter().map(|root| (root.id, root)).collect();
         let held = &mut self.known.followed.roots;
         // A few roots are read at one time: each pass answers the reads of the pass.
         loop {
-            let reads = held.next_reads(channel.0, &ids);
+            let reads = held.next_reads(server_id, &ids);
             if reads.is_empty() {
                 break;
             }
@@ -1598,6 +1695,7 @@ impl AppState {
                 held.answered(&read, answer);
             }
         }
+        self.selection.threads = Some(workspace);
         self.changed(cx);
     }
 }
@@ -2021,7 +2119,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_eight_followed_threads_are_listed_and_a_row_offers_the_others() {
+    fn a_channel_lists_its_followed_threads_that_its_rows_do_not_show() {
         let shown = channel();
         let threads = states(11);
         let roots: Vec<MessageId> = threads.iter().map(|state| state.root_id).collect();
@@ -2032,31 +2130,11 @@ mod tests {
         let ids = |listed: &[&ThreadState]| -> Vec<MessageId> {
             listed.iter().map(|state| state.root_id).collect()
         };
-
-        let (listed, more) = list.listed(shown, &[], None);
-        assert_eq!(ids(&listed), roots[..8]);
-        assert_eq!(more, Some(MoreFollowed { count: Some(3) }));
+        assert_eq!(ids(&list.listed(shown, &[])), roots);
         // A thread that a row before shows as unread is not listed a second time.
-        let (listed, more) = list.listed(shown, &roots[..2], None);
-        assert_eq!(ids(&listed), roots[2..10]);
-        assert_eq!(more, Some(MoreFollowed { count: Some(1) }));
-        // The open thread has a row of its own: the row of the others does not count it.
-        let (_, more) = list.listed(shown, &[], Some(roots[9]));
-        assert_eq!(more, Some(MoreFollowed { count: Some(2) }));
+        assert_eq!(ids(&list.listed(shown, &roots[..2])), roots[2..]);
         // Another channel lists nothing of this one.
-        assert_eq!(list.listed(channel(), &[], None), (Vec::new(), None));
-
-        // The person asks for the others: all are listed, and no row is left.
-        assert!(list.expand());
-        let (listed, more) = list.listed(shown, &[], None);
-        assert_eq!(ids(&listed), roots);
-        assert_eq!(more, None);
-        // The server has no further page: nothing is read.
-        assert_eq!(list.next_read(), None);
-        // The expansion ends when another channel is shown.
-        list.show(Some(channel()));
-        list.show(Some(shown));
-        assert!(!list.expanded);
+        assert!(list.listed(channel(), &[]).is_empty());
     }
 
     #[test]
@@ -2067,10 +2145,7 @@ mod tests {
         list.show(Some(shown));
         let read = list.next_read().unwrap();
         list.answered(read.number, Some(page(first.clone(), Some("after-50"))));
-        // The server lists more: the row does not state a count.
-        let (listed, more) = list.listed(shown, &[], None);
-        assert_eq!(listed.len(), 8);
-        assert_eq!(more, Some(MoreFollowed { count: None }));
+        // The server lists more: nothing is read before the person asks.
         assert_eq!(list.next_read(), None);
 
         assert!(list.expand());
@@ -2084,8 +2159,7 @@ mod tests {
         second.insert(0, first[49].clone());
         assert!(list.answered(further.number, Some(page(second, None))));
         assert_eq!(list.threads.len(), 70);
-        let (listed, more) = list.listed(shown, &[], None);
-        assert_eq!((listed.len(), more), (70, None));
+        assert_eq!(list.listed(shown, &[]).len(), 70);
         assert_eq!(list.next_read(), None);
 
         // A trigger reads the list again as far as it was read: two pages in one read.
@@ -2494,8 +2568,7 @@ mod tests {
         let older = list.next_read().unwrap();
         assert!(list.told(shown.0, gone, false));
         let listed = |list: &FollowedList| -> Vec<MessageId> {
-            list.listed(shown, &[], None)
-                .0
+            list.listed(shown, &[])
                 .iter()
                 .map(|state| state.root_id)
                 .collect()
@@ -2527,8 +2600,7 @@ mod tests {
         let first = list.next_read().unwrap();
         assert!(list.answered(first.number, Some(page(twice.clone(), Some("next")))));
         let listed = |list: &FollowedList| -> Vec<MessageId> {
-            list.listed(shown, &[], None)
-                .0
+            list.listed(shown, &[])
                 .iter()
                 .map(|state| state.root_id)
                 .collect()

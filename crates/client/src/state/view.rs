@@ -486,14 +486,6 @@ pub struct ThreadEntry {
     pub has_replies: bool,
 }
 
-/// The row under the shown channel that offers its further followed threads (ADR 0413).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MoreFollowed {
-    /// How many further followed threads the client holds. Absent while the server lists
-    /// further ones: their number is not known.
-    pub count: Option<usize>,
-}
-
 /// The control of the thread panel that states whether the account follows the thread,
 /// and changes it (ADR 0412).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -896,8 +888,6 @@ pub struct ChannelRow {
     pub threads: Vec<ThreadEntry>,
     /// The mute of the channel as the person set it.
     pub mute: Mute,
-    /// Present when the shown channel has further followed threads than its rows list.
-    pub more_followed: Option<MoreFollowed>,
     /// What the person holds in the channel, as the server stated it (ADR 0310).
     pub allowed: Allowed,
     /// The history of the channel holds at least one message.
@@ -1475,6 +1465,8 @@ pub struct FollowedPanel {
     pub more: bool,
     /// A read of the list is on its way.
     pub reading: bool,
+    /// Why the list holds no answer: an older server, or a failed read.
+    pub failure: Option<super::followed::ListFailure>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2477,7 +2469,6 @@ fn channel_row(
         permanent: channel.channel.permanent_messages,
         threads: Vec::new(),
         mute: Mute::of_channel(channel.channel.id, model, known),
-        more_followed: None,
         allowed: allowed(workspace.permissions_in(channel.channel.id)),
         holds_messages: unreads.holds_messages(PlaceId::Channel(channel.channel.id)),
     }
@@ -2536,6 +2527,7 @@ fn followed_panel(
         rows,
         more: list.has_more(),
         reading: list.is_reading(),
+        failure: list.failure(),
     }
 }
 
@@ -2543,17 +2535,17 @@ fn followed_panel(
 const THREAD_TITLE_CHARACTERS: usize = 48;
 
 /// The unread threads of a channel, in the order of the server; with `followed`, for the
-/// shown channel, the threads that the account follows and that are not among them, the
-/// one with the newest reply first (ADR 0413); and after them the thread that the side
-/// panel shows when no row lists it. With them, the row that offers the further followed
-/// threads.
+/// shown channel, the unread threads that the account follows beyond the pages of unread
+/// threads that the state of the server holds (ADR 0413); and after them the thread that
+/// the side panel shows when no row lists it. A read followed thread has no row under its
+/// channel: the side panel "Threads" lists it (ADR 0796).
 fn thread_entries(
     channel_id: ChannelId,
     model: &ServerModel,
     names: &Names,
     open: Option<MessageId>,
     followed: Option<(ServerId, &Followed)>,
-) -> (Vec<ThreadEntry>, Option<MoreFollowed>) {
+) -> Vec<ThreadEntry> {
     use junto_client_core::model::Named;
     let title = |root: &junto_client_core::protocol::message::Message| {
         root.document
@@ -2584,11 +2576,9 @@ fn thread_entries(
             _ => None,
         })
         .collect();
-    let mut more = None;
     if let Some((server_id, followed)) = followed {
         let listed: Vec<MessageId> = entries.iter().map(|entry| entry.root_id).collect();
-        let (further, offered) = followed.list.listed((server_id, channel_id), &listed, open);
-        more = offered;
+        let further = followed.list.listed((server_id, channel_id), &listed);
         for state in further {
             // The state of the server holds every unread thread, or the first pages of
             // them: beyond those pages the list of followed threads tells what is unread.
@@ -2597,6 +2587,9 @@ fn thread_entries(
                 None if model.threads_more => (state.unread, state.mentions),
                 None => (0, 0),
             };
+            if unread == 0 && mentions == 0 {
+                continue;
+            }
             entries.push(ThreadEntry {
                 root_id: state.root_id,
                 title: held_root(model, channel_id, state.root_id)
@@ -2635,7 +2628,7 @@ fn thread_entries(
                     .is_some_and(|timeline| timeline.messages.iter().any(|reply| !reply.deleted)),
         });
     }
-    (entries, more)
+    entries
 }
 
 pub(crate) fn category_may_create(
@@ -3215,7 +3208,7 @@ fn workspace_view(
             .map(|(_, root_id)| root_id);
         // The followed threads are listed under the shown channel only.
         let followed = (Some(row.id) == shown).then_some((server_id, &known.followed));
-        (row.threads, row.more_followed) = thread_entries(row.id, model, &names, open, followed);
+        row.threads = thread_entries(row.id, model, &names, open, followed);
         // The view of the voice channel of the call of this device is the call.
         let in_call = row
             .voice
@@ -3235,7 +3228,7 @@ fn workspace_view(
             .filter(|(of, _)| *of == channel_id)
             .map(|(_, root_id)| root_id);
         let followed = Some((server_id, &known.followed));
-        let (threads, more_followed) = thread_entries(channel_id, model, &names, open, followed);
+        let threads = thread_entries(channel_id, model, &names, open, followed);
         // A call of an archived voice channel has ended: the row has no voice state, and
         // the main area shows its messages.
         channel = Some(ChannelRow {
@@ -3250,7 +3243,6 @@ fn workspace_view(
             permanent: archived.channel.permanent_messages,
             mute: Mute::of_channel(channel_id, model, known),
             threads,
-            more_followed,
             // No snapshot states the list of an archived channel: nothing is offered
             // until its own read answered (ADR 0310).
             allowed: allowed(model.permissions_in(channel_id).unwrap_or_default()),
