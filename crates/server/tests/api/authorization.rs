@@ -737,6 +737,42 @@ async fn world() -> World {
             &[(Plain, NotFound), (Administrator, NotFound)],
         ),
         operation(
+            Method::PUT,
+            "/api/v1/account/status-text",
+            &[],
+            json!({ "status_text": null }),
+            &own,
+        ),
+        // The relay of a device link belongs to the two devices of the link (ADR 0716).
+        operation(
+            Method::GET,
+            "/api/v1/account/device-link-relay",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/account/device-link-relay/answer",
+            &[],
+            json!({ "answer": "AAAA" }),
+            &own,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/account/device-link-relays/{device_id}",
+            &[&target.device_id],
+            none.clone(),
+            &[(Plain, NotFound), (Administrator, NotFound)],
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/account/device-link-relays/{device_id}",
+            &[&target.device_id],
+            none.clone(),
+            &[(Plain, NotFound), (Administrator, NotFound)],
+        ),
+        operation(
             Method::GET,
             "/api/v1/account/recoveries",
             &[],
