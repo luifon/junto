@@ -1337,6 +1337,10 @@ fn thread_menu_actions_read_and_follow_their_target_without_opening_its_panel(
             .unread
             == 0
     });
+    window.until(
+        "the read thread leaves the channel column again",
+        |window| !window.shows_named(format!("thread-row:{root}")),
+    );
     // The menu of the thread header offers "Mark as unread" alone for a read thread; its
     // press marks the thread unread from its newest reply.
     let server_id = window.view().selected.as_ref().unwrap().id;
