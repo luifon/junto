@@ -83,7 +83,6 @@ pub(super) fn draw(studio: &mut Studio) -> Result<(), String> {
     // narrow window with its "⋮" (ADR 0735, 0739).
     for (name, layer, size) in [
         ("call-view-menu", "view", None),
-        ("call-room-settings", "room-settings", None),
         ("call-record-language", "record-language", None),
         ("call-own-controls-narrow", "more", Some((800.0, 640.0))),
         ("call-detached-more", "more", Some((680.0, 470.0))),
