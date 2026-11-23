@@ -214,7 +214,17 @@ fn the_notices_open_in_the_panel_of_the_call(cx: &mut TestAppContext) {
     });
     assert!(window.shows("notices-count"));
 
-    // The row opens the notices in the panel of the call, beside the stage.
+    // The toolbar row of the column holds Pins and Search of the channel and then the bell
+    // (ADR 0742), on one line.
+    let toolbar = ["call-pins", "call-search", "activity-button"]
+        .map(|name| window.cx.debug_bounds(name).expect(name));
+    assert!(toolbar[0].right() <= toolbar[1].left() && toolbar[1].right() <= toolbar[2].left());
+    assert!(
+        toolbar
+            .iter()
+            .all(|bounds| bounds.center().y == toolbar[0].center().y)
+    );
+    // The bell opens the notices in the panel of the call, beside the stage.
     window.click("activity-button");
     window.until(
         "the notices are listed in the panel of the call",
