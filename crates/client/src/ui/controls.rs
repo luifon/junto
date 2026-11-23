@@ -612,7 +612,10 @@ impl RenderOnce for Tab {
             })
             .relative()
             .flex()
-            .flex_none()
+            // A row narrower than its tabs shortens their labels first; the icon and the
+            // count of each tab stay whole (ADR 0731).
+            .flex_shrink(1.0)
+            .min_w_0()
             .items_center()
             .gap(u(7.0))
             .h_full()
@@ -652,7 +655,7 @@ impl RenderOnce for Tab {
             .when_some(self.on_click, |tab, handler| {
                 tab.on_click(move |event, window, cx| handler(event, window, cx))
             })
-            .child(icon(
+            .child(div().flex_none().child(icon(
                 self.icon,
                 15.0,
                 if self.on {
@@ -660,10 +663,15 @@ impl RenderOnce for Tab {
                 } else {
                     colors.ink_2
                 },
-            ))
-            .child(crate::selectable::SelectableText::unobserved(self.label))
+            )))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .child(crate::selectable::SelectableText::unobserved(self.label)),
+            )
             .when_some(self.count, |tab, count| {
-                tab.child(super::CornerCount::new(count))
+                tab.child(div().flex_none().child(super::CornerCount::new(count)))
             })
     }
 }
