@@ -400,7 +400,8 @@ pub(crate) struct MessageMenuOpen {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ComposerMenuOpen {
-    pub pane: Pane,
+    /// The composer or the editor of a row whose text the menu changes.
+    pub pen: super::Pen,
     pub server_id: ServerId,
     pub place: PlaceId,
     pub owner: junto_client_core::Owner,
@@ -4828,10 +4829,11 @@ fn system_line(
 impl Shell {
     pub(crate) fn open_composer_menu(
         &mut self,
-        pane: Pane,
+        pen: super::Pen,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let pane = pen.pane();
         let Some(feed) = self.pane_feed(pane) else {
             return;
         };
@@ -4844,10 +4846,10 @@ impl Shell {
         else {
             return;
         };
-        self.focus_composer(pane, window, cx);
+        self.focus_composer(pen, window, cx);
         self.open_layer(
             Layer::ComposerMenu(ComposerMenuOpen {
-                pane,
+                pen,
                 server_id,
                 place,
                 owner,
@@ -4863,7 +4865,11 @@ impl Shell {
         view: &ShellView,
         cx: &gpui::App,
     ) -> bool {
-        let feed = match open.pane {
+        // The menu of the editor of a row ends with the edit.
+        if open.pen.edits() && self.pen(open.pen).editing.is_none() {
+            return false;
+        }
+        let feed = match open.pen.pane() {
             Pane::Main => view.lists().and_then(|lists| lists.feed.as_ref()),
             Pane::Thread => view
                 .workspace()
@@ -4881,16 +4887,16 @@ impl Shell {
 
     pub(crate) fn render_composer_menu(
         &self,
-        pane: Pane,
+        pen: super::Pen,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let Layer::ComposerMenu(open) = self.layer else {
             return None;
         };
-        if open.pane != pane {
+        if open.pen != pen {
             return None;
         }
-        let input = self.pen(pane).input.read(cx);
+        let input = self.pen(pen).input.read(cx);
         let capabilities = input.context_menu_capabilities();
         let copy = !capabilities.is_disabled() && capabilities.is_copyable();
         let edit = capabilities.is_editable();
@@ -4941,8 +4947,8 @@ impl Shell {
                             if !current {
                                 return;
                             }
-                            this.focus_composer(pane, window, cx);
-                            let focus = this.pen(pane).input.read(cx).focus_handle(cx);
+                            this.focus_composer(pen, window, cx);
+                            let focus = this.pen(pen).input.read(cx).focus_handle(cx);
                             let shell = cx.entity().downgrade();
                             let action = action.boxed_clone();
                             window.defer(cx, move |window, cx| {

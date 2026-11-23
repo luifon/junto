@@ -19,9 +19,9 @@ impl OpenAccountMenu {
                         .iter()
                         .all(|person| view.person.account_id == Some(person.account_id))
             }
-            Some(AccountSource::MentionCandidate { pane, place, .. }) => {
+            Some(AccountSource::MentionCandidate { pen, place, .. }) => {
                 view.selected.as_ref().is_some_and(|row| row.id == server)
-                    && match pane {
+                    && match pen.pane() {
                         super::Pane::Main => view
                             .lists()
                             .and_then(|lists| lists.feed.as_ref())
@@ -77,9 +77,9 @@ impl Shell {
             Some(AccountSource::Profile) => {
                 matches!(self.layer, super::Layer::None) && !self.detached
             }
-            Some(AccountSource::MentionCandidate { pane, query, .. }) => {
+            Some(AccountSource::MentionCandidate { pen, query, .. }) => {
                 matches!(self.layer, super::Layer::None)
-                    && self.mention_identity_current(*pane, query, &open.people, view)
+                    && self.mention_identity_current(*pen, query, &open.people, view)
             }
             Some(AccountSource::Transcript { .. }) => matches!(self.layer, super::Layer::None),
             Some(AccountSource::Invitation(id)) => {

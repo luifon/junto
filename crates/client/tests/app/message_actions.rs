@@ -110,3 +110,65 @@ fn a_message_is_edited_in_its_row_while_the_composer_keeps_its_text(cx: &mut Tes
         "a new note"
     );
 }
+
+/// The editor of a row has its own completion, edit menu and files rule: what the person
+/// types, cuts or pastes there changes the edit and leaves the composer as it was
+/// (ADR 0740).
+#[gpui::test]
+fn the_editor_of_a_row_completes_cuts_and_refuses_files_on_its_own(cx: &mut TestAppContext) {
+    use junto_client::shell::{Pane, Pen};
+
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let (_directory, mut window, _owner) = owner_window(cx, &server);
+    window.write("A first plan");
+    let message = window.until_message("A first plan").message.id;
+    window.in_shell(|shell, window, cx| shell.type_message(Pane::Main, "a new note", window, cx));
+    let edit = Pen::Edit(Pane::Main);
+    let edited = |window: &mut crate::harness::Window| {
+        window.in_shell(|shell, _, cx| shell.composer_text(edit, cx))
+    };
+    let composed = |window: &mut crate::harness::Window| {
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx))
+    };
+
+    window.hover_message(message);
+    window.click_named(format!("edit:{message}"));
+    // A closed shortcode becomes its emoji in the editor of the row.
+    window.simulate(|cx| cx.simulate_input(" :smile:"));
+    window.settle();
+    let smile = emojis::get_by_shortcode("smile").unwrap().as_str();
+    assert_eq!(edited(&mut window), format!("A first plan {smile}"));
+    // A mention typed there offers the candidates of the editor, and Tab takes the one
+    // that the arrow chose.
+    window.simulate(|cx| cx.simulate_input(" @"));
+    let offered = window.in_shell(|shell, _, _| shell.mention_names(edit));
+    assert!(!offered.is_empty(), "{offered:?}");
+    window.press("tab");
+    assert!(
+        edited(&mut window).contains(&offered[0]),
+        "{}",
+        edited(&mut window)
+    );
+    assert_eq!(composed(&mut window), "a new note");
+
+    // The edit menu of the editor cuts the text of the edit, not that of the composer.
+    window.press("secondary-a");
+    window.right_click_named("edit-composer-input".to_owned());
+    assert!(window.shows("composer-menu"));
+    window.click("composer-cut");
+    assert_eq!(edited(&mut window), "");
+    assert_eq!(composed(&mut window), "a new note");
+
+    // A picture pasted into the editor is refused with its reason and attaches nothing.
+    window
+        .cx
+        .write_to_clipboard(gpui::ClipboardItem::new_image(&gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            crate::pictures::png(4, 4),
+        )));
+    window.press("secondary-v");
+    assert!(window.shows("edit-compose-problem"));
+    assert!(window.view().lists().unwrap().draft.is_empty());
+    assert_eq!(composed(&mut window), "a new note");
+}

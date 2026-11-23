@@ -37,7 +37,7 @@ impl Drafts {
             .map(|server| (server.id(), server.entry().generation))
             .collect();
         let (snapshot, mut error) = match store.load::<Snapshot>() {
-            Ok(mut snapshots) => (snapshots.pop().unwrap_or_default(), None),
+            Ok(mut snapshots) => (snapshots.pop().unwrap_or_default().upgraded(), None),
             Err(error) => (
                 Snapshot::default(),
                 Some(super::text::flow_error(&super::FlowError::Storage(

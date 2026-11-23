@@ -871,9 +871,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let pen: Pen = pen.into();
-        let pane = pen.pane();
         let emoji = self
-            .pen(pane)
+            .pen(pen)
             .emoji_completion
             .as_ref()
             .filter(|open| open.closed_ready)
@@ -959,17 +958,17 @@ impl Shell {
 
     pub(super) fn mention_identity_current(
         &self,
-        pane: Pane,
+        pen: Pen,
         query: &str,
         people: &[super::account_menus::AccountTarget],
         view: &crate::state::view::ShellView,
     ) -> bool {
-        self.pen(pane)
+        self.pen(pen)
             .mention
             .as_ref()
             .is_some_and(|open| open.query == query)
             && people.iter().all(|person| {
-                self.mention_candidates_in(pane, view)
+                self.mention_candidates_in(pen, view)
                     .iter()
                     .any(|candidate| candidate.target == MentionTarget::Account(person.account_id))
             })
@@ -1118,6 +1117,12 @@ impl Shell {
             .collect();
         if pictures.is_empty() {
             return false;
+        }
+        // An edit changes the text of a message and adds no file (ADR 0740).
+        if pen.edits() {
+            self.pen_mut(pen).problem = Some(text::EDIT_TAKES_NO_FILES.to_owned());
+            cx.notify();
+            return true;
         }
         self.attach(pane, pictures, cx);
         true
@@ -2408,32 +2413,39 @@ impl Shell {
                 .filter(|problem| *problem != compose::Problem::Empty)
                 .map(text::compose_problem)
         });
+        // The refusal of the last message request stands under the editor of a row while it
+        // edits, and under the composer otherwise.
+        let refusal_here = pen.edits() || self.pen(Pen::Edit(pane)).editing.is_none();
         let problem = self
-            .pen(pane)
+            .pen(pen)
             .problem
             .clone()
             .or(preview_problem.clone())
-            .or_else(|| self.state.read(cx).message_refusal().map(str::to_owned))
+            .or_else(|| {
+                refusal_here
+                    .then(|| self.state.read(cx).message_refusal().map(str::to_owned))
+                    .flatten()
+            })
             .map(|sentence| {
                 let sentence = SharedString::from(sentence);
                 // The line keeps one line of height, so a problem that arrives moves no
                 // control (ADR 0740). The line takes the keyboard focus and shows its whole
                 // sentence while it holds it, as the tooltip does for the pointer.
                 let focus = window
-                    .use_keyed_state("compose-problem-focus", cx, |_, cx| {
+                    .use_keyed_state(pen.id("compose-problem-focus"), cx, |_, cx| {
                         cx.focus_handle().tab_stop(true)
                     })
                     .read(cx)
                     .clone();
                 let focused = focus.is_focused(window);
                 div()
-                    .id("compose-problem-line")
+                    .id(pen.id("compose-problem-line"))
                     .relative()
                     .min_w_0()
                     .child(
                         div()
-                            .id("compose-problem")
-                            .debug_selector(|| "compose-problem".to_owned())
+                            .id(pen.id("compose-problem"))
+                            .debug_selector(move || pen.id("compose-problem").to_owned())
                             .role(Role::Alert)
                             .aria_label(sentence.clone())
                             .track_focus(&focus)
@@ -2472,8 +2484,8 @@ impl Shell {
             .min_w_0()
             .child(problem.unwrap_or_else(|| {
                 div()
-                    .id("composer-hint")
-                    .debug_selector(|| "composer-hint".to_owned())
+                    .id(pen.id("composer-hint"))
+                    .debug_selector(move || pen.id("composer-hint").to_owned())
                     .min_w_0()
                     .truncate()
                     .text_size(u(12.5))
@@ -2491,7 +2503,7 @@ impl Shell {
         // The mention picker, above the box.
         let found = self.mention_candidates(pen);
         let chosen = self
-            .pen(pane)
+            .pen(pen)
             .mention
             .as_ref()
             .map_or(0, |open| open.chosen.min(found.len().saturating_sub(1)));
@@ -2586,7 +2598,7 @@ impl Shell {
                             && let Some(account_id) = person
                         {
                             let query = self
-                                .pen(pane)
+                                .pen(pen)
                                 .mention
                                 .as_ref()
                                 .map(|open| open.query.clone())
@@ -2599,7 +2611,7 @@ impl Shell {
                                     departed: false,
                                 },
                                 super::account_menus::AccountSource::MentionCandidate {
-                                    pane,
+                                    pen,
                                     query,
                                     place,
                                 },
@@ -2813,10 +2825,10 @@ impl Shell {
                             .ink(colors.ink)
                             .relative()
                             .on_context_menu(Self::handler(cx, move |this, window, cx| {
-                                this.open_composer_menu(pane, window, cx);
+                                this.open_composer_menu(pen, window, cx);
                             }))
                             .child(crate::selectable::SelectableText::unobserved(input))
-                            .children(self.render_composer_menu(pane, cx))
+                            .children(self.render_composer_menu(pen, cx))
                             .into_any_element(),
                     })
                     .child(
@@ -2906,7 +2918,13 @@ impl Shell {
                 }
             })
             .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
-                this.attach_paths(pane, paths.paths().to_vec(), cx);
+                cx.stop_propagation();
+                if pen.edits() {
+                    this.pen_mut(pen).problem = Some(text::EDIT_TAKES_NO_FILES.to_owned());
+                    cx.notify();
+                } else {
+                    this.attach_paths(pane, paths.paths().to_vec(), cx);
+                }
             }))
             .drag_over::<ExternalPaths>(move |style, _, _, _| {
                 style.bg(Hsla::from(colors.terracotta_wash))

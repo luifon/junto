@@ -2044,6 +2044,7 @@ pub const DISCARD: &str = "Discard";
 pub const SEND: &str = "Send";
 pub const SEND_HINT: &str = "Enter sends · Shift + Enter adds a line";
 pub const SAVE_EDIT: &str = "Save";
+pub const EDIT_TAKES_NO_FILES: &str = "An edit changes the text only. Send files in a new message.";
 pub const EDIT_HINT: &str = "Enter saves · Escape cancels · Shift + Enter adds a line";
 pub const BOLD: &str = "Bold";
 pub const ITALIC: &str = "Italic";
