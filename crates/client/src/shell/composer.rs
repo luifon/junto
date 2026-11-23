@@ -3210,6 +3210,17 @@ impl Shell {
             .collect()
     }
 
+    /// The name of the entry of the mention picker that the arrows chose, which Tab and
+    /// Enter take.
+    pub fn chosen_mention(&self, pen: impl Into<Pen>) -> Option<String> {
+        let pen: Pen = pen.into();
+        let chosen = self.pen(pen).mention.as_ref()?.chosen;
+        let found = self.mention_candidates(pen);
+        found
+            .get(chosen.min(found.len().saturating_sub(1)))
+            .map(|candidate| candidate.name.clone())
+    }
+
     /// Takes the entry of the mention picker with this name.
     pub fn pick_mention(
         &mut self,

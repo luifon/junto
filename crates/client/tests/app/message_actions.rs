@@ -120,7 +120,7 @@ fn the_editor_of_a_row_completes_cuts_and_refuses_files_on_its_own(cx: &mut Test
 
     let world = World::new();
     let server = world.server("Example Studio");
-    let (_directory, mut window, _owner) = owner_window(cx, &server);
+    let (_directory, mut window, owner) = owner_window(cx, &server);
     window.write("A first plan");
     let message = window.until_message("A first plan").message.id;
     window.in_shell(|shell, window, cx| shell.type_message(Pane::Main, "a new note", window, cx));
@@ -139,17 +139,35 @@ fn the_editor_of_a_row_completes_cuts_and_refuses_files_on_its_own(cx: &mut Test
     window.settle();
     let smile = emojis::get_by_shortcode("smile").unwrap().as_str();
     assert_eq!(edited(&mut window), format!("A first plan {smile}"));
-    // A mention typed there offers the candidates of the editor, and Tab takes the one
-    // that the arrow chose.
+    // A mention typed there offers the candidates of the editor; the arrow chooses the
+    // second one, and Tab takes it.
+    for name in ["Art", "Build"] {
+        let role = junto_client_core::protocol::roles::CreateWorkspaceRole {
+            color: None,
+            hoist: false,
+            name: name.to_owned(),
+            permissions: Vec::new(),
+        };
+        let workspace_id = window.view().workspace().unwrap().id;
+        world
+            .run(owner.api().create_workspace_role(workspace_id, &role))
+            .unwrap();
+    }
     window.simulate(|cx| cx.simulate_input(" @"));
-    let offered = window.in_shell(|shell, _, _| shell.mention_names(edit));
-    assert!(!offered.is_empty(), "{offered:?}");
+    let offered = window.until_value("the editor offers two candidates", |window| {
+        let offered = window.in_shell(|shell, _, _| shell.mention_names(edit));
+        (offered.len() >= 2).then_some(offered)
+    });
+    let chosen = |window: &mut crate::harness::Window| {
+        window.in_shell(|shell, _, _| shell.chosen_mention(edit))
+    };
+    assert_eq!(chosen(&mut window).as_ref(), Some(&offered[0]));
+    window.press("down");
+    assert_eq!(chosen(&mut window).as_ref(), Some(&offered[1]));
     window.press("tab");
-    assert!(
-        edited(&mut window).contains(&offered[0]),
-        "{}",
-        edited(&mut window)
-    );
+    let text = edited(&mut window);
+    assert!(text.contains(&format!("@{}", offered[1])), "{text}");
+    assert!(!text.contains(&format!("@{}", offered[0])), "{text}");
     assert_eq!(composed(&mut window), "a new note");
 
     // The edit menu of the editor cuts the text of the edit, not that of the composer.
