@@ -1039,10 +1039,19 @@ fn the_keyboard_reaches_every_place_that_a_drag_reaches(cx: &mut TestAppContext)
             .takes(x, Some(projects), 1)
     );
 
-    // Without "manage channel" a channel has no "Move to" (ADR 0790).
-    assert!(window.shows_named(format!("channel-move-{x}")));
-    assert!(!window.shows_named(format!("channel-move-{b}")));
-    assert!(!window.shows_named(format!("channel-move-{c}")));
+    // Without "manage channel" the menu of a channel has no "Move to" (ADR 0790).
+    for (channel, offered) in [(x, true), (b, false), (c, false)] {
+        let row = crate::admin_pages::sel("admin-row-channel", channel);
+        crate::admin_pages::reveal_in_page(&mut window, row);
+        window.right_click_row(row);
+        assert!(window.shows(crate::admin_pages::sel("channel-settings", channel)));
+        assert_eq!(
+            window.shows(crate::admin_pages::sel("channel-move", channel)),
+            offered,
+            "{channel}"
+        );
+        window.press("escape");
+    }
 
     // "Move to" offers the same place: the category, and then the place after "b".
     crate::admin_pages::click_in_page(&mut window, selector(format!("channel-move-{x}")));
@@ -1890,13 +1899,17 @@ fn an_open_workspace_form_goes_when_the_permission_goes(cx: &mut TestAppContext)
         .find(|workspace| workspace.is_default)
         .unwrap()
         .id;
+    // The name is changed on the overview of the workspace that "Open" shows (ADR 0761).
     window.open_administration();
     window.click("admin-nav-workspaces");
+    let open = selector(format!("workspace-open-{default}"));
+    window.until("the workspace is listed", |window| window.shows(open));
+    window.click(open);
     let rename = selector(format!("workspace-rename-{default}"));
     window.until("the workspace may be renamed", |window| {
         window.shows(rename)
     });
-    window.click(rename);
+    crate::admin_pages::click_in_page(&mut window, rename);
     assert!(window.shows("workspace-name"));
 
     world.run(api.unassign_server_role(own, role.id)).unwrap();
