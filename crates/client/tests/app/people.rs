@@ -521,3 +521,105 @@ fn the_member_list_of_a_channel_lists_the_people_who_can_see_it(cx: &mut gpui::T
     );
     assert!(!window.shows_member("Mia"));
 }
+
+/// A change of roles that arrives while the list of a channel's viewers is read makes
+/// the answer old: the list is read again and then names the person whom the change let in
+/// (ADR 0790).
+#[gpui::test]
+fn a_role_change_during_a_read_of_the_viewers_reads_them_again(cx: &mut gpui::TestAppContext) {
+    use junto_client::state::view::Viewers;
+    use junto_client_core::protocol::WorkspacePermission;
+    use junto_client_core::protocol::structure::{RuleSubject, SetChannelOverride};
+
+    let world = crate::harness::World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_first, mut window) = crate::harness::member(cx, &world, &proxy.address(), &admin, "Rin");
+    let (_second, mut other) = crate::harness::member(cx, &world, &server.address(), &admin, "Mia");
+    let mia = other.own_account();
+    let secret = admin.text_channel(&world, &mut window, "secret");
+    let api = admin.handle.api();
+    let workspace = window.view().workspace().unwrap().id;
+    let everyone = world
+        .run(api.workspace_roles(workspace))
+        .unwrap()
+        .into_iter()
+        .find(|role| role.is_everyone)
+        .unwrap()
+        .id;
+    world
+        .run(api.set_channel_rule(
+            secret,
+            RuleSubject::Role { role_id: everyone },
+            &SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![WorkspacePermission::ViewChannel],
+            },
+        ))
+        .unwrap();
+    world
+        .run(api.set_channel_rule(
+            secret,
+            RuleSubject::Person {
+                account_id: window.own_account(),
+            },
+            &SetChannelOverride {
+                allow: vec![WorkspacePermission::ViewChannel],
+                deny: Vec::new(),
+            },
+        ))
+        .unwrap();
+    // A role that may see the channel; Mia receives it while the list is read.
+    let listeners = world
+        .run(api.create_workspace_role(
+            workspace,
+            &junto_client_core::protocol::roles::CreateWorkspaceRole {
+                color: None,
+                hoist: false,
+                name: "Listeners".to_owned(),
+                permissions: Vec::new(),
+            },
+        ))
+        .unwrap()
+        .id;
+    world
+        .run(api.set_channel_rule(
+            secret,
+            RuleSubject::Role { role_id: listeners },
+            &SetChannelOverride {
+                allow: vec![WorkspacePermission::ViewChannel],
+                deny: Vec::new(),
+            },
+        ))
+        .unwrap();
+    window.until("the private channel is listed", |window| {
+        window.shows_channel("secret")
+    });
+    window.click_channel("secret");
+    let viewers_path = format!("/api/v1/channels/{secret}/viewers");
+    proxy.hold_answer_ending("GET", "/viewers");
+    window.click("members-button");
+    window.until("the first read waits at the proxy", |_| {
+        proxy.answers_waiting() == 1
+    });
+    // Mia receives the role while the first answer waits: every member of the workspace
+    // is told of the change of roles.
+    world
+        .run(api.assign_workspace_role(workspace, mia, listeners))
+        .unwrap();
+    window.until("the change marks the list old", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.viewers_stale)
+    });
+    proxy.release_answers();
+    window.until("the list is read again and names Mia", |window| {
+        window.view().workspace().is_some_and(|workspace| {
+            matches!(&workspace.viewers, Some(Viewers::Read(seeing)) if seeing.contains(&mia))
+                && !workspace.viewers_stale
+        })
+    });
+    assert!(proxy.seen(&viewers_path).len() >= 2);
+}

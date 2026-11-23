@@ -735,6 +735,10 @@ impl Shell {
                                         state.hide_search(cx);
                                         state.close_transcript(cx);
                                         state.close_followed_threads(cx);
+                                        // A member is not told of every rule that lets
+                                        // another person see the channel: the list is read
+                                        // again each time it opens (ADR 0790).
+                                        state.channel_viewers_shown(cx);
                                     });
                                 }
                                 cx.notify();

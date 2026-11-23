@@ -2225,6 +2225,8 @@ impl AppState {
         self.read_quotes_again(server_id);
         self.search_after_reload(server_id, cx);
         self.reaction_people_changed(server_id, None, cx);
+        // A change of who sees a channel may have been missed (ADR 0790).
+        self.forget_channel_viewers(server_id, cx);
         self.changed(cx);
     }
 

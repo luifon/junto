@@ -195,6 +195,9 @@ pub struct Known {
     /// The lists of `viewers` that a change may have made old: each stays shown and is
     /// read again when the member list of its channel is shown.
     pub viewers_stale: HashSet<(ServerId, ChannelId)>,
+    /// The count of the changes per server after which `viewers` may be old. A read that a
+    /// change overtook leaves its list marked old.
+    pub viewers_generation: HashMap<ServerId, u64>,
     /// The name of the profile preset.
     pub preset_name: String,
     /// The picture of the profile preset, as an image of the window.
