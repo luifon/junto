@@ -116,14 +116,18 @@ fn mono_value(
         .role(Role::Label)
         .aria_label(label)
         .debug_selector(move || selector.to_owned())
-        .flex_none()
         .typeface(theme.types.mono_code, theme)
-        // A key has eleven groups: at the smaller size it fits one line of a dialog.
+        // A key has eleven groups: at the smaller size it fits one line of a dialog, and in a
+        // narrower place it continues on the next line between two groups.
         .map(|value| {
             if large {
-                value.text_size(u(26.0)).line_height(u(34.0))
+                value.flex_none().text_size(u(26.0)).line_height(u(34.0))
             } else {
-                value.text_size(u(13.0)).line_height(u(19.0))
+                value
+                    .flex_shrink(1.0)
+                    .min_w_0()
+                    .text_size(u(13.0))
+                    .line_height(u(19.0))
             }
         })
         .ink(theme.colors.ink)
@@ -134,7 +138,8 @@ fn mono_value(
 fn with_copy(value: impl IntoElement, copy: AnyElement) -> gpui::Div {
     div()
         .flex()
-        .flex_none()
+        .max_w_full()
+        .min_w_0()
         .items_center()
         .gap(u(6.0))
         .child(value)
@@ -209,6 +214,7 @@ pub(crate) fn link_wait_block(
         .flex()
         .flex_col()
         .flex_none()
+        .w_full()
         .when(centered, |block| block.items_center())
         .debug_selector(|| "link-wait".to_owned())
         .child(value_label(text::account::LINK_CODE, theme))

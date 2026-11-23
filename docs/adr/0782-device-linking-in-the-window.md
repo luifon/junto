@@ -13,6 +13,7 @@ A second device gets access to an account through a link that a logged-in device
 The key that a person compares:
 
 - Both devices show the public key of the new device on the first server as the "Device code". Its text is the text that the command-line tool prints for a key, unpadded base64url with 43 characters, written in groups of four characters. One function of the text catalog makes it, and both sides use it.
+- A place narrower than the eleven groups and the copy button, such as the main area at the least size of the window, continues the "Device code" on the next line between two groups; a group is never split. The block of the waiting device takes the width of its place, and a state panel the width of its area, at most 520 design pixels (ADR 0730).
 - Reason: a device with the command-line tool and a device with the window can be compared, and the text is the whole key and not a shortened form of it.
 
 One layer, two roles:

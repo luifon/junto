@@ -491,11 +491,14 @@ impl RenderOnce for StatePanel {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
+        // The statement has the width of its area, at most 520: a wider detail, such as the
+        // key of a device, wraps in a narrow window and does not lie past the area.
         let stated = div()
             .flex_none()
             .flex()
             .flex_col()
             .items_center()
+            .w_full()
             .max_w(u(520.0))
             .child(
                 div()
