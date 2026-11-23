@@ -72,6 +72,14 @@ impl Shell {
                 }
                 let thread = shown.and_then(|shown| shown.thread.as_ref());
                 let pins = shown.and_then(|shown| shown.pins.as_ref());
+                // The followed threads of the workspace lie under a thread and the pinned
+                // messages, and over the notices and a search (ADR 0741).
+                if thread.is_none()
+                    && pins.is_none()
+                    && let Some(followed) = shown.and_then(|shown| shown.followed.as_ref())
+                {
+                    return Some((Panel::Notices, this.render_followed_panel(followed, cx)));
+                }
                 let search = shown
                     .and_then(|shown| shown.search.as_ref())
                     .or(lists.search.as_ref());
@@ -92,8 +100,12 @@ impl Shell {
                     (None, None, None, Some(search)) => {
                         Some((Panel::Search, this.render_search_panel(search, window, cx)))
                     }
-                    _ => members_open
-                        .then(|| (Panel::Members, this.render_members(lists, &theme, cx))),
+                    _ => members_open.then(|| {
+                        (
+                            Panel::Members,
+                            this.render_members(lists, &theme, window, cx),
+                        )
+                    }),
                 }
             };
 
@@ -178,6 +190,7 @@ impl Shell {
         let pins_open = workspace.is_some_and(|workspace| workspace.pins.is_some());
         let notices_open = lists.is_some_and(|lists| lists.notices.is_some());
         let transcript_open = workspace.is_some_and(|workspace| workspace.transcript.is_some());
+        let followed_open = workspace.is_some_and(|workspace| workspace.followed.is_some());
         let search_open = workspace.is_some_and(|workspace| workspace.search.is_some())
             || lists.is_some_and(|lists| lists.search.is_some());
         let split = div()
@@ -246,6 +259,9 @@ impl Shell {
                             } else if transcript_open {
                                 this.state
                                     .update(cx, |state, cx| state.close_transcript(cx));
+                            } else if followed_open {
+                                this.state
+                                    .update(cx, |state, cx| state.close_followed_threads(cx));
                             } else if notices_open {
                                 this.state.update(cx, |state, cx| state.close_notices(cx));
                             } else {
@@ -440,11 +456,6 @@ impl Shell {
         let pins_open = view
             .workspace()
             .is_some_and(|workspace| workspace.pins.is_some());
-        let unread = match (conversation, channel) {
-            (Some(conversation), _) => conversation.unread.unread(),
-            (None, Some(channel)) => channel.unread.unread(),
-            (None, None) => false,
-        };
         let permanent = channel.is_some_and(|channel| channel.permanent) && call.is_none();
         let voice = channel.and_then(|channel| channel.voice.as_ref());
         // What follows the title: for a voice channel that this device is not in, the
@@ -517,6 +528,8 @@ impl Shell {
             }
             // The buttons that open the panel of the call: over the stage of a narrow
             // window, and in a wide window while the person closed it.
+            // The activity is in the toolbar row of that panel only, never in the header of
+            // the call (ADR 0742).
             if narrow || !self.call_panel_shown(false, cx) {
                 after.extend(self.render_call_panel_buttons(cx));
             }
@@ -647,15 +660,6 @@ impl Shell {
                     })
                 },
             )
-            .when(call.is_none() && unread, |header| {
-                header.child(
-                    Button::new("mark-as-read")
-                        .icon(Icon::CheckDouble)
-                        .tooltip(text::MARK_AS_READ)
-                        .selector("mark-as-read")
-                        .on_click(cx.listener(|this, _, _, cx| this.mark_shown_as_read(cx))),
-                )
-            })
             .when_some(
                 server_id
                     .zip(channel.map(|channel| channel.id))
@@ -688,62 +692,59 @@ impl Shell {
                     })
                 },
             )
+            .when_some(
+                conversation.zip(server_id).filter(|_| call.is_none()),
+                |header, (conversation, server_id)| {
+                    header.children(self.render_conversation_buttons(
+                        view,
+                        server_id,
+                        conversation,
+                        members_open,
+                        cx,
+                    ))
+                },
+            )
             .when(
-                channel.is_some() && conversation.is_none() && call.is_none(),
+                view.lists().is_some() && conversation.is_none() && call.is_none(),
                 |header| {
                     header.child(
-                        Button::new("channel-settings")
-                            .icon(Icon::Gear)
-                            .tooltip(text::admin::CHANNEL_SETTINGS)
-                            .accessible_label(text::admin::CHANNEL_SETTINGS)
-                            .selector("channel-settings")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_shown_channel_settings(window, cx);
+                        Button::new("members")
+                            .icon(Icon::People)
+                            .tooltip(if members_open {
+                                text::CLOSE_MEMBERS
+                            } else {
+                                text::SHOW_MEMBERS
+                            })
+                            .accessible_label(text::MEMBERS)
+                            .selector("members-button")
+                            .when(members_open, |button| {
+                                button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.members_open = !this.members_open;
+                                if this.members_open {
+                                    // The side panel shows one thing.
+                                    this.state.update(cx, |state, cx| {
+                                        state.close_thread(cx);
+                                        state.close_pins(cx);
+                                        state.close_notices(cx);
+                                        state.hide_search(cx);
+                                        state.close_transcript(cx);
+                                        state.close_followed_threads(cx);
+                                        // A member is not told of every rule that lets
+                                        // another person see the channel: the list is read
+                                        // again each time it opens (ADR 0790).
+                                        state.channel_viewers_shown(cx);
+                                    });
+                                }
+                                cx.notify();
                             })),
                     )
                 },
             )
-            .when(conversation.is_some() && call.is_none(), |header| {
-                header.child(
-                    Button::new("export-conversation")
-                        .icon(Icon::Download)
-                        .tooltip(text::admin::EXPORT_CONVERSATION)
-                        .accessible_label(text::admin::EXPORT_CONVERSATION)
-                        .selector("export-conversation")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.export_shown_conversation(window, cx);
-                        })),
-                )
-            })
-            .when(view.lists().is_some() && call.is_none(), |header| {
-                header.child(
-                    Button::new("members")
-                        .icon(Icon::People)
-                        .tooltip(if members_open {
-                            text::CLOSE_MEMBERS
-                        } else {
-                            text::SHOW_MEMBERS
-                        })
-                        .accessible_label(text::MEMBERS)
-                        .selector("members-button")
-                        .when(members_open, |button| {
-                            button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.members_open = !this.members_open;
-                            if this.members_open {
-                                // The side panel shows one thing.
-                                this.state.update(cx, |state, cx| {
-                                    state.close_thread(cx);
-                                    state.close_pins(cx);
-                                    state.close_notices(cx);
-                                    state.hide_search(cx);
-                                    state.close_transcript(cx);
-                                });
-                            }
-                            cx.notify();
-                        })),
-                )
+            // The activity of the server, beside the search of the server (ADR 0742).
+            .when_some(view.lists().filter(|_| call.is_none()), |header, lists| {
+                header.child(self.render_activity_button(lists, false, cx))
             })
             .when(view.lists().is_some() && call.is_none(), |header| {
                 header.child(self.render_search_field(compact, cx))
@@ -1585,17 +1586,75 @@ impl Shell {
                 if members.iter().any(|member| member.account_id == account_id && self.member_search.matches(member)))
     }
 
+    /// The member list of a shown channel asks for the people who can see the channel, which
+    /// only the server knows (ADR 0790).
+    pub(crate) fn members_follow(&mut self, view: &ShellView, cx: &mut Context<Self>) {
+        if !self.members_open
+            || view
+                .lists()
+                .is_some_and(|lists| lists.conversation.is_some())
+        {
+            return;
+        }
+        let Some(server_id) = view.selected.as_ref().map(|server| server.id) else {
+            return;
+        };
+        let Some(workspace) = view.workspace() else {
+            return;
+        };
+        let Some(channel_id) = workspace.channel.as_ref().map(|channel| channel.id) else {
+            return;
+        };
+        if workspace.viewers.is_none() || workspace.viewers_stale {
+            let state = self.state.clone();
+            cx.defer(move |cx| {
+                state.update(cx, |state, cx| {
+                    state.read_channel_viewers(server_id, channel_id, cx)
+                });
+            });
+        }
+    }
+
     /// The members of the shown workspace in the side panel. Without a workspace the panel
     /// states that there is none, so that the main area keeps its width (ADR 0730).
     fn render_members(
         &mut self,
         lists: &ServerLists,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // A group conversation shows its own people (ADR 0741).
+        if let Some(group) = lists
+            .conversation
+            .as_ref()
+            .filter(|conversation| conversation.account_id.is_none())
+            && let Some(owner) = self
+                .view
+                .as_ref()
+                .and_then(|view| view.selected.as_ref())
+                .and_then(|server| self.state.read(cx).server(server.id))
+                .and_then(|server| server.owner())
+        {
+            return self.render_group_people(owner, group.id, window, cx);
+        }
         let workspace = lists.workspace.as_ref();
         let colors = theme.colors;
-        let header = SideHeader::new(text::MEMBERS)
+        // In a channel the list holds the people who can see the channel (ADR 0790).
+        let channel = workspace
+            .filter(|_| lists.conversation.is_none())
+            .and_then(|workspace| workspace.channel.as_ref());
+        // Until the server listed them, the list of a channel is being read.
+        let viewers = channel.map(|_| {
+            workspace
+                .and_then(|workspace| workspace.viewers.clone())
+                .unwrap_or(crate::state::view::Viewers::Reading)
+        });
+        let title: SharedString = match channel {
+            Some(channel) => text::members_of(&channel.name).into(),
+            None => text::MEMBERS.into(),
+        };
+        let header = SideHeader::new(title)
             .title_bar()
             .icon(Icon::People)
             .note(
@@ -1632,9 +1691,41 @@ impl Shell {
                 cx,
             );
         };
-        let body: AnyElement = match members {
-            Members::NotLoaded | Members::Loading => note(text::MEMBERS_LOADING).into_any_element(),
-            Members::Failed => div()
+        let body: AnyElement = match (members, viewers.as_ref()) {
+            (_, Some(crate::state::view::Viewers::Failed)) => div()
+                .flex()
+                .flex_col()
+                .gap(u(8.0))
+                .px(u(14.0))
+                .pt(u(12.0))
+                .child(Notice::error(text::VIEWERS_FAILED).selector("viewers-failed"))
+                .child(
+                    div().flex().child(
+                        Button::new("reload-viewers")
+                            .label(text::TRY_AGAIN)
+                            .icon(Icon::Retry)
+                            .selector("reload-viewers")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let view = this.state.read(cx).view();
+                                let target = view.selected.as_ref().map(|server| server.id).zip(
+                                    view.workspace()
+                                        .and_then(|workspace| workspace.channel.as_ref())
+                                        .map(|channel| channel.id),
+                                );
+                                if let Some((server_id, channel_id)) = target {
+                                    this.state.update(cx, |state, cx| {
+                                        state.read_channel_viewers(server_id, channel_id, cx)
+                                    });
+                                }
+                            })),
+                    ),
+                )
+                .into_any_element(),
+            (Members::NotLoaded | Members::Loading, _)
+            | (_, Some(crate::state::view::Viewers::Reading)) => {
+                note(text::MEMBERS_LOADING).into_any_element()
+            }
+            (Members::Failed, _) => div()
                 .flex()
                 .flex_col()
                 .gap(u(8.0))
@@ -1653,10 +1744,19 @@ impl Shell {
                     ),
                 )
                 .into_any_element(),
-            Members::Loaded(members) => {
+            (Members::Loaded(members), seeing) => {
+                let seeing = match seeing {
+                    Some(crate::state::view::Viewers::Read(seeing)) => Some(seeing.clone()),
+                    _ => None,
+                };
                 let shown: Rc<Vec<_>> = Rc::new(
                     members
                         .iter()
+                        .filter(|member| {
+                            seeing
+                                .as_ref()
+                                .is_none_or(|seeing| seeing.contains(&member.account_id))
+                        })
                         .filter(|member| self.member_search.matches(member))
                         .cloned()
                         .collect(),

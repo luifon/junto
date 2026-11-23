@@ -1791,6 +1791,7 @@ impl Client {
                     document: pending.document.clone(),
                     reply_to: pending.reply_to,
                     attachments,
+                    comment: pending.comment.clone(),
                 };
                 let counted = self.ticket.clone();
                 tokio::spawn(crate::live::counted(self.ticket.clone(), async move {

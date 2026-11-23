@@ -34,9 +34,50 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         self.selection.thread = Some((server_id, channel_id, root_id));
+        self.selection.threads = None;
         self.selection.pins = None;
         self.known.fork = None;
         self.changed(cx);
+    }
+
+    /// Shows the threads of a workspace that the account follows in the side panel, in place
+    /// of the other lists (ADR 0741).
+    pub fn open_followed_threads(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: junto_client_core::protocol::ids::WorkspaceId,
+        cx: &mut Context<Self>,
+    ) {
+        self.selection.threads = Some((server_id, workspace_id));
+        self.selection.thread = None;
+        self.selection.pins = None;
+        self.selection.notices = None;
+        self.selection.transcript = None;
+        self.known.transcript_line = None;
+        self.known.fork = None;
+        if let Some(search) = &mut self.known.search {
+            search.open = false;
+        }
+        self.changed(cx);
+    }
+
+    pub fn close_followed_threads(&mut self, cx: &mut Context<Self>) {
+        self.selection.threads = None;
+        self.changed(cx);
+    }
+
+    /// Reads the page of the followed threads of the workspace after the listed ones.
+    /// Reads the followed threads of the side panel "Threads" again after a failed read.
+    pub fn retry_followed_threads(&mut self, cx: &mut Context<Self>) {
+        if self.known.followed.workspace.retry() {
+            self.changed(cx);
+        }
+    }
+
+    pub fn read_more_followed_threads(&mut self, cx: &mut Context<Self>) {
+        if self.known.followed.workspace.expand() {
+            self.changed(cx);
+        }
     }
 
     pub fn close_thread(&mut self, cx: &mut Context<Self>) {
@@ -53,6 +94,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         self.selection.pins = Some((server_id, channel_id));
+        self.selection.threads = None;
         self.selection.thread = None;
         self.changed(cx);
     }

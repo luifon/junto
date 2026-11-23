@@ -57,24 +57,8 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(u(4.0))
-                    .when_some(
-                        thread.feed.as_ref().filter(|feed| feed.unread > 0),
-                        |line, feed| {
-                            let (server_id, place) = (feed.server_id, feed.place);
-                            line.child(
-                                Button::new("thread-mark-as-read")
-                                    .kind(ButtonKind::Ghost)
-                                    .icon(Icon::CheckDouble)
-                                    .tooltip(text::MARK_AS_READ)
-                                    .selector("thread-mark-as-read")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.state.update(cx, |state, _| {
-                                            state.mark_place_as_read(server_id, place)
-                                        });
-                                    })),
-                            )
-                        },
-                    )
+                    .children(self.render_follow_control(thread, window, cx))
+                    .child(self.render_thread_menu_button(thread, window, cx))
                     .child(
                         Button::new("close-thread")
                             .kind(ButtonKind::Ghost)
@@ -107,14 +91,23 @@ impl Shell {
                 writing: thread.writing,
                 live_only: thread.live_only,
             };
-            // Without "manage channel" the fork bar is absent; the channels that the
-            // thread was forked into stay listed (ADR 0790).
-            let fork_bar = (thread.may_fork || !thread.forks.is_empty())
-                .then(|| self.render_fork_bar(thread, &theme, cx));
-            fork_bar
+            // The channels that the thread was forked into stay listed under the header
+            // (ADR 0741).
+            let forks = (!thread.forks.is_empty()).then(|| self.render_forks(thread, &theme, cx));
+            let refused = thread
+                .follow
+                .as_ref()
+                .and_then(|follow| follow.refused.clone());
+            forks
                 .into_iter()
                 .chain([
-                    self.render_follow_bar(thread, &theme, cx),
+                    crate::ui::notice_slot("thread-follow-refused-slot")
+                        .children(
+                            refused.map(|reason| {
+                                Notice::error(reason).selector("thread-follow-refused")
+                            }),
+                        )
+                        .into_any_element(),
                     self.render_thread_root(thread, &theme, window, cx),
                     self.render_pane(Pane::Thread, &shown, Vec::new(), window, cx),
                 ])
@@ -142,34 +135,19 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The controls of a fork, and the channels that the thread was forked into.
-    fn render_fork_bar(
+    /// The line under the header that names the channels that the thread was forked into.
+    fn render_forks(
         &mut self,
         thread: &ThreadPanel,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
-        let root_id = thread.root_id;
         let workspace_id = self
             .view
             .as_ref()
             .and_then(|view| view.workspace())
             .map(|workspace| workspace.id);
-        let forked = !thread.forks.is_empty();
-        let fork = |id: &'static str, kind: ChannelKind, cx: &mut Context<Self>| {
-            Button::new(id)
-                .icon(match kind {
-                    ChannelKind::Text => Icon::Hash,
-                    ChannelKind::Voice => Icon::Speaker,
-                })
-                .label(kind_name(kind))
-                .tooltip(text::FORK_TITLE)
-                .selector(id)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_fork_dialog(root_id, kind, window, cx);
-                }))
-        };
         let links = thread
             .forks
             .iter()
@@ -177,12 +155,12 @@ impl Shell {
             .map(|(index, (channel_id, name, kind))| {
                 let channel_id = *channel_id;
                 Button::new(("fork-link", index))
+                    .kind(ButtonKind::Ghost)
                     .icon(match kind {
                         ChannelKind::Text => Icon::Hash,
                         ChannelKind::Voice => Icon::Speaker,
                     })
                     .label(name.clone())
-                    .tooltip(text::FORKED_INTO)
                     .selector("fork-link")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(workspace_id) = workspace_id {
@@ -194,160 +172,193 @@ impl Shell {
                     .into_any_element()
             });
         div()
-            .id("fork-bar")
-            .debug_selector(|| "fork-bar".to_owned())
+            .id("thread-forks")
+            .debug_selector(|| "thread-forks".to_owned())
             .flex()
-            .flex_col()
+            .flex_wrap()
             .flex_none()
-            .gap(u(7.0))
+            .items_center()
+            .gap(u(6.0))
             .px(u(14.0))
-            .pt(u(9.0))
-            .pb(u(10.0))
+            .py(u(6.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule))
-            .bg(Hsla::from(colors.limestone))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(u(7.0))
-                    .child(icon(Icon::Fork, 14.0, colors.terracotta_deep))
-                    .child(
-                        div()
-                            .flex_none()
-                            .typeface(theme.types.control_strong, theme)
-                            .text_size(u(13.0))
-                            .ink(colors.ink)
-                            .child(if forked {
-                                text::FORKED_INTO
-                            } else {
-                                text::FORK_THREAD
-                            }),
-                    )
-                    .child(div().flex_1())
-                    .when(!forked, |line| {
-                        line.child(
-                            div()
-                                .flex_none()
-                                .text_size(u(12.5))
-                                .ink(colors.ink_2)
-                                .child(text::FORK_COPIES),
-                        )
-                    }),
-            )
-            .child(if forked {
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(u(6.0))
-                    .children(links)
-                    .into_any_element()
-            } else {
-                div()
-                    .flex()
-                    .gap(u(6.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(fork("fork-text", ChannelKind::Text, cx)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(fork("fork-voice", ChannelKind::Voice, cx)),
-                    )
-                    .into_any_element()
-            })
+            .typeface(theme.types.small, theme)
+            .ink(colors.ink_2)
+            .child(icon(Icon::Fork, 14.0, colors.ink_2))
+            .child(text::FORKED_INTO)
+            .children(links)
             .into_any_element()
     }
 
-    /// The control that states whether the person follows the thread, with the actions
-    /// that change it (ADR 0412). Nothing is drawn until the server has told the state.
-    fn render_follow_bar(
+    /// The follow control of the thread: a bell that states whether the person follows the
+    /// thread, and whose menu changes it or removes the choice (ADR 0412). Nothing is drawn
+    /// until the server has told the state.
+    fn render_follow_control(
         &mut self,
         thread: &ThreadPanel,
-        theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme.colors;
-        let Some(follow) = &thread.follow else {
-            return div().flex_none().into_any_element();
-        };
+    ) -> Option<AnyElement> {
+        let follow = thread.follow.as_ref()?;
         let following = follow.following;
-        let state = text::followed::state(following, follow.setting);
         // An archived channel takes no change, and one change is on its way at a time.
         let held = follow.busy || follow.read_only;
-        let change = Button::new("thread-follow")
-            .icon(if following { Icon::BellOff } else { Icon::Bell })
-            .label(text::followed::action(following))
-            .disabled(held)
-            .when(follow.read_only, |button| {
-                button.tooltip(text::followed::ARCHIVED)
-            })
-            .selector("thread-follow")
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.state
-                    .update(cx, |state, cx| state.follow_thread(!following, cx));
-            }));
-        // The choice of the person can be removed: the rule of the server decides again.
-        let default = follow.setting.map(|_| {
-            Button::new("thread-follow-default")
-                .kind(ButtonKind::Ghost)
-                .label(text::followed::USE_DEFAULT)
-                .tooltip(if follow.read_only {
-                    text::followed::ARCHIVED
-                } else {
-                    text::followed::USE_DEFAULT_HELP
-                })
-                .disabled(held)
-                .when(held, |button| button.opacity(0.55))
-                .selector("thread-follow-default")
-                .on_click(cx.listener(|this, _, _, cx| {
+        let reason = if follow.read_only {
+            text::followed::ARCHIVED
+        } else {
+            text::followed::state(following, follow.setting)
+        };
+        let mut actions = vec![crate::ui::RowAction {
+            icon: Some(if following { Icon::BellOff } else { Icon::Bell }),
+            disabled: held,
+            detail: Some(reason.into()),
+            ..crate::ui::RowAction::new(
+                text::followed::action(following),
+                cx.listener(move |this, _, _, cx| {
                     this.state
-                        .update(cx, |state, cx| state.clear_thread_follow(cx));
-                }))
-        });
-        div()
-            .id("follow-bar")
+                        .update(cx, |state, cx| state.follow_thread(!following, cx));
+                }),
+            )
+        }];
+        // The choice of the person can be removed: the rule of the server decides again.
+        if follow.setting.is_some() {
+            actions.push(crate::ui::RowAction {
+                disabled: held,
+                detail: Some(text::followed::USE_DEFAULT_HELP.into()),
+                ..crate::ui::RowAction::new(
+                    text::followed::USE_DEFAULT,
+                    cx.listener(|this, _, _, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.clear_thread_follow(cx));
+                    }),
+                )
+            });
+        }
+        let frame = div()
+            .id("thread-follow-control")
             .role(Role::Group)
             .aria_label(text::followed::CONTROL)
-            .debug_selector(|| "follow-bar".to_owned())
-            .flex()
-            .flex_col()
-            .flex_none()
-            .gap(u(7.0))
-            .px(u(14.0))
-            .pt(u(9.0))
-            .pb(u(10.0))
-            .border_b_1()
-            .border_color(Hsla::from(colors.rule))
-            .child(
-                div()
-                    .id("thread-follow-state")
-                    .role(Role::Status)
-                    .aria_label(state)
-                    .debug_selector(|| "thread-follow-state".to_owned())
-                    .typeface(theme.types.small, theme)
-                    .ink(colors.ink_2)
-                    .child(state),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(u(6.0))
-                    .child(change)
-                    .children(default),
-            )
-            .child(
-                crate::ui::notice_slot("thread-follow-refused-slot").children(
-                    follow
-                        .refused
-                        .clone()
-                        .map(|reason| Notice::error(reason).selector("thread-follow-refused")),
+            .debug_selector(|| "thread-follow-control".to_owned());
+        Some(
+            crate::ui::bind_button_menu(
+                frame,
+                (
+                    "thread-follow-menu",
+                    thread.root_id.as_uuid().as_u128() as u64,
                 ),
+                crate::ui::ButtonMenu {
+                    icon: if following { Icon::Bell } else { Icon::BellOff },
+                    label: if following {
+                        text::followed::FOLLOWING
+                    } else {
+                        text::followed::FOLLOW
+                    }
+                    .into(),
+                    selector: "thread-follow-button",
+                },
+                actions,
+                window,
+                cx,
             )
-            .into_any_element()
+            .into_any_element(),
+        )
+    }
+
+    /// The menu of the thread in its header: the fork, the link and the read item.
+    fn render_thread_menu_button(
+        &mut self,
+        thread: &ThreadPanel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let root_id = thread.root_id;
+        let channel_id = thread.channel_id;
+        let server_id = self
+            .view
+            .as_ref()
+            .and_then(|view| view.selected.as_ref())
+            .map(|server| server.id);
+        let mut actions = Vec::new();
+        // "Fork into a channel…" is absent without "manage channel" (ADR 0790), and after
+        // the fork, because a thread has one fork.
+        if thread.may_fork && thread.forks.is_empty() {
+            actions.push(crate::ui::RowAction {
+                icon: Some(Icon::Fork),
+                ..crate::ui::RowAction::new(
+                    text::FORK_INTO_CHANNEL,
+                    cx.listener(move |this, _, window, cx| {
+                        this.open_fork_dialog(root_id, ChannelKind::Text, window, cx);
+                    }),
+                )
+            });
+        }
+        if let Some(server_id) = server_id {
+            actions.push(crate::ui::RowAction {
+                icon: Some(Icon::Link),
+                ..crate::ui::RowAction::new(
+                    text::COPY_TARGET_LINK,
+                    cx.listener(move |this, _, _, cx| {
+                        if let Some(link) = this.state.read(cx).thread_link(server_id, root_id) {
+                            this.copy_text(link, cx);
+                        }
+                    }),
+                )
+            });
+        }
+        // One read item that follows the state; a thread without replies has none
+        // (ADR 0741).
+        let place = junto_client_core::model::PlaceId::Thread {
+            channel_id,
+            root_id,
+        };
+        if let (Some(server_id), Some(feed)) = (server_id, thread.feed.as_ref()) {
+            let replies = feed.rows.iter().any(|row| {
+                matches!(row, crate::state::feed::FeedRow::Message(row) if !row.message.deleted)
+            });
+            if feed.unread > 0 {
+                actions.push(crate::ui::RowAction {
+                    icon: Some(Icon::CheckDouble),
+                    ..crate::ui::RowAction::new(
+                        text::MARK_AS_READ,
+                        cx.listener(move |this, _, _, cx| {
+                            this.state
+                                .update(cx, |state, _| state.mark_place_as_read(server_id, place));
+                        }),
+                    )
+                });
+            } else if replies {
+                actions.push(crate::ui::RowAction {
+                    icon: Some(Icon::Unread),
+                    ..crate::ui::RowAction::new(
+                        text::MARK_AS_UNREAD,
+                        cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.mark_place_unread(server_id, place, cx)
+                            });
+                        }),
+                    )
+                });
+            }
+        }
+        let frame = div()
+            .id("thread-menu-frame")
+            .flex()
+            .items_center()
+            .debug_selector(|| "thread-menu-frame".to_owned());
+        crate::ui::bind_button_menu(
+            frame,
+            ("thread-header-menu", root_id.as_uuid().as_u128() as u64),
+            crate::ui::ButtonMenu {
+                icon: Icon::Dots,
+                label: text::MORE_ACTIONS.into(),
+                selector: "thread-more",
+            },
+            actions,
+            window,
+            cx,
+        )
+        .into_any_element()
     }
 
     fn message_preview_menu(
@@ -783,23 +794,34 @@ impl Shell {
                     .child(text::FORK_ABOUT),
             )
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(u(7.0))
-                    .mt(u(12.0))
-                    .mb(u(8.0))
-                    .typeface(theme.types.control_strong, &theme)
-                    .ink(colors.ink)
-                    .child(icon(
-                        match kind {
-                            ChannelKind::Text => Icon::Hash,
-                            ChannelKind::Voice => Icon::Speaker,
-                        },
-                        15.0,
-                        colors.terracotta_deep,
-                    ))
-                    .child(kind_name(kind)),
+                div().flex().mt(u(12.0)).mb(u(8.0)).child(
+                    crate::ui::Segmented::new(
+                        "fork-kind",
+                        text::FORK_KIND,
+                        [ChannelKind::Text, ChannelKind::Voice]
+                            .map(|kind| SharedString::from(kind_name(kind))),
+                    )
+                    .selected(Some(match kind {
+                        ChannelKind::Text => 0,
+                        ChannelKind::Voice => 1,
+                    }))
+                    .selector("fork-kind")
+                    .on_select({
+                        let choose = cx.listener(move |this, index: &usize, _, cx| {
+                            if let Layer::Fork(dialog) = &mut this.layer
+                                && !dialog.sent
+                            {
+                                dialog.kind = if *index == 0 {
+                                    ChannelKind::Text
+                                } else {
+                                    ChannelKind::Voice
+                                };
+                                cx.notify();
+                            }
+                        });
+                        move |index, window, cx| choose(&index, window, cx)
+                    }),
+                ),
             )
             .child(Field::new(&self.fork_name, text::FORK_NAME).selector("fork-name"))
             .child(dialog_footer([
@@ -867,5 +889,207 @@ impl Shell {
                 state.close_transcript(cx);
             }
         });
+    }
+}
+
+impl Shell {
+    /// Opens the followed threads of the shown workspace in the side panel, or closes them.
+    pub fn toggle_followed_threads(&mut self, cx: &mut Context<Self>) {
+        let view = self.state.read(cx).view();
+        let Some((server_id, workspace_id, open)) = view.selected.as_ref().and_then(|server| {
+            let workspace = view.workspace()?;
+            Some((server.id, workspace.id, workspace.followed.is_some()))
+        }) else {
+            return;
+        };
+        self.members_open = false;
+        self.state.update(cx, |state, cx| {
+            if open {
+                state.close_followed_threads(cx);
+            } else {
+                state.open_followed_threads(server_id, workspace_id, cx);
+            }
+        });
+        cx.notify();
+    }
+
+    /// The entry at the top of the channel column that opens the threads of the workspace
+    /// that the person follows (ADR 0741). `unread`: the unread threads that the channel
+    /// column lists.
+    pub(crate) fn render_threads_row(
+        &mut self,
+        workspace: &crate::state::view::WorkspaceView,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let unread = workspace
+            .sections
+            .iter()
+            .flat_map(|section| &section.rows)
+            .flat_map(|row| &row.threads)
+            .filter(|thread| thread.unread > 0 || thread.mentions > 0)
+            .count() as u64;
+        let sign = (unread > 0).then(|| crate::ui::UnreadSign {
+            mentions: None,
+            label: text::unread_count(unread).into(),
+        });
+        div()
+            .flex_none()
+            .debug_selector(|| "threads-row".to_owned())
+            .child(
+                crate::ui::ChannelRow::new("threads-row", Icon::Chat, text::THREADS)
+                    .selected(workspace.followed.is_some())
+                    .unread(sign)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_followed_threads(cx))),
+            )
+            .into_any_element()
+    }
+
+    /// The side panel of the threads of the shown workspace that the person follows.
+    pub(crate) fn render_followed_panel(
+        &mut self,
+        panel: &crate::state::view::FollowedPanel,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let colors = theme.colors;
+        let server_id = self
+            .view
+            .as_ref()
+            .and_then(|view| view.selected.as_ref())
+            .map(|server| server.id);
+        let workspace_id = self
+            .view
+            .as_ref()
+            .and_then(|view| view.workspace())
+            .map(|workspace| workspace.id);
+        let header = SideHeader::new(text::THREADS)
+            .title_bar()
+            .icon(Icon::Chat)
+            .trailing(
+                Button::new("close-followed")
+                    .kind(ButtonKind::Ghost)
+                    .icon(Icon::X)
+                    .tooltip(text::CLOSE_THREADS)
+                    .selector("close-followed")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.close_followed_threads(cx));
+                    })),
+            );
+        let body: AnyElement = if let Some(failure) =
+            panel.failure.filter(|_| panel.rows.is_empty())
+        {
+            // An older server does not list these threads; a failed read can be read again
+            // (ADR 0796).
+            match failure {
+                crate::state::followed::ListFailure::Unsupported => StatePanel::new(
+                    text::FOLLOWED_THREADS_UNSUPPORTED_TITLE,
+                    text::FOLLOWED_THREADS_UNSUPPORTED,
+                )
+                .selector("followed-unsupported")
+                .into_any_element(),
+                crate::state::followed::ListFailure::Failed => div()
+                    .flex()
+                    .flex_col()
+                    .gap(u(8.0))
+                    .px(u(14.0))
+                    .pt(u(12.0))
+                    .child(crate::ui::Notice::error(text::FOLLOWED_THREADS_FAILED))
+                    .child(
+                        div().flex().child(
+                            Button::new("followed-retry")
+                                .label(text::TRY_AGAIN)
+                                .selector("followed-retry")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state
+                                        .update(cx, |state, cx| state.retry_followed_threads(cx));
+                                })),
+                        ),
+                    )
+                    .into_any_element(),
+            }
+        } else if panel.rows.is_empty() && panel.reading {
+            div()
+                .px(u(14.0))
+                .pt(u(12.0))
+                .typeface(theme.types.small, &theme)
+                .ink(colors.ink_2)
+                .child(text::FOLLOWED_THREADS_READING)
+                .into_any_element()
+        } else if panel.rows.is_empty() {
+            StatePanel::new(text::NO_FOLLOWED_THREADS_TITLE, text::NO_FOLLOWED_THREADS)
+                .selector("no-followed-threads")
+                .into_any_element()
+        } else {
+            // Each row is a row of the channel column: it takes the focus with Tab, shows the
+            // focus ring, and opens its thread with Enter or Space (ADR 0796).
+            let rows = panel.rows.iter().map(|row| {
+                let (root_id, channel_id) = (row.root_id, row.channel_id);
+                let title = row.title.clone().unwrap_or_else(|| text::THREAD.to_owned());
+                let unread = row.unread.max(row.mentions);
+                let sign = (unread > 0).then(|| crate::ui::UnreadSign {
+                    mentions: (row.mentions > 0).then(|| text::unread_count(row.mentions).into()),
+                    label: text::followed_thread_label(&title, &row.channel_name, unread).into(),
+                });
+                div()
+                    .flex_none()
+                    .debug_selector(move || format!("followed-thread:{root_id}"))
+                    .child(
+                        crate::ui::ChannelRow::new(
+                            ("followed-thread", root_id.as_uuid().as_u128() as u64),
+                            Icon::Chat,
+                            title,
+                        )
+                        .detail(format!("# {}", row.channel_name))
+                        .unread(sign)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                let (Some(server_id), Some(workspace_id)) =
+                                    (server_id, workspace_id)
+                                else {
+                                    return;
+                                };
+                                this.state.update(cx, |state, cx| {
+                                    state.select_channel(workspace_id, channel_id, cx)
+                                });
+                                this.open_thread(server_id, channel_id, root_id, window, cx);
+                            },
+                        )),
+                    )
+                    .into_any_element()
+            });
+            ScrollArea::new("followed-threads", &self.followed_scroll, text::THREADS)
+                .selector("followed-threads")
+                .children(rows)
+                .when(panel.more, |list| {
+                    list.child(
+                        div().flex().px(u(14.0)).py(u(8.0)).child(
+                            Button::new("more-followed")
+                                .label(text::followed::SHOW_MORE)
+                                .selector("more-followed")
+                                .disabled(panel.reading)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| {
+                                        state.read_more_followed_threads(cx)
+                                    });
+                                })),
+                        ),
+                    )
+                })
+                .into_any_element()
+        };
+        super::notices::side_panel(
+            &theme,
+            text::THREADS,
+            "followed-panel",
+            self.panel_width(
+                junto_client_core::settings::Panel::Notices,
+                theme.metrics.side_panel_width,
+                cx,
+            ),
+        )
+        .child(header)
+        .child(body)
+        .into_any_element()
     }
 }

@@ -106,6 +106,7 @@ pub fn weight(message: &Message) -> usize {
     std::mem::size_of::<Message>()
         + texts
         + message.document.as_ref().map_or(0, document)
+        + message.comment.as_ref().map_or(0, document)
         + files
         + reactions
         + message.reply_authors.len() * 16
@@ -114,16 +115,28 @@ pub fn weight(message: &Message) -> usize {
 /// True for a message inside the bounds. The client takes no other message from an
 /// answer of a server.
 pub fn fits(message: &Message) -> bool {
+    let shaped = |document: &Document| {
+        document.content_blocks().count() <= MOST_BLOCKS
+            && inline_nodes(document) <= MOST_INLINE_NODES
+            && document.list_items() <= MOST_LIST_ITEMS
+            && document
+                .inlines()
+                .all(|(_, depth)| depth <= junto_protocol::message::MAX_INLINE_DEPTH)
+            && document.blocks.iter().all(
+                |block| !matches!(block, Block::Heading { level, .. } if !(1..=3).contains(level)),
+            )
+    };
     message.attachments.len() <= MOST_FILES
         && message.reactions.len() <= MOST_REACTIONS
-        && message.document.as_ref().is_none_or(|document| {
-            document.content_blocks().count() <= MOST_BLOCKS
-                && document.forward_origins() <= 1
-                && inline_nodes(document) <= MOST_INLINE_NODES
-                && document.list_items() <= MOST_LIST_ITEMS
-                && document.inlines().all(|(_, depth)| depth <= junto_protocol::message::MAX_INLINE_DEPTH)
-                && document.blocks.iter().all(|block| !matches!(block, Block::Heading { level, .. } if !(1..=3).contains(level)))
-        })
+        && message
+            .document
+            .as_ref()
+            .is_none_or(|document| shaped(document) && document.forward_origins() <= 1)
+        // The comment of a forward is an ordinary document without an origin (ADR 0408).
+        && message
+            .comment
+            .as_ref()
+            .is_none_or(|comment| shaped(comment) && comment.forward_origins() == 0)
         && weight(message) <= MOST_MESSAGE_WEIGHT
 }
 

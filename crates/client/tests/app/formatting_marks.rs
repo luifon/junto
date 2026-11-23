@@ -88,7 +88,9 @@ fn editing_formatted_text_preserves_nested_spoilers_and_escaped_marks(cx: &mut T
     let json = serde_json::to_value(&message.document).unwrap();
     assert_eq!(json["blocks"][0]["kind"], "heading");
     window.in_shell(|shell, window, cx| shell.edit_message(Pane::Main, message.id, window, cx));
-    let written = window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx));
+    let written = window.in_shell(|shell, _, cx| {
+        shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+    });
     assert!(written.contains("### Details"), "{written}");
     assert!(written.contains("-# Small `code`"), "{written}");
     assert!(

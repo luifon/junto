@@ -384,13 +384,13 @@ impl Shell {
     ) -> AnyElement {
         let unread = view.lists().map_or(0, |lists| lists.unread_notices);
         let label: SharedString = if unread > 0 {
-            format!("{}, {}", text::NOTIFICATIONS, text::unread_notices(unread)).into()
+            format!("{}, {}", text::ACTIVITY, text::unread_notices(unread)).into()
         } else {
-            text::NOTIFICATIONS.into()
+            text::ACTIVITY.into()
         };
         Button::new("open-call-notices")
             .icon(Icon::Bell)
-            .tooltip(text::NOTIFICATIONS)
+            .tooltip(text::ACTIVITY)
             .accessible_label(label)
             .count((unread > 0).then(|| text::unread_count(unread as u64)))
             .selector("open-call-notices")
@@ -419,6 +419,15 @@ impl Shell {
             self.state
                 .update(cx, |state, cx| state.open_notices(server_id, cx));
         }
+    }
+
+    /// The panel of the call shows the notices of the server of the call.
+    pub(crate) fn call_notices_open(&self, cx: &gpui::App) -> bool {
+        self.state
+            .read(cx)
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.notices.is_some())
     }
 
     /// The panel of the call shows a tab again in place of the notices.
@@ -1031,14 +1040,42 @@ impl Shell {
             .filter(|workspace| workspace.channel.as_ref().map(|row| row.id) == Some(channel_id))
     }
 
-    /// Pins and Search of the channel of the call, as two icons beside the tabs of the
-    /// right column (ADR 0741).
+    /// Pins and Search of the channel of the call, and Activity, as icons beside the tabs of
+    /// the right column (ADR 0741).
     fn render_call_column_icons(
         &mut self,
         view: &ShellView,
         panel: &CallPanel,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let channel_tools = self.render_call_channel_tools(view, panel, cx);
+        // The activity of the server of the call opens in place of the tab (ADR 0742), also
+        // in a call without a channel.
+        let activity = view
+            .lists()
+            .map(|lists| self.render_activity_button(lists, true, cx));
+        if channel_tools.is_none() && activity.is_none() {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(u(2.0))
+                .children(channel_tools.into_iter().flatten())
+                .children(activity)
+                .into_any_element(),
+        )
+    }
+
+    /// Pins and Search of the channel of the call, while the column shows it.
+    fn render_call_channel_tools(
+        &mut self,
+        view: &ShellView,
+        panel: &CallPanel,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<AnyElement>> {
         let workspace = Self::call_channel_shown(view, panel)?;
         let channel = workspace.channel.as_ref()?;
         let server_id = view.selected.as_ref()?.id;
@@ -1066,33 +1103,25 @@ impl Shell {
                         this.open_pins(server_id, channel_id, cx);
                     }
                 }))
+                .into_any_element()
         });
-        Some(
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(u(2.0))
-                .children(pins)
-                .child(
-                    Button::new("call-search")
-                        .kind(ButtonKind::Ghost)
-                        .icon(Icon::Search)
-                        .tooltip(text::SEARCH)
-                        .accessible_label(text::SEARCH)
-                        .selected(searching)
-                        .selector("call-search")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.call_search_open = !searching;
-                            if this.call_search_open {
-                                let field = this.search_field.clone();
-                                this.focus_field(&field, window, cx);
-                            }
-                            cx.notify();
-                        })),
-                )
-                .into_any_element(),
-        )
+        let search = Button::new("call-search")
+            .kind(ButtonKind::Ghost)
+            .icon(Icon::Search)
+            .tooltip(text::SEARCH)
+            .accessible_label(text::SEARCH)
+            .selected(searching)
+            .selector("call-search")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.call_search_open = !searching;
+                if this.call_search_open {
+                    let field = this.search_field.clone();
+                    this.focus_field(&field, window, cx);
+                }
+                cx.notify();
+            }))
+            .into_any_element();
+        Some(pins.into_iter().chain([search]).collect())
     }
 
     /// A thread, the pin list or the transcript of a recording of the channel of the call,
@@ -1169,7 +1198,7 @@ impl Shell {
             div()
                 .id("call-panel")
                 .role(Role::Complementary)
-                .aria_label(text::NOTIFICATIONS)
+                .aria_label(text::ACTIVITY)
                 .debug_selector(|| "call-panel".to_owned())
                 .flex()
                 .flex_col()

@@ -22,11 +22,15 @@ impl Shell {
         self.typing_activity(Pane::Thread, false, cx);
         for pane in [Pane::Main, Pane::Thread] {
             self.save_composer(pane, cx);
+            self.save_composer(super::Pen::Edit(pane), cx);
         }
         self.state.update(cx, |state, cx| state.flush_drafts(cx));
     }
-    pub(super) fn save_composer(&self, pane: Pane, cx: &mut App) {
-        let pen = self.pen(pane);
+    /// Keeps the text of an editor in the book of drafts: the new message of a composer, or
+    /// the edit of the editor of a row, each in its own store (ADR 0740).
+    pub(super) fn save_composer(&self, key: impl Into<super::Pen>, cx: &mut App) {
+        let key: super::Pen = key.into();
+        let pen = self.pen(key);
         let Some(desk) = pen.place else {
             return;
         };
@@ -69,8 +73,13 @@ impl Shell {
             return;
         }
         pen.saved.replace(Some(draft.clone()));
-        self.state
-            .update(cx, |state, cx| state.keep_draft(draft, cx));
+        if key.edits() {
+            self.state
+                .update(cx, |state, cx| state.keep_edit(draft, cx));
+        } else {
+            self.state
+                .update(cx, |state, cx| state.keep_draft(draft, cx));
+        }
     }
     pub(super) fn draft_mark(
         &self,

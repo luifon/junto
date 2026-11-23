@@ -1,6 +1,5 @@
-//! The derivation of followed threads (ADR 0412, ADR 0413): the threads that the account
-//! follows under the shown channel, the row that offers the further ones, and the control
-//! of the thread panel.
+//! The derivation of followed threads (ADR 0412, ADR 0413, ADR 0796): the unread threads
+//! under the shown channel, and the control of the thread panel.
 
 use std::sync::Arc;
 
@@ -118,19 +117,31 @@ fn entries(
         .collect()
 }
 
-/// The roots of the threads under a channel, and the row of the further ones.
+/// The roots of the threads under a channel.
 fn listed(
     server: &ServerSnapshot,
     selection: &Selection,
     known: &Known,
     channel_id: ChannelId,
-) -> (Vec<MessageId>, Option<MoreFollowed>) {
+) -> Vec<MessageId> {
     let view = derive(std::slice::from_ref(server), selection, known);
     let row = row(view.workspace().unwrap(), channel_id);
-    (
-        row.threads.iter().map(|entry| entry.root_id).collect(),
-        row.more_followed,
-    )
+    row.threads.iter().map(|entry| entry.root_id).collect()
+}
+
+/// Followed threads that each have one unread reply.
+fn unread_states(count: usize) -> Vec<ThreadState> {
+    (0..count)
+        .map(|_| state(MessageId::generate(), 1))
+        .collect()
+}
+
+/// A server whose state holds only the first pages of the unread threads, so that the list
+/// of followed threads tells what else is unread.
+fn acme_with_more_unread(scene: &Scene) -> ServerSnapshot {
+    let mut model = scene.model();
+    model.threads_more = true;
+    acme(scene, model)
 }
 
 /// The control of the thread panel for a thread of "general".
@@ -151,7 +162,7 @@ fn control(
 }
 
 #[test]
-fn the_followed_threads_of_the_shown_channel_are_listed_after_its_unread_threads() {
+fn a_channel_lists_its_unread_threads_and_no_read_followed_thread() {
     let scene = scene();
     let ana = AccountId::generate();
     let general = place_of(&scene, scene.general);
@@ -191,19 +202,12 @@ fn the_followed_threads_of_the_shown_channel_are_listed_after_its_unread_threads
         &known(followed),
     );
     let workspace = view.workspace().unwrap();
-    // The unread thread is listed once, before the others. A title comes from the state
-    // of the server, from the loaded messages of the channel, or from the root that was
-    // read; a root that nothing holds has none.
+    // The unread thread is listed once; the read followed threads have no row under the
+    // channel, the side panel "Threads" lists them (ADR 0796).
     assert_eq!(
         entries(workspace, scene.general),
-        [
-            (unread.id, Some("Retention of recordings"), 2),
-            (read_alone.id, Some("Notes of the review"), 0),
-            (loaded.id, Some("Tracks or mixdown?"), 0),
-            (unknown, None, 0),
-        ]
+        [(unread.id, Some("Retention of recordings"), 2)]
     );
-    assert_eq!(row(workspace, scene.general).more_followed, None);
     assert!(
         row(workspace, scene.general)
             .threads
@@ -238,46 +242,27 @@ fn a_followed_thread_beyond_the_loaded_unread_threads_keeps_the_count_of_its_lis
             .map(|(root_id, _, unread)| (root_id, unread))
             .collect::<Vec<_>>()
     };
-    // The state of the server holds every unread thread: this one is read meanwhile.
-    assert_eq!(unread(false), [(first, 0), (second, 0)]);
-    // The state holds the first pages of the unread threads only.
-    assert_eq!(unread(true), [(first, 3), (second, 0)]);
+    // The state of the server holds every unread thread: this one is read meanwhile, and
+    // a read thread has no row.
+    assert_eq!(unread(false), []);
+    // The state holds the first pages of the unread threads only: the list tells that the
+    // first one is unread.
+    assert_eq!(unread(true), [(first, 3)]);
 }
 
 #[test]
-fn eight_followed_threads_are_listed_and_a_row_offers_the_others() {
+fn read_followed_threads_have_no_row_under_their_channel() {
     let scene = scene();
     let server = acme(&scene, scene.model());
-    let threads = states(11);
-    let roots: Vec<MessageId> = threads.iter().map(|state| state.root_id).collect();
-    let selection = Selection::default();
-    let shown = |known: &Known| listed(&server, &selection, known, scene.general);
-
-    let mut held = known(followed((server.id, scene.general), threads.clone(), false));
-    assert_eq!(
-        shown(&held),
-        (roots[..8].to_vec(), Some(MoreFollowed { count: Some(3) }))
-    );
-    // The person asks for the others: every held thread is listed, and no row is left.
-    assert!(held.followed.list.expand());
-    assert_eq!(shown(&held), (roots.clone(), None));
-
-    // The server lists further pages: the row states no count, and it stays after the
-    // held threads are all listed.
-    let mut held = known(followed((server.id, scene.general), threads, true));
-    assert_eq!(
-        shown(&held),
-        (roots[..8].to_vec(), Some(MoreFollowed { count: None }))
-    );
-    assert!(held.followed.list.expand());
-    assert_eq!(shown(&held), (roots, Some(MoreFollowed { count: None })));
+    let held = known(followed((server.id, scene.general), states(11), true));
+    assert!(listed(&server, &Selection::default(), &held, scene.general).is_empty());
 }
 
 #[test]
 fn the_followed_threads_are_listed_under_the_shown_channel_only() {
     let scene = scene();
-    let server = acme(&scene, scene.model());
-    let threads = states(9);
+    let server = acme_with_more_unread(&scene);
+    let threads = unread_states(9);
     let roots: Vec<MessageId> = threads.iter().map(|state| state.root_id).collect();
     let of_general = known(followed((server.id, scene.general), threads.clone(), false));
     let shows = |channel_id: ChannelId| Selection {
@@ -287,13 +272,10 @@ fn the_followed_threads_are_listed_under_the_shown_channel_only() {
         ..Selection::default()
     };
     let general = shows(scene.general);
-    assert_eq!(
-        listed(&server, &general, &of_general, scene.general).0,
-        roots[..8]
-    );
+    assert_eq!(listed(&server, &general, &of_general, scene.general), roots);
     assert_eq!(
         listed(&server, &general, &of_general, scene.random),
-        (Vec::new(), None)
+        Vec::<MessageId>::new()
     );
 
     // Another channel is shown while the window still holds the list of the first one:
@@ -302,15 +284,12 @@ fn the_followed_threads_are_listed_under_the_shown_channel_only() {
     for channel_id in [scene.general, scene.random, scene.daily] {
         assert_eq!(
             listed(&server, &random, &of_general, channel_id),
-            (Vec::new(), None)
+            Vec::<MessageId>::new()
         );
     }
     // The list of the channel that is shown now is drawn under it.
     let of_random = known(followed((server.id, scene.random), threads.clone(), false));
-    assert_eq!(
-        listed(&server, &random, &of_random, scene.random).0,
-        roots[..8]
-    );
+    assert_eq!(listed(&server, &random, &of_random, scene.random), roots);
     // A list that was read on another server is not drawn.
     let other_server = known(followed(
         (ServerId::generate(), scene.general),
@@ -319,62 +298,43 @@ fn the_followed_threads_are_listed_under_the_shown_channel_only() {
     ));
     assert_eq!(
         listed(&server, &general, &other_server, scene.general),
-        (Vec::new(), None)
+        Vec::<MessageId>::new()
     );
 }
 
 #[test]
 fn the_open_thread_is_listed_once_among_the_followed_threads() {
     let scene = scene();
-    let server = acme(&scene, scene.model());
-    let threads = states(11);
+    let server = acme_with_more_unread(&scene);
+    let threads = unread_states(3);
     let roots: Vec<MessageId> = threads.iter().map(|state| state.root_id).collect();
-    let mut held = known(followed((server.id, scene.general), threads, false));
     let open = |held: &Known, root_id: MessageId| {
         let selection = Selection {
             thread: Some((server.id, scene.general, root_id)),
             ..Selection::default()
         };
         let view = derive(std::slice::from_ref(&server), &selection, held);
-        let row = row(view.workspace().unwrap(), scene.general);
-        let entries: Vec<(MessageId, bool)> = row
+        row(view.workspace().unwrap(), scene.general)
             .threads
             .iter()
             .map(|entry| (entry.root_id, entry.open))
-            .collect();
-        (entries, row.more_followed)
+            .collect::<Vec<_>>()
     };
 
-    // The open thread is one of the listed ones: its row is the open one.
-    let (entries, more) = open(&held, roots[1]);
-    assert_eq!(entries.len(), 8);
-    for (index, entry) in entries.iter().enumerate() {
-        assert_eq!(*entry, (roots[index], index == 1));
-    }
-    assert_eq!(more, Some(MoreFollowed { count: Some(3) }));
-
-    // The open thread is one of the further ones: it has a row of its own after the
-    // listed ones, and the row of the others does not count it.
-    let (entries, more) = open(&held, roots[9]);
-    assert_eq!(entries.len(), 9);
-    assert_eq!(entries[8], (roots[9], true));
-    assert!(entries[..8].iter().all(|(_, open)| !open));
-    assert_eq!(more, Some(MoreFollowed { count: Some(2) }));
-
-    // After the person asked for the others it is listed at its place.
-    assert!(held.followed.list.expand());
-    let (entries, more) = open(&held, roots[9]);
-    assert_eq!(entries.len(), 11);
-    for (index, entry) in entries.iter().enumerate() {
-        assert_eq!(*entry, (roots[index], index == 9));
-    }
-    assert_eq!(more, None);
-
-    // A thread that the account does not follow is listed after the followed ones.
+    // The open thread is one of the unread followed ones: its row is the open one.
+    let held = known(followed((server.id, scene.general), threads, false));
+    assert_eq!(
+        open(&held, roots[1]),
+        [(roots[0], false), (roots[1], true), (roots[2], false)]
+    );
+    // A thread that has no row of its own is listed after them.
     let other = MessageId::generate();
-    let (entries, _) = open(&held, other);
-    assert_eq!(entries.len(), 12);
-    assert_eq!(entries[11], (other, true));
+    assert_eq!(open(&held, other).last(), Some(&(other, true)));
+    // A read followed thread that is open has its one row.
+    let read = states(1);
+    let read_root = read[0].root_id;
+    let held = known(followed((server.id, scene.general), read, false));
+    assert_eq!(open(&held, read_root), [(read_root, true)]);
 }
 
 #[test]
@@ -495,15 +455,16 @@ fn an_archived_channel_lists_its_followed_threads_and_takes_no_change() {
     // The control states what holds, and says that the channel takes no change.
     let drawn = workspace.thread.as_ref().unwrap().follow.clone().unwrap();
     assert!(drawn.read_only && drawn.following && !drawn.busy);
-    // The archived channel is read as its messages are: its followed threads are listed.
+    // The archived channel is read as its messages are: its open thread is listed, and its
+    // read followed thread has no row (ADR 0796).
     let shown = workspace.channel.as_ref().unwrap();
     let entries: Vec<(MessageId, bool)> = shown
         .threads
         .iter()
         .map(|entry| (entry.root_id, entry.open))
         .collect();
-    assert_eq!(entries, [(root_id, true), (other, false)]);
-    assert_eq!(shown.more_followed, None);
+    assert_eq!(entries, [(root_id, true)]);
+    assert!(!entries.iter().any(|(id, _)| *id == other));
 
     // The same thread in a channel that is not archived takes a change.
     let open = acme(&scene, scene.model());

@@ -92,13 +92,47 @@ impl Window {
             .or_else(|| view.lists().and_then(|lists| lists.search.clone()))
     }
 
-    /// Types a search text into the field of the header and sends it with Enter.
+    /// Types a search text into the field of the header and sends it with Enter, then
+    /// removes the place that a new search starts in, so that it searches the whole server.
     pub(crate) fn search_for(&mut self, text: &str) {
+        self.search_here_for(text);
+        if self.shows("search-in-remove") {
+            self.click("search-in-remove");
+        }
+    }
+
+    /// Types a search text into the field of the header and sends it with Enter: a new
+    /// search starts in the shown channel or conversation (ADR 0743).
+    pub(crate) fn search_here_for(&mut self, text: &str) {
         self.in_shell(|shell, window, cx| {
             shell.type_search(text, window, cx);
             shell.focus_search(window, cx);
         });
         self.press("enter");
+    }
+
+    /// Turns a filter of the search on or off through its chip or its menu: the selectors
+    /// `search-has-file`, `search-has-link`, `search-has-picture`, `search-mentions-me` and
+    /// `search-direct`.
+    pub(crate) fn toggle_search_filter(&mut self, selector: &'static str) {
+        match selector {
+            "search-mentions-me" => self.click(selector),
+            "search-direct" => {
+                let direct = self
+                    .search_panel()
+                    .is_some_and(|panel| panel.filters.direct);
+                self.click("search-in");
+                self.click(if direct {
+                    "search-in:server"
+                } else {
+                    "search-in:direct"
+                });
+            }
+            _ => {
+                self.click("search-has");
+                self.click(selector);
+            }
+        }
     }
 
     /// True when the search that runs has its answer.
@@ -156,6 +190,7 @@ fn filter_only_search_stays_a_search_and_finds_captionless_pictures(cx: &mut Tes
                 document: document("Direct notes"),
                 reply_to: None,
                 attachments: vec![],
+                comment: None,
             },
         ))
         .unwrap();
@@ -176,7 +211,7 @@ fn filter_only_search_stays_a_search_and_finds_captionless_pictures(cx: &mut Tes
         "search-mentions-me",
         "search-direct",
     ] {
-        window.click(selector);
+        window.toggle_search_filter(selector);
         let panel = window.until_searched();
         assert!(!panel.results.is_empty(), "{selector}");
         if selector == "search-has-picture" {
@@ -188,7 +223,7 @@ fn filter_only_search_stays_a_search_and_finds_captionless_pictures(cx: &mut Tes
             );
             assert!(window.shows_named(format!("listed-file:{}", picture.attachments[0].id)));
         }
-        window.click(selector);
+        window.toggle_search_filter(selector);
         window.until_searched();
     }
     let from = picture
@@ -198,6 +233,8 @@ fn filter_only_search_stays_a_search_and_finds_captionless_pictures(cx: &mut Tes
         .unwrap()
         .to_string();
     let through = picture.created_at.date().next_day().unwrap().to_string();
+    window.click("search-date");
+    window.click("search-date-custom");
     window.type_into("search-from", &from);
     window.type_into("search-through", &through);
     window.click("search-apply-dates");
@@ -268,9 +305,9 @@ fn a_search_finds_messages_and_a_transcript_line_and_leads_to_a_message(cx: &mut
 
     // The filter for a channel narrows the search to it, and the filter for an author to
     // the messages of that person.
-    window.click("search-channel");
+    window.click("search-in");
     assert!(window.shows("search-filter-menu"));
-    window.click_named(format!("search-channel:{random}"));
+    window.click_named(format!("search-in:channel:{random}"));
     let panel = window.until_searched();
     assert_eq!((panel.messages().len(), panel.transcripts().len()), (1, 0));
     assert_eq!(panel.channel.as_ref().unwrap().0, random);
@@ -482,7 +519,7 @@ fn a_reload_of_the_state_reads_the_search_again_and_leaves_the_side_panel(cx: &m
     // search does not return into the side panel.
     window.search_for("paged");
     assert_eq!(window.until_searched().messages().len(), 50);
-    window.click("notices-row");
+    window.click("activity-button");
     assert!(window.shows("notices-panel") && !window.shows("search-panel"));
     mute(&mut window, Some(MuteFor::OneHour));
     assert!(window.shows("notices-panel") && !window.shows("search-panel"));
@@ -722,7 +759,7 @@ fn a_failed_archived_list_is_stated_with_a_retry_in_the_search_and_the_notices(
     // The notices state the same failure, with the same retry.
     window.click("close-search");
     fail_once(&proxy);
-    window.click("notices-row");
+    window.click("activity-button");
     window.until("the notices state the failed archived list", |window| {
         window.shows("notices-archive-failed")
     });
@@ -1007,20 +1044,20 @@ fn content_and_mention_controls_and_custom_dates_filter_the_search(cx: &mut Test
     window.until_message("quartz ordinary");
     window.search_for("quartz");
     assert_eq!(window.until_searched().messages().len(), 3);
-    window.click("search-has-link");
+    window.toggle_search_filter("search-has-link");
     let panel = window.until_searched();
     assert_eq!(panel.messages().len(), 1);
     assert_eq!(panel.messages()[0].target, ResultTarget::Message(linked.id));
-    window.click("search-has-link");
+    window.toggle_search_filter("search-has-link");
     assert_eq!(window.until_searched().messages().len(), 3);
-    window.click("search-mentions-me");
+    window.toggle_search_filter("search-mentions-me");
     let panel = window.until_searched();
     assert_eq!(panel.messages().len(), 1);
     assert_eq!(
         panel.messages()[0].target,
         ResultTarget::Message(mentioned.id)
     );
-    window.click("search-mentions-me");
+    window.toggle_search_filter("search-mentions-me");
     window.until_searched();
     let picture = crate::pictures::send_files(
         &world,
@@ -1032,14 +1069,14 @@ fn content_and_mention_controls_and_custom_dates_filter_the_search(cx: &mut Test
     window.search_for("quartz");
     assert_eq!(window.until_searched().messages().len(), 4);
     for selector in ["search-has-file", "search-has-picture"] {
-        window.click(selector);
+        window.toggle_search_filter(selector);
         let panel = window.until_searched();
         assert_eq!(panel.messages().len(), 1);
         assert_eq!(
             panel.messages()[0].target,
             ResultTarget::Message(picture.id)
         );
-        window.click(selector);
+        window.toggle_search_filter(selector);
         assert_eq!(window.until_searched().messages().len(), 4);
     }
     let conversation = world
@@ -1052,6 +1089,7 @@ fn content_and_mention_controls_and_custom_dates_filter_the_search(cx: &mut Test
                 document: document("quartz direct"),
                 reply_to: None,
                 attachments: vec![],
+                comment: None,
             },
         ))
         .unwrap();
@@ -1061,12 +1099,14 @@ fn content_and_mention_controls_and_custom_dates_filter_the_search(cx: &mut Test
             .lists()
             .is_some_and(|lists| lists.directs.iter().any(|row| row.id == conversation.id))
     });
-    window.click("search-direct");
+    window.toggle_search_filter("search-direct");
     let panel = window.until_searched();
     assert_eq!(panel.messages().len(), 1);
     assert_eq!(panel.messages()[0].target, ResultTarget::Message(direct.id));
-    window.click("search-direct");
+    window.toggle_search_filter("search-direct");
     assert_eq!(window.until_searched().messages().len(), 5);
+    window.click("search-date");
+    window.click("search-date-custom");
     window.type_into("search-from", "2026-04-31");
     window.type_into("search-through", "2026-04-30");
     window.click("search-apply-dates");
@@ -1115,16 +1155,17 @@ fn older_servers_disable_unsupported_filters_and_never_receive_filtered_requests
             .count()
     };
     let before = reads();
-    for selector in [
-        "search-has-file",
-        "search-has-link",
-        "search-has-picture",
-        "search-mentions-me",
-        "search-direct",
-    ] {
+    // The chips of filters that the server does not take are disabled, and the place
+    // filter offers no conversation.
+    for selector in ["search-has", "search-mentions-me"] {
         window.click(selector);
+        assert!(!window.shows("search-filter-menu"));
         assert_eq!(window.search_panel().unwrap().filters, Filters::default());
     }
+    window.click("search-in");
+    assert!(window.shows("search-filter-menu"));
+    assert!(!window.shows("search-in:direct"));
+    window.press("escape");
     assert_eq!(reads(), before);
     let server_id = window.view().selected.unwrap().id;
     let api = window.state.read_with(&window.cx, |state, _| {
@@ -1145,4 +1186,51 @@ fn older_servers_disable_unsupported_filters_and_never_receive_filtered_requests
         assert!(world.run(api.search(&query)).is_err());
     }
     assert_eq!(reads(), before);
+}
+
+/// A search from a channel starts in that channel, as a filter that the person removes to
+/// search the whole server; the field names where a new search starts (ADR 0743).
+#[gpui::test]
+fn a_search_starts_in_the_shown_channel_and_its_place_can_be_removed(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let general = window.selected_channel();
+    let name = window
+        .channels()
+        .into_iter()
+        .find(|row| row.id == general)
+        .unwrap()
+        .name;
+    let other = admin.text_channel(&world, &mut window, "elsewhere");
+    admin.send(&world, general, document("granite here"));
+    admin.send(&world, other, document("granite there"));
+    window.until_message("granite here");
+    let placeholder = window.in_shell(|shell, _, cx| shell.search_placeholder(cx));
+    assert_eq!(placeholder, text::search_in(&format!("#{name}")));
+
+    window.search_here_for("granite");
+    let panel = window.until_searched();
+    assert_eq!(panel.filters.channel, Some(general));
+    assert_eq!(panel.scope, Some(format!("#{name}")));
+    assert_eq!(panel.messages().len(), 1);
+    assert!(window.shows("search-in-remove"));
+
+    window.click("search-in-remove");
+    let panel = window.until_searched();
+    assert_eq!(panel.scope, None);
+    assert_eq!(panel.messages().len(), 2);
+    assert!(!window.shows("search-in-remove"));
+
+    // The filters stand in one line of chips that open their menus.
+    for chip in ["search-in", "search-author", "search-date", "search-has"] {
+        window.click(chip);
+        assert!(window.shows("search-filter-menu"), "{chip}");
+        window.press("escape");
+    }
+    assert!(window.shows("search-mentions-me"));
 }

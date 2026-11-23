@@ -756,6 +756,7 @@ fn fill(world: &harness::World, channel: ChannelId, writers: &[ServerHandle]) {
                 },
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             };
             loop {
                 match api.send_message(place, &message).await {

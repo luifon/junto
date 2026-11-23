@@ -568,6 +568,7 @@ impl Transport for OneServer {
                 capabilities: junto_client_core::protocol::server::Capabilities {
                     afk_channel: true,
                     channel_topics: true,
+                    workspace_threads: true,
                     message_format: junto_client_core::protocol::message::DocumentFormat {
                         event_revision: junto_client_core::protocol::events::EVENT_REVISION,
                     },

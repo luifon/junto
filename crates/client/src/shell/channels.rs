@@ -275,7 +275,6 @@ impl Shell {
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
         let workspace = lists.workspace.as_ref();
-        let in_call = lists.call.is_some();
         let channels = match workspace {
             Some(workspace) => self.channel_rows(view, workspace, theme, window, cx),
             None => vec![
@@ -312,7 +311,12 @@ impl Shell {
             .pb(u(4.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule))
-            .child(self.render_notices_row(lists, in_call, cx))
+            // "Threads" belongs to a workspace. Without one its height stays, so that the
+            // direct part does not move when the last workspace goes (ADR 0730).
+            .child(match lists.workspace.as_ref() {
+                Some(workspace) => self.render_threads_row(workspace, cx),
+                None => div().flex_none().h(u(row)).into_any_element(),
+            })
             .child(self.render_server_heading(
                 server.id,
                 server.name.clone().into(),
@@ -929,26 +933,6 @@ impl Shell {
                             .into_any_element(),
                     );
                 }
-                // The further threads of the shown channel that the person follows.
-                if let Some(more) = channel.more_followed {
-                    let row = ChannelRow::new(
-                        ("followed-more", index),
-                        Icon::ChevronDown,
-                        text::followed::show_more(more.count),
-                    )
-                    .nested()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state
-                            .update(cx, |state, cx| state.show_more_followed(cx));
-                    }));
-                    rows.push(
-                        div()
-                            .flex_none()
-                            .debug_selector(move || format!("followed-more:{channel_id}"))
-                            .child(row)
-                            .into_any_element(),
-                    );
-                }
                 let occupants = channel
                     .voice
                     .as_ref()
@@ -1317,6 +1301,26 @@ impl Shell {
                 .on_menu(Self::handler(cx, move |this, window, cx| {
                     this.open_direct_menu(conversation_id, window, cx);
                 }))
+                // A press on the X hides the conversation (ADR 0741).
+                .when_some(owner, |row, owner| {
+                    row.on_dismiss(
+                        text::conversations::HIDE,
+                        format!("hide-direct:{conversation_id}"),
+                        Self::handler(cx, move |this, _, cx| {
+                            if this
+                                .state
+                                .read(cx)
+                                .server(server_id)
+                                .and_then(|server| server.owner())
+                                == Some(owner)
+                            {
+                                this.state.update(cx, |state, cx| {
+                                    state.hide_conversation(owner, conversation_id, cx)
+                                });
+                            }
+                        }),
+                    )
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {
                         state.select_conversation(server_id, conversation_id, cx);

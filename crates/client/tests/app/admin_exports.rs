@@ -69,6 +69,7 @@ fn the_archived_list_opens_the_channel_and_shows_its_seven_day_warning(cx: &mut 
                 document: document("The archived plan"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -148,6 +149,7 @@ fn a_direct_conversation_is_exported_from_its_header_and_saved(cx: &mut TestAppC
                 document: document("A private plan"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -158,7 +160,11 @@ fn a_direct_conversation_is_exported_from_its_header_and_saved(cx: &mut TestAppC
     });
     window.click(row);
     window.until_message("A private plan");
-    window.click("export-conversation");
+    // The export is in the menu of the conversation and asks first (ADR 0411).
+    window.right_click_named(format!("direct-row:{}", conversation.id));
+    window.click("direct-export");
+    assert!(window.shows("confirm-export"));
+    window.click("start-export");
     let export = awaited(&mut window, "the direct export is listed", |window| {
         server_page!(window, Exports)?
             .exports
@@ -367,6 +373,7 @@ fn a_saved_channel_export_contains_messages_threads_files_recordings_and_transcr
                 document: document("The plan <draft>"),
                 reply_to: None,
                 attachments: vec![attachment],
+                comment: None,
             },
         ))
         .unwrap();
@@ -377,6 +384,7 @@ fn a_saved_channel_export_contains_messages_threads_files_recordings_and_transcr
                 document: document("Details in the thread"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

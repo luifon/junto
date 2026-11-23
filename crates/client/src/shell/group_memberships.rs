@@ -48,11 +48,14 @@ impl Shell {
     }
 
     pub(crate) fn open_group_memberships(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The groups of the account on the selected server, from its account layer.
         let Some(owner) = self
             .state
             .read(cx)
-            .contacts_view()
-            .and_then(|view| self.state.read(cx).server(view.server_id))
+            .view()
+            .selected
+            .as_ref()
+            .and_then(|server| self.state.read(cx).server(server.id))
             .and_then(|server| server.owner())
         else {
             return;

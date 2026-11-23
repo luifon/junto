@@ -239,6 +239,7 @@ fn the_wheel_over_a_direct_conversation_in_the_active_window_moves_the_read_posi
             document: document(text),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world
             .run(admin.handle.api().send_message(direct, &message))

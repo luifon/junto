@@ -80,6 +80,7 @@ impl Admin {
             document: document(text),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world
             .run(api.send_message(PlaceId::Direct(conversation.id), &message))
@@ -249,9 +250,7 @@ fn a_server_in_the_background_shows_its_unread_signs_and_a_server_that_is_not_ke
     window.click_named(format!("direct-row:{conversation}"));
     window.until_message("Hello from Harbor");
     window.until("everything of the second server is read", |window| {
-        if window.shows("mark-as-read") {
-            window.click("mark-as-read");
-        }
+        window.mark_shown_as_read();
         let view = window.view();
         if view
             .lists()

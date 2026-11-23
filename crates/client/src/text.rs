@@ -1502,7 +1502,12 @@ pub fn call_notice(notice: &CallNotice) -> String {
 
 // The main area.
 pub const MEMBERS: &str = "Members";
-pub const SHOW_MEMBERS: &str = "Show the members of the workspace";
+pub const SHOW_MEMBERS: &str = "Show the members";
+/// The title of the member list of a channel: the people who can see it (ADR 0790).
+pub fn members_of(channel: &str) -> String {
+    format!("Members of #{channel}")
+}
+pub const VIEWERS_FAILED: &str = "The people who can see this channel could not be read.";
 pub const CLOSE_MEMBERS: &str = "Close the member list";
 pub const MEMBERS_LOADING: &str = "Reading the members…";
 pub const MEMBERS_FAILED: &str = "The members could not be read.";
@@ -2030,7 +2035,6 @@ pub const READING_LATER: &str = "Reading later messages…";
 pub const GO_TO_END: &str = "Go to newest messages";
 pub const NEW_MESSAGES: &str = "New";
 pub const MARK_AS_READ: &str = "Mark as read";
-pub const EDIT_CHANNEL: &str = "Channel settings";
 pub const EDITED: &str = "edited";
 pub const DELETED_MESSAGE: &str = "This message was deleted.";
 pub const QUOTE_DELETED: &str = "Deleted message";
@@ -2062,7 +2066,8 @@ pub const DISCARD: &str = "Discard";
 pub const SEND: &str = "Send";
 pub const SEND_HINT: &str = "Enter sends · Shift + Enter adds a line";
 pub const SAVE_EDIT: &str = "Save";
-pub const EDITING_MESSAGE: &str = "Editing your message";
+pub const EDIT_TAKES_NO_FILES: &str = "An edit changes the text only. Send files in a new message.";
+pub const EDIT_HINT: &str = "Enter saves · Escape cancels · Shift + Enter adds a line";
 pub const BOLD: &str = "Bold";
 pub const ITALIC: &str = "Italic";
 pub const STRIKETHROUGH: &str = "Strikethrough";
@@ -2121,17 +2126,31 @@ pub const OPENS_IN_BROWSER: &str = "Opens in your browser";
 
 // Threads, pins, permanent messages and direct conversations (ADR 0741).
 pub const THREAD: &str = "Thread";
+pub const THREADS: &str = "Threads";
+pub const CLOSE_THREADS: &str = "Close the followed threads";
+pub const FOLLOWED_THREADS_UNSUPPORTED_TITLE: &str = "Not available on this server";
+pub const FOLLOWED_THREADS_UNSUPPORTED: &str = "This server is of an earlier release and does not list followed threads. Its administrator can update it.";
+pub const FOLLOWED_THREADS_FAILED: &str = "The followed threads could not be read.";
+pub const NO_FOLLOWED_THREADS_TITLE: &str = "No followed threads";
+pub const NO_FOLLOWED_THREADS: &str = "The threads that you follow in the channels of this workspace are listed here, unread ones first.";
+pub const FOLLOWED_THREADS_READING: &str = "Reading the followed threads…";
+/// The accessible name of the row of the side panel "Threads".
+pub fn followed_thread_label(title: &str, channel: &str, unread: u64) -> String {
+    match unread {
+        0 => format!("{title}, #{channel}"),
+        unread => format!("{title}, #{channel}, {}", unread_count(unread)),
+    }
+}
 pub const CLOSE_THREAD: &str = "Close the thread";
 pub const REPLY_IN_THREAD: &str = "Reply in thread";
 pub const OPEN_THREAD: &str = "Open the thread";
-pub const SHOWN_IN_PANEL: &str = "Shown in panel";
 pub const THREAD_LOADING: &str = "Reading the thread…";
 pub const THREAD_GONE_TITLE: &str = "This thread does not exist any more";
 pub const THREAD_GONE: &str = "Its first message was deleted, or the channel is not open to you.";
 pub const THREAD_FAILED: &str = "The thread could not be read.";
 pub const NO_REPLIES: &str = "No replies yet. Write the first one.";
-pub const FORK_THREAD: &str = "Fork thread into…";
-pub const FORK_COPIES: &str = "replies are copied to it";
+pub const FORK_INTO_CHANNEL: &str = "Fork into a channel…";
+pub const FORK_KIND: &str = "Kind of the new channel";
 pub const FORK_TEXT: &str = "Text channel";
 pub const FORK_VOICE: &str = "Voice channel";
 pub const FORK_TITLE: &str = "Fork this thread into a channel";
@@ -2202,8 +2221,8 @@ pub const MESSAGE_PERSON: &str = "Message";
 pub const NEW_DIRECT: &str = "New message";
 pub const NEW_DIRECT_TITLE: &str = "New message";
 pub const NEW_DIRECT_ABOUT: &str = "The people you can write to on this server: the members of \
-     your workspaces and the administrators of the server. An administrator can write to \
-     every account.";
+     your workspaces and the administrators of the server. Choose several people with + to \
+     start a group.";
 pub const CONTACT_PART: &str = "Name";
 pub const CONTACTS: &str = "People you can write to";
 pub const NO_CONTACTS: &str = "Nobody with this name can receive your messages.";
@@ -2673,14 +2692,14 @@ fn sentence(reason: &str) -> String {
 
 // Notices, notification settings and system notifications (ADR 0742).
 pub const NOTIFICATIONS: &str = "Notifications";
-pub const SHOW_NOTIFICATIONS: &str = "Show your notifications on this server";
-pub const CLOSE_NOTIFICATIONS: &str = "Close the notifications";
+/// The list of the mentions, replies, direct messages and missed calls of a server (ADR 0742).
+pub const ACTIVITY: &str = "Activity";
+pub const CLOSE_ACTIVITY: &str = "Close the activity";
 pub const MARK_ALL_READ: &str = "Mark all as read";
 pub const MARKING_ALL_READ: &str = "Marking…";
-pub const NO_NOTICES_TITLE: &str = "No notifications";
-pub const NO_NOTICES: &str = "Mentions, direct messages, replies in threads that you wrote in, new messages in \
-     places that notify you of every message, and missed calls are listed here.";
-pub const NOTICES_READING: &str = "Reading the notifications…";
+pub const NO_NOTICES_TITLE: &str = "No activity";
+pub const NO_NOTICES: &str = "Mentions, direct messages, replies in threads, new messages of the places that notify you, and missed calls on this server are listed here.";
+pub const NOTICES_READING: &str = "Reading the activity…";
 /// The archived list of a workspace could not be read (ADR 0762).
 pub const ARCHIVED_NOTICES_NOT_READ: &str =
     "The archived channels could not be read, so their notifications are not listed.";
@@ -3036,7 +3055,28 @@ pub const ARCHIVED_RESULTS_NOT_READ: &str =
 pub const SHOW_MORE_RESULTS: &str = "Show more results";
 pub const READING_MORE_RESULTS: &str = "Reading more…";
 pub const FILTER_CHANNEL: &str = "Channel";
-pub const FILTER_AUTHOR: &str = "Author";
+pub const FILTER_IN: &str = "In";
+pub const FILTER_IN_REMOVE: &str = "Search the whole server";
+pub const FILTER_ANYWHERE: &str = "Anywhere on this server";
+pub const FILTER_HAS: &str = "Has";
+pub const FILTER_HAS_FILE: &str = "a file";
+pub const FILTER_HAS_LINK: &str = "a link";
+pub const FILTER_HAS_PICTURE: &str = "a picture";
+pub const FILTER_MENTIONS_ME: &str = "Mentions me";
+pub const FILTER_CUSTOM_RANGE: &str = "Custom range…";
+pub const FILTER_FROM_DATE: &str = "From date";
+pub const FILTER_THROUGH_DATE: &str = "Through date";
+pub const FILTER_APPLY_DATES: &str = "Apply dates";
+pub const FILTER_DATES_INVALID: &str = "Enter dates as YYYY-MM-DD, with From on or before Through.";
+pub const FILTERS_NEED_TEXT: &str =
+    "Enter text: this server does not support filter-only searches.";
+pub const FILTERS_UNSUPPORTED: &str = "This server does not support these search filters.";
+pub const FILTERS_UNCONFIRMED: &str = "Server search support has not been confirmed.";
+/// The placeholder of the search field: the place where a search starts (ADR 0743).
+pub fn search_in(place: &str) -> String {
+    format!("Search {place}")
+}
+pub const FILTER_AUTHOR: &str = "From";
 pub const FILTER_DATE: &str = "Date";
 pub const FILTER_ALL_CHANNELS: &str = "All";
 pub const FILTER_ANYONE: &str = "Anyone";
@@ -3560,20 +3600,29 @@ pub const PASTE: &str = "Paste";
 pub const SELECT_ALL: &str = "Select all";
 
 pub const FORWARD_UNVERIFIED: &str = "Source link · Not verified";
-pub const FORWARD_REMOTE_UNVERIFIED: &str = "Forwarded from another server · Not verified";
 pub const FORWARDED_MESSAGE: &str = "Forwarded message";
+/// The caption of a forwarded message: the server, or the channel or conversation, that it
+/// comes from (ADR 0740).
+pub fn forwarded_from(source: &str) -> String {
+    format!("Forwarded from {source}")
+}
+pub const FORWARD_VERIFIED_ABOUT: &str =
+    "This server made the copy from the original message, which has not changed it since.";
+pub const FORWARD_EDITED_ABOUT: &str = "The copy was edited after it was forwarded, so this server does not confirm that it matches the original message.";
+pub const FORWARD_REMOTE_ABOUT: &str = "The copy comes from another server, which this server does not ask: it does not confirm that the copy matches the original message.";
+pub const FORWARD_COMMENT: &str = "Comment (optional)";
 pub const FORWARD_MESSAGE: &str = "Forward message";
 pub const FORWARD_SEND: &str = "Forward";
 pub const FORWARD_UNAVAILABLE: &str = "Original message unavailable";
 pub const FORWARD_LOADING: &str = "Loading original message…";
-pub const FORWARD_FIND: &str = "Find a destination or paste a thread link";
+pub const FORWARD_FIND: &str =
+    "Find a channel, a conversation or a thread, or paste a message link";
 pub const FORWARD_NONE: &str = "No writable destinations match.";
-
-pub const FORWARD_THREAD_LINK: &str = "Use thread link";
 
 pub const VIEW_ORIGINAL: &str = "Go to message";
 
 pub const MARK_UNREAD: &str = "Mark unread";
+pub const MARK_AS_UNREAD: &str = "Mark as unread";
 
 pub const WHO_REACTED: &str = "Who reacted";
 pub const REACTION_PEOPLE_LOADING: &str = "Reading the people who reacted…";

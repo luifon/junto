@@ -825,9 +825,15 @@ impl Job {
             }
             MessagePlace::Direct { .. } => "Direct messages".to_owned(),
             MessagePlace::Group { conversation_id } => {
-                crate::messages::groups::load(connection, conversation_id)
-                    .await?
-                    .name
+                let mut group = crate::messages::groups::load(connection, conversation_id).await?;
+                // A group without a name is titled by its members (ADR 0302).
+                crate::messages::groups::name_unnamed(
+                    connection,
+                    None,
+                    std::slice::from_mut(&mut group),
+                )
+                .await?;
+                group.name
             }
         }))
     }

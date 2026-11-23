@@ -432,6 +432,8 @@ pub struct MenuItem {
     shortcut: Option<junto_client_core::keybinds::KeyAction>,
     keys: Option<SharedString>,
     disabled: bool,
+    /// The item destroys something, such as Delete: drawn in the colour of an error.
+    danger: bool,
     selector: Option<SharedString>,
     on_click: Option<ClickHandler>,
 }
@@ -451,9 +453,16 @@ impl MenuItem {
             shortcut: None,
             keys: None,
             disabled: false,
+            danger: false,
             selector: None,
             on_click: None,
         }
+    }
+
+    /// Draws the item of an action that destroys something in the colour of an error.
+    pub fn danger(mut self) -> Self {
+        self.danger = true;
+        self
     }
 
     /// An item that does nothing now. It stays a stop of the keyboard, so that the focus
@@ -627,7 +636,15 @@ impl RenderOnce for MenuItem {
                         .when_some(selector, |mark, selector| {
                             mark.debug_selector(move || format!("{selector}-icon-{shown:?}"))
                         })
-                        .child(icon(shown, 15.0, colors.ink_2)),
+                        .child(icon(
+                            shown,
+                            15.0,
+                            if self.danger {
+                                colors.cinnabar
+                            } else {
+                                colors.ink_2
+                            },
+                        )),
                 )
             })
             .when_some(self.swatch, |item, colour| {
@@ -649,6 +666,7 @@ impl RenderOnce for MenuItem {
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .when(self.danger, |title| title.ink(colors.cinnabar))
                             .when(self.disabled, |title| title.ink(colors.ink_3))
                             .child(self.title),
                     )

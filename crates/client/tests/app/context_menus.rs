@@ -8,7 +8,7 @@ use crate::messages::document;
 use crate::threads::with_root;
 
 #[gpui::test]
-fn a_channel_menu_marks_its_channel_read_without_selecting_it(cx: &mut TestAppContext) {
+fn a_channel_menu_marks_its_channel_read_and_unread_without_selecting_it(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Example Studio");
     let admin = world.owner(&server);
@@ -44,10 +44,52 @@ fn a_channel_menu_marks_its_channel_read_without_selecting_it(cx: &mut TestAppCo
             .unread,
         0
     );
+
+    // With nothing unread the one read item marks the channel unread from its newest
+    // message.
+    window.right_click_named(format!("channel-row:{target}"));
+    assert!(!window.shows("channel-mark-read"));
+    window.click("channel-mark-unread");
+    window.until("the target channel is unread again", |window| {
+        window
+            .channels()
+            .iter()
+            .any(|row| row.id == target && row.unread.messages == 1)
+    });
+    assert_eq!(window.selected_channel(), selected);
+    assert_eq!(
+        world
+            .run(
+                window
+                    .handle()
+                    .api()
+                    .message_state(junto_client_core::model::PlaceId::Channel(target))
+            )
+            .unwrap()
+            .unread,
+        1
+    );
 }
 
 #[gpui::test]
-fn a_channel_menu_edits_its_target_without_selecting_it(cx: &mut TestAppContext) {
+fn a_channel_without_messages_has_no_read_item_in_its_menu(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let workspace = default_workspace(&world, &owner);
+    let target = text_channel(&world, &owner, workspace, "planning");
+    window.until("the target channel is listed", |window| {
+        window.shows_channel("planning")
+    });
+    window.right_click_named(format!("channel-row:{target}"));
+    assert!(window.shows("channel-menu"));
+    assert!(window.shows("channel-copy-link"));
+    assert!(!window.shows("channel-mark-read"));
+    assert!(!window.shows("channel-mark-unread"));
+}
+
+#[gpui::test]
+fn a_channel_menu_opens_the_settings_of_its_target_without_selecting_it(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Example Studio");
     let (_directory, mut window, owner) = owner_window(cx, &server);
@@ -58,7 +100,7 @@ fn a_channel_menu_edits_its_target_without_selecting_it(cx: &mut TestAppContext)
         window.shows_channel("planning")
     });
     window.right_click_named(format!("channel-row:{target}"));
-    window.click("channel-edit");
+    window.click("channel-settings");
     window.until("the settings of the target are open", |window| {
         matches!(window.admin().map(|view| view.scope), Some(Scope::Channel(settings)) if settings.channel_id == target)
     });
@@ -73,16 +115,60 @@ fn a_channel_menu_edits_its_target_without_selecting_it(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn a_member_without_manage_channel_has_no_edit_in_the_channel_menu(cx: &mut TestAppContext) {
+fn channel_settings_are_in_the_channel_menu_of_a_person_who_may_use_a_part_of_them(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::state::admin::ChannelPage;
+    use junto_client_core::protocol::WorkspacePermission;
+    use junto_client_core::protocol::roles::CreateWorkspaceRole;
+
     let world = World::new();
     let server = world.server("Example Studio");
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
     let target = window.selected_channel();
+    // The header of a channel has no settings button.
+    assert!(!window.shows("channel-settings"));
     window.right_click_named(format!("channel-row:{target}"));
     assert!(window.shows("channel-menu"));
-    assert!(window.shows("channel-mark-read"));
-    assert!(!window.shows("channel-edit"));
+    assert!(window.shows("channel-notify-settings"));
+    assert!(!window.shows("channel-settings"));
+    window.press("escape");
+
+    // A role that allows the export alone: the settings show the page of the export.
+    let workspace_id = default_workspace(&world, &admin.handle);
+    let api = admin.handle.api();
+    let role = world
+        .run(api.create_workspace_role(
+            workspace_id,
+            &CreateWorkspaceRole {
+                color: None,
+                hoist: false,
+                name: "Archivists".to_owned(),
+                permissions: vec![WorkspacePermission::ExportChannel],
+            },
+        ))
+        .unwrap();
+    let own = window.own_account();
+    world
+        .run(api.assign_workspace_role(workspace_id, own, role.id))
+        .unwrap();
+    window.until("the export is held in the channel", |window| {
+        window
+            .channels()
+            .iter()
+            .any(|row| row.id == target && row.allowed.export)
+    });
+    window.right_click_named(format!("channel-row:{target}"));
+    window.click("channel-settings");
+    window.until("the settings show the page of the export alone", |window| {
+        matches!(
+            window.admin().map(|view| view.scope),
+            Some(Scope::Channel(settings))
+                if settings.channel_id == target && settings.pages == [ChannelPage::Archive]
+        )
+    });
+    assert_eq!(window.selected_channel(), target);
 }
 
 #[gpui::test]
@@ -106,6 +192,7 @@ fn a_direct_menu_marks_its_conversation_read_without_opening_it(cx: &mut TestApp
                 document: document("A direct update"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -141,6 +228,18 @@ fn a_direct_menu_marks_its_conversation_read_without_opening_it(cx: &mut TestApp
             .unread,
         0
     );
+    window.right_click_named(format!("direct-row:{}", conversation.id));
+    assert!(!window.shows("direct-mark-read"));
+    window.click("direct-mark-unread");
+    window.until("the conversation is unread again", |window| {
+        window.view().lists().is_some_and(|lists| {
+            lists
+                .directs
+                .iter()
+                .any(|row| row.id == conversation.id && row.unread.messages == 1)
+        })
+    });
+    assert_eq!(window.selected_channel(), selected);
     window.right_click_named(format!("direct-row:{}", conversation.id));
     window.click("direct-open");
     window.until("the menu opens its conversation", |window| {
@@ -241,6 +340,7 @@ fn copy_target_links_from_channel_direct_and_notice_menus(cx: &mut TestAppContex
                 document: document("A linked update"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -1096,7 +1196,7 @@ fn search_and_notice_author_targets_have_account_menus_that_end_with_their_panel
     window.until("closing search ends the author menu", |window| {
         !window.shows("account-menu")
     });
-    window.click("notices-row");
+    window.click("activity-button");
     window.until("the mention is in the notice list", |window| {
         window
             .view()
@@ -1192,29 +1292,65 @@ fn thread_menu_actions_read_and_follow_their_target_without_opening_its_panel(
                 .thread_menu_control(owner, root))
             .is_some()
     );
-    assert!(window.state.update(&mut window.cx, |state, cx| {
-        state.mark_thread_menu_read(owner, root, cx)
-    }));
+    // The menu of the row of an unread thread offers "Mark as read" alone; its press marks
+    // the thread read on the server and keeps the selection (ADR 0742).
+    window.right_click_named(format!("thread-row:{root}"));
+    assert!(window.shows("thread-read") && !window.shows("thread-unread"));
+    window.click("thread-read");
     window.until("the target is marked read", |window| {
-        window
-            .channels()
-            .iter()
-            .flat_map(|channel| &channel.threads)
-            .all(|thread| thread.root_id != root || thread.unread == 0)
-            && window
-                .state
-                .read_with(&window.cx, |state, _| {
-                    state.thread_menu_control(owner, root)
-                })
-                .is_some_and(|control| !control.busy)
-    });
-    assert_eq!(
         world
             .run(window.handle().api().thread_state(root))
             .unwrap()
-            .unread,
-        0
-    );
+            .unread
+            == 0
+    });
+    // A read thread has no row under its channel (ADR 0796).
+    window.until("the read thread leaves the channel column", |window| {
+        !window.shows_named(format!("thread-row:{root}"))
+    });
+    assert!(!window.shows("thread-panel"));
+    assert_eq!(window.selected_channel(), channel);
+    // The menu of the thread header offers "Mark as unread" alone for a read thread; its
+    // press marks the thread unread from its newest reply.
+    let server_id = window.view().selected.as_ref().unwrap().id;
+    window.in_shell(|shell, window, cx| shell.open_thread(server_id, channel, root, window, cx));
+    window.until("the thread panel is open", |window| {
+        window.shows("thread-more")
+    });
+    window.click("thread-more");
+    assert!(window.shows(crate::harness::selector(format!(
+        "context-action:{}",
+        junto_client::text::MARK_AS_UNREAD
+    ))));
+    assert!(!window.shows(crate::harness::selector(format!(
+        "context-action:{}",
+        junto_client::text::MARK_AS_READ
+    ))));
+    window.click(crate::harness::selector(format!(
+        "context-action:{}",
+        junto_client::text::MARK_AS_UNREAD
+    )));
+    window.until("the target is marked unread", |window| {
+        world
+            .run(window.handle().api().thread_state(root))
+            .unwrap()
+            .unread
+            == 1
+    });
+    assert_eq!(window.selected_channel(), channel);
+    window.click("close-thread");
+    // The follow choices of the menu of the row, through the state of the menu.
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.begin_thread_menu(owner, root, cx)
+    }));
+    window.until("the target follow state is read again", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| {
+                state.thread_menu_control(owner, root)
+            })
+            .is_some_and(|control| !control.busy)
+    });
     for following in [false, true] {
         assert!(window.state.update(&mut window.cx, |state, cx| {
             state.set_thread_menu_follow(owner, root, following, cx)
@@ -1431,6 +1567,7 @@ fn a_reply_preview_copies_its_target_and_gives_its_author_a_separate_menu(cx: &m
                 document: document("A reply preview"),
                 reply_to: Some(root),
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

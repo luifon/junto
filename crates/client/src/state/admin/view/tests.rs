@@ -1106,6 +1106,7 @@ fn the_thread_and_the_pins_of_an_archived_channel_offer_no_change() {
         reply_count: 0,
         last_reply: None,
         reply_authors: Vec::new(),
+        comment: None,
         pinned: false,
         files_removed_by_retention: false,
     };
@@ -1251,6 +1252,7 @@ fn an_archived_voice_channel_offers_no_recording_removal() {
             pinned: false,
             files_removed_by_retention: false,
             reply_authors: Vec::new(),
+            comment: None,
         };
         model.timelines.push(Arc::new(Timeline {
             place: PlaceId::Channel(scene.daily),

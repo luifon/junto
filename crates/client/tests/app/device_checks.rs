@@ -354,7 +354,7 @@ fn channel_pair_and_group_calls_offer_a_guarded_check_before_joining(cx: &mut Te
         window.shows_named(format!("direct-row:{}", pair.id))
     });
     window.click_named(format!("direct-row:{}", pair.id));
-    window.click("start-direct-call-check");
+    window.click("conversation-devices");
     window.click("join-after-check");
     assert!(window.shows("prejoin-dialog"));
     window.click_in_device_check("cancel-device-check");
@@ -368,7 +368,7 @@ fn channel_pair_and_group_calls_offer_a_guarded_check_before_joining(cx: &mut Te
         window.shows_named(format!("direct-row:{}", group.id))
     });
     window.click_named(format!("direct-row:{}", group.id));
-    window.click("start-group-call-check");
+    window.click("conversation-devices");
     window.click("join-after-check");
     window.click_in_device_check("preview-camera");
     window.until("group prejoin preview", |window| {

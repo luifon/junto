@@ -23,7 +23,7 @@ mod device_checks;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
-mod followed;
+pub(crate) mod followed;
 pub(crate) mod forwarding;
 pub mod linking;
 pub mod logo;
@@ -57,6 +57,7 @@ pub mod transcript_work;
 mod tray;
 pub mod update_install;
 pub mod view;
+mod viewers;
 
 pub use messages::{AttachRefusal, Measured, measure};
 pub use notifying::MentionSwitch;
@@ -638,6 +639,8 @@ pub struct AppState {
     message_link_asks: u64,
     message_link_failed: Option<u64>,
     unread_pauses: HashSet<(ServerId, PlaceId)>,
+    /// The channels whose viewers are being read.
+    viewers_asked: HashSet<(ServerId, junto_client_core::protocol::ids::ChannelId)>,
     reactions: reaction_people::Reactions,
     /// The messages of replies that were asked for from the server.
     /// The quoted messages that were asked for, with the number of the read.
@@ -1154,6 +1157,7 @@ impl AppState {
             message_link_asks: 0,
             message_link_failed: None,
             unread_pauses: HashSet::new(),
+            viewers_asked: HashSet::new(),
             reactions: reaction_people::Reactions::default(),
             asked_quotes: HashMap::new(),
             quote_streams: HashMap::new(),
@@ -2253,6 +2257,8 @@ impl AppState {
         self.read_quotes_again(server_id);
         self.search_after_reload(server_id, cx);
         self.reaction_people_changed(server_id, None, cx);
+        // A change of who sees a channel may have been missed (ADR 0790).
+        self.forget_channel_viewers(server_id, cx);
         self.changed(cx);
     }
 
@@ -2333,6 +2339,25 @@ impl AppState {
             self.invalidate_switcher(server_id, cx);
             self.presence_invalidated(server_id, true, cx);
             self.invalidate_profiles(server_id, cx);
+            // A name or a picture does not change who can see a channel.
+            if !matches!(event.as_ref(), Event::AccountProfileUpdated { .. }) {
+                self.forget_channel_viewers(server_id, cx);
+            }
+        }
+        // Who can see which channel can differ after a change of roles, members or rules.
+        if matches!(
+            event.as_ref(),
+            Event::WorkspaceMemberRolesChanged { .. }
+                | Event::WorkspaceRoleCreated { .. }
+                | Event::WorkspaceRoleUpdated { .. }
+                | Event::WorkspaceRoleDeleted { .. }
+                | Event::PermissionRuleSet { .. }
+                | Event::ChannelRulesSynced { .. }
+                | Event::WorkspacePersonPermissionsSet { .. }
+                | Event::ServerPersonPermissionsSet { .. }
+                | Event::ChannelUpdated { .. }
+        ) {
+            self.forget_channel_viewers(server_id, cx);
         }
         if matches!(
             event.as_ref(),

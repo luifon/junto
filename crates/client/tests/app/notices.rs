@@ -88,7 +88,7 @@ impl Window {
     }
 
     pub(crate) fn open_notices(&mut self) {
-        self.click("notices-row");
+        self.click("activity-button");
         self.until("the notices are listed", |window| {
             window
                 .notices()
@@ -837,6 +837,7 @@ fn at_the_bottom_of_the_rows_of_a_jump_one_newer_page_arrives_below_the_view(
                 document: document(&text),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             };
             world
                 .run(

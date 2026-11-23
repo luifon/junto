@@ -563,6 +563,25 @@ impl Shell {
         }
     }
 
+    /// Opens the settings of a channel from the channel list, at the first page that the
+    /// person may use. Every entry of the channel list that opens them calls this function.
+    pub(crate) fn open_settings_of_channel(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let open = AdminOpen::Channel {
+            server_id,
+            workspace_id,
+            channel_id,
+            page: ChannelPage::Overview,
+        };
+        self.open_admin(open, window, cx);
+    }
+
     /// The fields and the open forms of the layer belong to the page that was shown.
     pub(crate) fn reset_admin_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.admin.list = list::PageList::new(cx);

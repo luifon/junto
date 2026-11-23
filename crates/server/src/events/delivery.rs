@@ -443,6 +443,12 @@ fn decide(
                 Event::NotificationChanged { message_id, notice } => {
                     *notice = standing.notifications.get(message_id).cloned();
                 }
+                // A client of 0.2 requires a group name (ADR 0302).
+                Event::GroupConversationChanged { group } if group.name.is_empty() => {
+                    if let Some(name) = standing.group_names.get(&group.id) {
+                        group.name = name.clone();
+                    }
+                }
                 Event::MessageChanged {
                     thread_root: Some(root),
                     thread,
@@ -964,6 +970,9 @@ struct Standing {
     fellows: HashSet<AccountId>,
     contacts: HashMap<AccountId, junto_authz::Contact>,
     groups: HashSet<junto_protocol::ids::ConversationId>,
+    /// The names that a client of 0.2 receives for the groups without a name that the
+    /// batch changes (ADR 0302).
+    group_names: HashMap<junto_protocol::ids::ConversationId, String>,
     listed: HashSet<Uuid>,
     /// The workspaces, of the ones that the invites of the batch name, that the account is
     /// a member of. Read only for an account that holds `create_invites`.
@@ -1322,8 +1331,25 @@ impl Standing {
                 .into_iter()
                 .map(|group| group.id)
                 .collect();
+        let mut unnamed: Vec<_> = candidates
+            .iter()
+            .filter_map(|candidate| match &candidate.event {
+                Some(Event::GroupConversationChanged { group }) if group.name.is_empty() => {
+                    Some(group.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        crate::messages::groups::named_for_reader(connection, access.account_id, &mut unnamed)
+            .await?;
+        let group_names = unnamed
+            .into_iter()
+            .filter(|group| !group.name.is_empty())
+            .map(|group| (group.id, group.name))
+            .collect();
         Ok(Self {
             groups,
+            group_names,
             quiet: candidates.iter().any(|candidate| {
                 matches!(
                     candidate.audience,

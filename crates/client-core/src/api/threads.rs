@@ -166,6 +166,27 @@ impl ServerApi {
         read_json(&response)
     }
 
+    /// One page of the threads of a workspace that the caller follows in the channels whose
+    /// history it reads: unread ones first, each group with the newest reply first. `before`
+    /// is the continuation of the page before (ADR 0413).
+    pub async fn workspace_followed_threads(
+        &self,
+        workspace_id: junto_protocol::ids::WorkspaceId,
+        before: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<junto_protocol::message::WorkspaceThreads, ApiError> {
+        let mut query = Vec::new();
+        if let Some(before) = before {
+            query.push(("before", before.to_owned()));
+        }
+        if let Some(limit) = limit {
+            query.push(("limit", limit.to_string()));
+        }
+        let path = format!("/workspaces/{workspace_id}/threads");
+        let response = self.call(Method::Get, path, query, None).await?;
+        read_json(&response)
+    }
+
     // Pins.
 
     /// The pinned messages of a channel as they are now, in the order in which they were

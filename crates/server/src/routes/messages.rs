@@ -173,6 +173,10 @@ pub(super) async fn send(
 ) -> ApiResult<Message> {
     super::message_format::require(&body.document, client_revision)?;
     document::validate(&body.document)?;
+    if let Some(comment) = &body.comment {
+        super::message_format::require(comment, client_revision)?;
+    }
+    let comment = messages::forwarding::comment(&body.document, body.comment.as_ref())?;
     let id = MessageId::generate();
     let now = app.now();
     let mut counted = false;
@@ -185,7 +189,11 @@ pub(super) async fn send(
             messages::forwarding::prepare(connection, app, &access, &body.document).await?;
         let mut body: SendMessage = body.clone();
         body.document = copied;
-        let named = messages::threads::named(&document::validate(&body.document)?);
+        body.comment = comment.clone();
+        // The forwarded content holds no reference of its own: its references are frozen
+        // into text. The mentions of a forward are those of its comment (ADR 0408).
+        let mentioning = body.comment.as_ref().unwrap_or(&body.document);
+        let named = messages::threads::named(&document::validate(mentioning)?);
         if !document::has_content(&body.document) && body.attachments.is_empty() {
             return Err(ApiError::invalid("a message needs text or an attachment"));
         }
@@ -247,8 +255,8 @@ pub(super) async fn send(
             }
             _ => false,
         };
-        sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,reply_to,permanent,thread_root)
-             values($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+        sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,reply_to,permanent,thread_root,comment)
+             values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
 
                         .bind(id)
                         .bind(place.id)
@@ -259,6 +267,7 @@ pub(super) async fn send(
                         .bind(body.reply_to)
                         .bind(permanent)
                         .bind(thread_root)
+                        .bind(body.comment.as_ref().map(SqlJson))
                         .execute(&mut *connection)
                         .await?;
         if permanent {
@@ -270,7 +279,16 @@ pub(super) async fn send(
             .execute(&mut *connection)
             .await?;
         }
-        messages::mentions(connection, &access, &place, id, &body.document, None, now).await?;
+        messages::mentions(
+            connection,
+            &access,
+            &place,
+            id,
+            body.comment.as_ref().unwrap_or(&body.document),
+            None,
+            now,
+        )
+        .await?;
         if let Some((root, candidates, before)) = &followers {
             messages::threads::tell_new_followers(
                 connection,
@@ -354,6 +372,9 @@ pub async fn edit_message(
     let client_revision = super::message_format::revision(&headers);
     super::message_format::require(&body.document, client_revision)?;
     document::validate(&body.document)?;
+    if let Some(comment) = &body.comment {
+        super::message_format::require(comment, client_revision)?;
+    }
     let now = app.now();
     let mut counted = false;
     transact!(app, |connection| {
@@ -372,28 +393,45 @@ pub async fn edit_message(
         if !document::has_content(&body.document) && message.attachments.is_empty() {
             return Err(ApiError::invalid("a message needs text or an attachment"));
         }
-        if message.document.as_ref() == Some(&body.document) {
+        // A forward keeps its comment unless the edit names a new one (ADR 0408). The kept
+        // comment is checked against the new content too: an edit that removes the forward
+        // origin and keeps the comment is refused.
+        let comment = messages::forwarding::comment(
+            &body.document,
+            body.comment.as_ref().or(message.comment.as_ref()),
+        )?;
+        let content_unchanged = message.document.as_ref() == Some(&body.document);
+        if content_unchanged && comment == message.comment {
             return Ok(message);
         }
+        // The forwarded content of a forward whose comment alone changes stays as the server
+        // stored it, with its verification.
         let body = EditMessage {
-            document: messages::forwarding::edited(connection, &access, &body.document).await?,
+            document: if content_unchanged {
+                body.document.clone()
+            } else {
+                messages::forwarding::edited(connection, &access, &body.document).await?
+            },
+            comment,
         };
-        let named = messages::threads::named(&document::validate(&body.document)?);
+        let mentioning = body.comment.as_ref().unwrap_or(&body.document);
+        let previous = if message
+            .document
+            .as_ref()
+            .is_some_and(|stored| stored.forward_origins() > 0)
+        {
+            message.comment.as_ref()
+        } else {
+            message.document.as_ref()
+        };
+        let named = messages::threads::named(&document::validate(mentioning)?);
         // An account that the edit names follows the thread of a reply by the rule.
         let before = match message.thread_root {
             Some(root) => messages::threads::following_among(connection, root, &named).await?,
             None => Vec::new(),
         };
-        let recipients = messages::mentions(
-            connection,
-            &access,
-            &place,
-            id,
-            &body.document,
-            message.document.as_ref(),
-            now,
-        )
-        .await?;
+        let recipients =
+            messages::mentions(connection, &access, &place, id, mentioning, previous, now).await?;
         if let Some(root) = message.thread_root {
             messages::threads::tell_new_followers(
                 connection,
@@ -405,10 +443,11 @@ pub async fn edit_message(
             )
             .await?;
         }
-        sqlx::query("update messages set document=$2,edited_at=$3 where id=$1")
+        sqlx::query("update messages set document=$2,edited_at=$3,comment=$4 where id=$1")
             .bind(id)
             .bind(SqlJson(&body.document))
             .bind(now)
+            .bind(body.comment.as_ref().map(SqlJson))
             .execute(&mut *connection)
             .await?;
         messages::changed(connection, now, place.value, id, message.position, false).await?;

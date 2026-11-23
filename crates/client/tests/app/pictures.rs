@@ -91,6 +91,7 @@ pub(crate) fn send_files(
             document: document(text),
             reply_to: None,
             attachments,
+            comment: None,
         };
         admin
             .handle

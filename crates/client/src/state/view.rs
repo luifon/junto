@@ -142,6 +142,8 @@ pub struct Selection {
     pub transcript: Option<(ServerId, ChannelId, RecordingId)>,
     /// The server whose notices the side panel shows.
     pub notices: Option<ServerId>,
+    /// The workspace whose followed threads the side panel shows (ADR 0741).
+    pub threads: Option<(ServerId, WorkspaceId)>,
     /// The scope whose notification settings the dialog shows.
     pub notify: Option<(ServerId, SettingsScope)>,
 }
@@ -208,6 +210,14 @@ pub struct Known {
     pub people: People,
     pub presence: super::presence::KnownPresence,
     pub members_failed: Vec<(ServerId, WorkspaceId)>,
+    /// The members who can see a channel, as the server listed them (ADR 0790).
+    pub viewers: HashMap<(ServerId, ChannelId), Viewers>,
+    /// The lists of `viewers` that a change may have made old: each stays shown and is
+    /// read again when the member list of its channel is shown.
+    pub viewers_stale: HashSet<(ServerId, ChannelId)>,
+    /// The count of the changes per server after which `viewers` may be old. A read that a
+    /// change overtook leaves its list marked old.
+    pub viewers_generation: HashMap<ServerId, u64>,
     /// The name of the profile preset.
     pub preset_name: String,
     /// The picture of the profile preset, as an image of the window.
@@ -404,7 +414,11 @@ const MOST_COUNTED: u64 = 100;
 /// What each place of a server holds unread, made once for a derivation of the window.
 /// The summaries of a server are a list without an order; a search of the list for each
 /// row would cost the square of its length.
-pub(super) struct Unreads(HashMap<PlaceId, Unread>);
+pub(super) struct Unreads {
+    unread: HashMap<PlaceId, Unread>,
+    /// The places whose history holds at least one message.
+    held: std::collections::HashSet<PlaceId>,
+}
 
 // How many indexes of summaries the derivations of this thread made. A test counts them.
 #[cfg(test)]
@@ -416,33 +430,44 @@ impl Unreads {
     pub(super) fn of(model: &ServerModel) -> Self {
         #[cfg(test)]
         SUMMARIES_READ.with(|read| read.set(read.get() + 1));
-        Self(
-            model
-                .message_states
-                .iter()
-                .filter(|state| match state.place {
-                    MessagePlace::Direct {
-                        conversation_id, ..
-                    }
-                    | MessagePlace::Group { conversation_id } => {
-                        !model.hidden_conversations.contains(&conversation_id)
-                    }
-                    _ => true,
-                })
+        let shown = model
+            .message_states
+            .iter()
+            .filter(|state| match state.place {
+                MessagePlace::Direct {
+                    conversation_id, ..
+                }
+                | MessagePlace::Group { conversation_id } => {
+                    !model.hidden_conversations.contains(&conversation_id)
+                }
+                _ => true,
+            });
+        Self {
+            unread: shown
+                .clone()
                 .map(|state| (PlaceId::of(&state.place), Unread::of_state(state)))
                 .collect(),
-        )
+            held: shown
+                .filter(|state| state.latest > 0)
+                .map(|state| PlaceId::of(&state.place))
+                .collect(),
+        }
     }
 
     pub(super) fn at(&self, place: PlaceId) -> Unread {
-        self.0.get(&place).copied().unwrap_or_default()
+        self.unread.get(&place).copied().unwrap_or_default()
+    }
+
+    /// The history of the place holds at least one message.
+    pub(super) fn holds_messages(&self, place: PlaceId) -> bool {
+        self.held.contains(&place)
     }
 
     /// The unread messages for the person alone in the places that `counted` names: the
     /// mentions of a channel, and every unread message of a direct conversation that shows
     /// its sign. A muted place counts nothing.
     fn for_person(&self, counted: impl Fn(PlaceId) -> bool) -> u64 {
-        self.0
+        self.unread
             .iter()
             .filter(|(place, unread)| counted(**place) && unread.any() && !unread.muted)
             .map(|(place, unread)| match place {
@@ -455,7 +480,7 @@ impl Unreads {
     /// Every place of the server together.
     pub(super) fn total(&self) -> Unread {
         let mut unread = Unread::default();
-        for held in self.0.values() {
+        for held in self.unread.values() {
             unread.add(*held);
         }
         unread
@@ -477,14 +502,8 @@ pub struct ThreadEntry {
     /// The thread can be opened: false for the thread of a message whose thread the person
     /// may not use.
     pub available: bool,
-}
-
-/// The row under the shown channel that offers its further followed threads (ADR 0413).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MoreFollowed {
-    /// How many further followed threads the client holds. Absent while the server lists
-    /// further ones: their number is not known.
-    pub count: Option<usize>,
+    /// The thread has at least one reply.
+    pub has_replies: bool,
 }
 
 /// The control of the thread panel that states whether the account follows the thread,
@@ -514,6 +533,8 @@ pub struct DirectRow {
     pub name: Option<String>,
     pub selected: bool,
     pub unread: Unread,
+    /// The history of the conversation holds at least one message.
+    pub holds_messages: bool,
     /// The mute of the conversation as the person set it (ADR 0515).
     pub mute: Mute,
     /// The other account left the server or was deleted: the conversation is read only
@@ -887,10 +908,10 @@ pub struct ChannelRow {
     pub threads: Vec<ThreadEntry>,
     /// The mute of the channel as the person set it.
     pub mute: Mute,
-    /// Present when the shown channel has further followed threads than its rows list.
-    pub more_followed: Option<MoreFollowed>,
     /// What the person holds in the channel, as the server stated it (ADR 0310).
     pub allowed: Allowed,
+    /// The history of the channel holds at least one message.
+    pub holds_messages: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -998,6 +1019,17 @@ pub struct Allowed {
     /// Send the microphone without the push-to-talk key.
     pub voice_activity: bool,
     pub set_user_limit: bool,
+    pub export: bool,
+}
+
+impl Allowed {
+    /// The person may use at least one part of the settings of a channel of this kind: the
+    /// whole of them, the export, or the user limit of a voice channel (ADR 0761).
+    pub fn channel_settings(&self, kind: ChannelKind) -> bool {
+        self.manage
+            || (self.export && self.read_history)
+            || (kind == ChannelKind::Voice && self.set_user_limit)
+    }
 }
 
 /// What the person may put into the next message of a place (ADR 0790). A direct
@@ -1433,9 +1465,39 @@ pub struct WorkspaceView {
     pub search: Option<SearchPanel>,
     /// The transcript of a recording that the side panel shows.
     pub transcript: Option<TranscriptPanel>,
+    /// The followed threads of the workspace that the side panel shows (ADR 0741).
+    pub followed: Option<FollowedPanel>,
+    /// The members who can see the shown channel, while they were asked for.
+    pub viewers: Option<Viewers>,
+    /// A change may have made `viewers` old: they stay shown and are read again.
+    pub viewers_stale: bool,
     /// Present when the shown channel is archived (ADR 0762): it is read and takes no
     /// message.
     pub archived: Option<ArchivedState>,
+}
+
+/// The threads of the shown workspace that the account follows, unread ones first, as the
+/// side panel "Threads" shows them (ADR 0741).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowedPanel {
+    pub rows: Vec<FollowedRow>,
+    /// The server lists more followed threads after the listed ones.
+    pub more: bool,
+    /// A read of the list is on its way.
+    pub reading: bool,
+    /// Why the list holds no answer: an older server, or a failed read.
+    pub failure: Option<super::followed::ListFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowedRow {
+    pub root_id: MessageId,
+    pub channel_id: ChannelId,
+    pub channel_name: String,
+    /// The start of the text of the root. Absent while the root was not read.
+    pub title: Option<String>,
+    pub unread: u64,
+    pub mentions: u64,
 }
 
 /// The transcript of one recording of the shown voice channel, as the side panel shows it
@@ -2070,6 +2132,42 @@ fn target_of(
 
 /// The name of an account: from the member list of the shown workspace, when there is one,
 /// and from the profiles that were read otherwise.
+/// The name of a group as the window shows it on every surface (ADR 0302): its name, or the
+/// names of its present members other than the own account.
+pub(crate) fn group_title(
+    server_id: ServerId,
+    group: &junto_client_core::protocol::message::GroupConversation,
+    workspace: Option<&WorkspaceModel>,
+    model: &ServerModel,
+    known: &Known,
+) -> String {
+    crate::text::conversations::group_title(
+        &group.name,
+        &group.account_ids,
+        model.account.id,
+        |id| {
+            known
+                .people
+                .departure(server_id, id)
+                .is_none()
+                .then(|| name_of(server_id, id, workspace, model, known))
+                .flatten()
+        },
+    )
+}
+
+impl super::AppState {
+    /// [`group_title`] for a part of the window outside the derived view.
+    pub(crate) fn group_title(
+        &self,
+        server_id: ServerId,
+        model: &ServerModel,
+        group: &junto_client_core::protocol::message::GroupConversation,
+    ) -> String {
+        group_title(server_id, group, None, model, &self.known)
+    }
+}
+
 fn name_of(
     server_id: ServerId,
     account_id: AccountId,
@@ -2379,8 +2477,65 @@ fn channel_row(
         permanent: channel.channel.permanent_messages,
         threads: Vec::new(),
         mute: Mute::of_channel(channel.channel.id, model, known),
-        more_followed: None,
         allowed: allowed(workspace.permissions_in(channel.channel.id)),
+        holds_messages: unreads.holds_messages(PlaceId::Channel(channel.channel.id)),
+    }
+}
+
+/// The members of a workspace who can see a channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Viewers {
+    Reading,
+    Read(Arc<std::collections::HashSet<AccountId>>),
+    Failed,
+}
+
+/// The followed threads of a workspace as the server listed them, with the names of their
+/// channels and the titles of their roots that the window holds.
+fn followed_panel(
+    server_id: ServerId,
+    workspace: &WorkspaceModel,
+    model: &ServerModel,
+    known: &Known,
+) -> FollowedPanel {
+    let names = Names::default();
+    let list = &known.followed.workspace;
+    let held = list
+        .held()
+        .filter(|(scope, _)| *scope == (server_id, workspace.workspace.id))
+        .map(|(_, threads)| threads)
+        .unwrap_or_default();
+    let rows = held
+        .iter()
+        .filter_map(|state| {
+            let channel_id = *known
+                .followed
+                .workspace_channels
+                .get(&(server_id, state.root_id))?;
+            let channel = workspace.channel(channel_id)?;
+            // The state of the server holds the newest counts of an unread thread.
+            let (unread, mentions) = match model.thread_state(state.root_id) {
+                Some(held) => (held.unread, held.mentions),
+                None => (state.unread, state.mentions),
+            };
+            Some(FollowedRow {
+                root_id: state.root_id,
+                channel_id,
+                channel_name: channel.channel.name.clone(),
+                title: held_root(model, channel_id, state.root_id)
+                    .or_else(|| known.followed.roots.get(server_id, state.root_id))
+                    .and_then(|root| root.document.as_ref())
+                    .map(|document| feed::plain_text(document, &names, THREAD_TITLE_CHARACTERS)),
+                unread,
+                mentions,
+            })
+        })
+        .collect();
+    FollowedPanel {
+        rows,
+        more: list.has_more(),
+        reading: list.is_reading(),
+        failure: list.failure(),
     }
 }
 
@@ -2388,17 +2543,17 @@ fn channel_row(
 const THREAD_TITLE_CHARACTERS: usize = 48;
 
 /// The unread threads of a channel, in the order of the server; with `followed`, for the
-/// shown channel, the threads that the account follows and that are not among them, the
-/// one with the newest reply first (ADR 0413); and after them the thread that the side
-/// panel shows when no row lists it. With them, the row that offers the further followed
-/// threads.
+/// shown channel, the unread threads that the account follows beyond the pages of unread
+/// threads that the state of the server holds (ADR 0413); and after them the thread that
+/// the side panel shows when no row lists it. A read followed thread has no row under its
+/// channel: the side panel "Threads" lists it (ADR 0796).
 fn thread_entries(
     channel_id: ChannelId,
     model: &ServerModel,
     names: &Names,
     open: Option<MessageId>,
     followed: Option<(ServerId, &Followed)>,
-) -> (Vec<ThreadEntry>, Option<MoreFollowed>) {
+) -> Vec<ThreadEntry> {
     use junto_client_core::model::Named;
     let title = |root: &junto_client_core::protocol::message::Message| {
         root.document
@@ -2423,16 +2578,15 @@ fn thread_entries(
                     mentions: state.mentions,
                     open: open == Some(state.root_id),
                     available: true,
+                    has_replies: state.latest > 0,
                 })
             }
             _ => None,
         })
         .collect();
-    let mut more = None;
     if let Some((server_id, followed)) = followed {
         let listed: Vec<MessageId> = entries.iter().map(|entry| entry.root_id).collect();
-        let (further, offered) = followed.list.listed((server_id, channel_id), &listed, open);
-        more = offered;
+        let further = followed.list.listed((server_id, channel_id), &listed);
         for state in further {
             // The state of the server holds every unread thread, or the first pages of
             // them: beyond those pages the list of followed threads tells what is unread.
@@ -2441,6 +2595,9 @@ fn thread_entries(
                 None if model.threads_more => (state.unread, state.mentions),
                 None => (0, 0),
             };
+            if unread == 0 && mentions == 0 {
+                continue;
+            }
             entries.push(ThreadEntry {
                 root_id: state.root_id,
                 title: held_root(model, channel_id, state.root_id)
@@ -2450,6 +2607,7 @@ fn thread_entries(
                 mentions,
                 open: open == Some(state.root_id),
                 available: true,
+                has_replies: state.latest > 0,
             });
         }
     }
@@ -2470,9 +2628,15 @@ fn thread_entries(
             mentions: 0,
             open: true,
             available: true,
+            has_replies: model
+                .thread_state(root_id)
+                .is_some_and(|state| state.latest > 0)
+                || model
+                    .timeline(place)
+                    .is_some_and(|timeline| timeline.messages.iter().any(|reply| !reply.deleted)),
         });
     }
-    (entries, more)
+    entries
 }
 
 pub(crate) fn category_may_create(
@@ -2699,26 +2863,32 @@ fn directs(
                 name: name_of(server_id, other, workspace, model, known),
                 selected: selected == Some(conversation.id),
                 unread: unreads.at(PlaceId::Direct(conversation.id)),
+                holds_messages: unreads.holds_messages(PlaceId::Direct(conversation.id)),
                 mute: Mute::of_direct(other, model, known),
                 departure: known.people.departure(server_id, other),
             }
         })
         .collect();
     rows.extend(model.group_conversations.iter().map(|group| {
+        let members: Vec<(AccountId, String)> = group
+            .account_ids
+            .iter()
+            .filter(|id| **id != own && known.people.departure(server_id, **id).is_none())
+            .filter_map(|id| {
+                name_of(server_id, *id, workspace, model, known).map(|name| (*id, name))
+            })
+            .collect();
+        // A group without a name shows the names of its members, computed when shown
+        // (ADR 0302).
+        let name = group_title(server_id, group, workspace, model, known);
         DirectRow {
             id: group.id,
             account_id: None,
-            members: group
-                .account_ids
-                .iter()
-                .filter(|id| **id != own && known.people.departure(server_id, **id).is_none())
-                .filter_map(|id| {
-                    name_of(server_id, *id, workspace, model, known).map(|name| (*id, name))
-                })
-                .collect(),
-            name: Some(crate::text::label(&group.name)),
+            members,
+            name: Some(name),
             selected: selected == Some(group.id),
             unread: unreads.at(PlaceId::Direct(group.id)),
+            holds_messages: unreads.holds_messages(PlaceId::Direct(group.id)),
             mute: Mute::of_group(group.id, model, known),
             departure: None,
         }
@@ -3046,7 +3216,7 @@ fn workspace_view(
             .map(|(_, root_id)| root_id);
         // The followed threads are listed under the shown channel only.
         let followed = (Some(row.id) == shown).then_some((server_id, &known.followed));
-        (row.threads, row.more_followed) = thread_entries(row.id, model, &names, open, followed);
+        row.threads = thread_entries(row.id, model, &names, open, followed);
         if Some(row.id) == shown {
             row.selected = true;
             channel = Some(row.clone());
@@ -3058,7 +3228,7 @@ fn workspace_view(
             .filter(|(of, _)| *of == channel_id)
             .map(|(_, root_id)| root_id);
         let followed = Some((server_id, &known.followed));
-        let (threads, more_followed) = thread_entries(channel_id, model, &names, open, followed);
+        let threads = thread_entries(channel_id, model, &names, open, followed);
         // A call of an archived voice channel has ended: the row has no voice state, and
         // the main area shows its messages.
         channel = Some(ChannelRow {
@@ -3073,10 +3243,10 @@ fn workspace_view(
             permanent: archived.channel.permanent_messages,
             mute: Mute::of_channel(channel_id, model, known),
             threads,
-            more_followed,
             // No snapshot states the list of an archived channel: nothing is offered
             // until its own read answered (ADR 0310).
             allowed: allowed(model.permissions_in(channel_id).unwrap_or_default()),
+            holds_messages: unreads.holds_messages(PlaceId::Channel(channel_id)),
         });
     }
     let call = channel
@@ -3320,6 +3490,15 @@ fn workspace_view(
     let notices_wanted = selection.notices == Some(server_id);
     let in_call = call.is_some() || conversation.is_some_and(|shown| shown.in_call);
     let (no_thread, no_pins) = (thread.is_none(), pins.is_none());
+    let channel_viewers =
+        shown.and_then(|channel_id| known.viewers.get(&(server_id, channel_id)).cloned());
+    let viewers_stale =
+        shown.is_some_and(|channel_id| known.viewers_stale.contains(&(server_id, channel_id)));
+    let followed = (selection.threads == Some((server_id, workspace.workspace.id))
+        && no_thread
+        && no_pins
+        && transcript.is_none())
+    .then(|| followed_panel(server_id, workspace, model, known));
     let view = WorkspaceView {
         role_colors: workspace
             .roles
@@ -3342,9 +3521,17 @@ fn workspace_view(
         thread,
         pins,
         search: super::search::search_panel(server_id, workspace, model, known).filter(|_| {
-            no_thread && no_pins && transcript.is_none() && !notices_wanted && !in_call
+            no_thread
+                && no_pins
+                && transcript.is_none()
+                && !notices_wanted
+                && !in_call
+                && followed.is_none()
         }),
         transcript,
+        followed,
+        viewers: channel_viewers,
+        viewers_stale,
         archived: archived
             .filter(|held| workspace.channel(held.channel.id).is_none())
             .map(|held| ArchivedState {
@@ -3423,7 +3610,7 @@ fn head_unread(model: &ServerModel, unreads: &Unreads) -> Unread {
         return unreads.total();
     }
     let mut unread = Unread::default();
-    for (place, held) in &unreads.0 {
+    for (place, held) in &unreads.unread {
         if let PlaceId::Direct(_) = place {
             unread.add(*held);
         }
@@ -3891,6 +4078,7 @@ fn allowed(held: &[WorkspacePermission]) -> Allowed {
         share_screen: may(WorkspacePermission::ShareScreen),
         voice_activity: may(WorkspacePermission::UseVoiceActivity),
         set_user_limit: may(WorkspacePermission::SetCallUserLimit),
+        export: may(WorkspacePermission::ExportChannel),
     }
 }
 

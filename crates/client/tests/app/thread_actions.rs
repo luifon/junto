@@ -31,18 +31,12 @@ impl Window {
             .map(|control| (control.following, control.setting))
     }
 
-    /// The roots of the threads that the channel column lists under a channel, and whether
-    /// it offers the further followed threads.
-    fn threads_under(&mut self, channel_id: ChannelId) -> (Vec<MessageId>, bool) {
+    /// The roots of the threads that the channel column lists under a channel.
+    fn threads_under(&mut self, channel_id: ChannelId) -> Vec<MessageId> {
         self.channels()
             .into_iter()
             .find(|row| row.id == channel_id)
-            .map(|row| {
-                (
-                    row.threads.iter().map(|entry| entry.root_id).collect(),
-                    row.more_followed.is_some(),
-                )
-            })
+            .map(|row| row.threads.iter().map(|entry| entry.root_id).collect())
             .unwrap_or_default()
     }
 
@@ -107,6 +101,13 @@ impl Window {
         self.press_as_drawn(selector(format!("{action}:{message_id}")));
         self.settle();
     }
+
+    /// Pins or unpins a message through its menu, where Pin is offered (ADR 0740).
+    fn pin_from_menu(&mut self, message_id: MessageId) {
+        self.right_click_message(message_id);
+        self.click("message-pin");
+        self.settle();
+    }
 }
 
 #[gpui::test]
@@ -126,20 +127,20 @@ fn use_the_default_gives_the_following_of_a_thread_back_to_the_rule_of_the_serve
     window.until("the follow state is read", |window| {
         window.follow_state() == Some((false, None))
     });
-    assert!(!window.shows("thread-follow-default"));
+    assert!(!window.follow_menu_offers("Use the default"));
 
     // The member follows by choice. "Use the default" removes the choice: the rule
     // decides again, and the member follows the thread no longer.
-    window.click("thread-follow");
+    window.follow_menu_action("Follow");
     window.until("the choice to follow", |window| {
         window.follow_state() == Some((true, Some(true)))
     });
-    window.click("thread-follow-default");
+    window.follow_menu_action("Use the default");
     window.until("the choice is removed", |window| {
         window.follow_state() == Some((false, None))
     });
     assert_eq!(stored(&world), (false, None));
-    assert!(!window.shows("thread-follow-default"));
+    assert!(!window.follow_menu_offers("Use the default"));
 
     // The member writes in the thread and follows it by the rule, then chooses not to
     // follow it. "Use the default" gives the thread back to the rule: the member follows
@@ -148,12 +149,12 @@ fn use_the_default_gives_the_following_of_a_thread_back_to_the_rule_of_the_serve
     window.until("the member follows by the rule", |window| {
         window.follow_state() == Some((true, None))
     });
-    window.click("thread-follow");
+    window.follow_menu_action("Stop following");
     window.until("the choice not to follow", |window| {
         window.follow_state() == Some((false, Some(false)))
     });
     assert_eq!(stored(&world), (false, Some(false)));
-    window.click("thread-follow-default");
+    window.follow_menu_action("Use the default");
     window.until("the rule decides again", |window| {
         window.follow_state() == Some((true, None))
     });
@@ -172,83 +173,48 @@ fn use_the_default_gives_the_following_of_a_thread_back_to_the_rule_of_the_serve
 }
 
 #[gpui::test]
-fn the_followed_threads_after_the_first_eight_are_listed_when_the_person_asks(
+fn read_followed_threads_are_listed_in_the_threads_panel_and_not_under_their_channel(
     cx: &mut TestAppContext,
 ) {
     let world = World::new();
     let (_server, admin, _directory, mut window, general, _) = with_root(cx, &world);
     let api = window.handle().api();
-    // The member writes in a thread and follows it by the rule; an own reply is not
-    // unread, so the thread is listed as a followed thread without a sign.
-    let follow = |world: &World, count: usize, from: usize| -> Vec<MessageId> {
-        (from..from + count)
-            .map(|number| {
-                let root = admin.send(world, general, document(&format!("Topic {number}")));
-                let reply = SendMessage {
-                    document: document(&format!("Answer {number}")),
-                    reply_to: None,
-                    attachments: Vec::new(),
-                };
-                world.run(api.reply_in_thread(root.id, &reply)).unwrap();
-                root.id
-            })
-            .collect()
-    };
-
-    // Ten followed threads: the channel lists eight and offers the other two.
-    let first = follow(&world, 10, 0);
-    window.until("eight followed threads and the offer", |window| {
-        let (listed, more) = window.threads_under(general);
-        listed.len() == 8 && more
+    // The member writes in ten threads and follows them by the rule; an own reply is not
+    // unread, so each thread is a read followed thread.
+    let roots: Vec<MessageId> = (0..10)
+        .map(|number| {
+            let root = admin.send(&world, general, document(&format!("Topic {number}")));
+            let reply = SendMessage {
+                document: document(&format!("Answer {number}")),
+                reply_to: None,
+                attachments: Vec::new(),
+                comment: None,
+            };
+            world.run(api.reply_in_thread(root.id, &reply)).unwrap();
+            root.id
+        })
+        .collect();
+    // The channel column lists none of them, and offers no further row (ADR 0796).
+    window.click("threads-row");
+    window.until("the panel lists the ten threads", |window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.followed.clone())
+            .is_some_and(|panel| panel.rows.len() == 10)
     });
-    let more = window
-        .channels()
-        .into_iter()
-        .find(|row| row.id == general)
-        .and_then(|row| row.more_followed)
-        .unwrap();
-    assert_eq!(more.count, Some(2));
-    window.click_named(format!("followed-more:{general}"));
-    window.until("the ten followed threads", |window| {
-        let (listed, more) = window.threads_under(general);
-        listed.len() == 10 && !more
-    });
-    let (listed, _) = window.threads_under(general);
-    assert!(first.iter().all(|root| listed.contains(root)), "{listed:?}");
-    assert!(!window.shows_named(format!("followed-more:{general}")));
-
-    // More followed threads than the server gives in a page: the window lists the threads
-    // of the page that it read and offers the rest without a count.
-    let later = follow(&world, 45, 10);
-    window.until("a page of followed threads and the offer", |window| {
-        let (listed, more) = window.threads_under(general);
-        listed.len() == 50 && more
-    });
-    let more = window
-        .channels()
-        .into_iter()
-        .find(|row| row.id == general)
-        .and_then(|row| row.more_followed)
-        .unwrap();
-    assert_eq!(more.count, None);
-    // The offer is at the end of the long list. The press reads the next page from the
-    // server.
-    let offer = selector(format!("followed-more:{general}"));
-    window.wheel_to("channel-list", offer);
-    window.click(offer);
-    window.until("every followed thread", |window| {
-        let (listed, more) = window.threads_under(general);
-        listed.len() == 55 && !more
-    });
-    let (listed, _) = window.threads_under(general);
-    assert!(
-        first.iter().chain(&later).all(|root| listed.contains(root)),
-        "{listed:?}"
-    );
+    assert!(window.threads_under(general).is_empty());
+    let listed: Vec<MessageId> = window
+        .view()
+        .workspace()
+        .and_then(|workspace| workspace.followed.clone())
+        .map(|panel| panel.rows.iter().map(|row| row.root_id).collect())
+        .unwrap_or_default();
+    assert!(roots.iter().all(|root| listed.contains(root)), "{listed:?}");
     let stored = world
         .run(api.followed_threads(general, None, Some(200)))
         .unwrap();
-    assert_eq!(stored.threads.len(), 55);
+    assert_eq!(stored.threads.len(), 10);
 }
 
 #[gpui::test]
@@ -272,9 +238,10 @@ fn a_thread_is_forked_into_a_voice_channel(cx: &mut TestAppContext) {
             .is_some_and(|thread| thread.may_fork)
     });
 
-    // "Voice" opens the dialog for a voice channel, and the fork is made.
-    window.click("fork-voice");
+    // "Fork into a channel…" opens the dialog; its kind is Voice, and the fork is made.
+    window.thread_menu_action("Fork into a channel…");
     assert!(window.shows("fork-dialog"));
+    window.click("fork-kind-1");
     window.type_into("fork-name", "listening room");
     window.click("create-fork");
     window.until("the voice channel of the fork", |window| {
@@ -313,7 +280,10 @@ fn a_thread_is_forked_into_a_voice_channel(cx: &mut TestAppContext) {
     );
 
     // The link of the thread shows the chat of the voice channel with the copies.
-    assert!(window.shows("fork-link") && !window.shows("fork-voice"));
+    assert!(window.shows("fork-link") && window.shows("thread-forks"));
+    window.click("thread-more");
+    assert!(!window.shows("context-action:Fork into a channel…"));
+    window.press("escape");
     window.click("fork-link");
     window.until("the copies in the chat of the voice channel", |window| {
         window
@@ -392,15 +362,22 @@ fn a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread(cx: &mut 
         })
     });
 
-    // The bar of the reply edits it in the composer of the thread.
+    // The bar of the reply edits it in its row of the thread (ADR 0740).
     window.act_on(reply, "edit");
     assert_eq!(
         window.in_shell(|shell, _, _| shell.compose_state(Pane::Thread)),
         (None, Some(reply))
     );
+    assert!(window.shows_named(format!("message-editor:{reply}")));
+    assert_eq!(
+        window.in_shell(|shell, _, cx| {
+            shell.composer_text(junto_client::shell::Pen::Edit(Pane::Thread), cx)
+        }),
+        "One per speaker"
+    );
     assert_eq!(
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Thread, cx)),
-        "One per speaker"
+        ""
     );
     assert_eq!(
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
@@ -517,12 +494,12 @@ fn the_pin_after_the_hundredth_of_a_channel_is_refused_with_its_reason(cx: &mut 
     };
 
     // The 100th pin is taken.
-    window.act_on(hundredth, "pin");
+    window.pin_from_menu(hundredth);
     window.until("the 100th pin", |window| pinned_at(window, hundredth));
     assert!(!window.shows("compose-problem"));
 
     // The 101st is refused, and the composer tells why.
-    window.act_on(refused, "pin");
+    window.pin_from_menu(refused);
     window.until("the refusal of the 101st pin", |window| {
         window.in_shell(|shell, _, cx| shell.state().read(cx).message_refusal().map(str::to_owned))
             == Some(text::PIN_LIMIT.to_owned())
@@ -720,7 +697,7 @@ fn permanent_message_pin_controls(cx: &mut TestAppContext, in_thread: bool) {
                 .find(|row| row.message.id == target)
         }
     };
-    window.act_on(target, "pin");
+    window.pin_from_menu(target);
     window.until("the permanent message is pinned", |window| {
         drawn(window).is_some_and(|row| row.message.permanent && row.message.pinned)
     });
@@ -733,7 +710,7 @@ fn permanent_message_pin_controls(cx: &mut TestAppContext, in_thread: bool) {
             .collect::<Vec<_>>(),
         [target]
     );
-    window.act_on(target, "pin");
+    window.pin_from_menu(target);
     window.until(
         "the permanent message is unpinned and remains drawn",
         |window| drawn(window).is_some_and(|row| row.message.permanent && !row.message.pinned),

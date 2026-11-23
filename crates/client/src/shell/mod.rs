@@ -42,6 +42,7 @@ pub mod linking;
 mod links;
 mod main_area;
 mod member_search;
+mod message_actions;
 mod message_links;
 mod moving;
 mod reaction_people;
@@ -143,6 +144,8 @@ pub(crate) enum Layer {
     ReactionPeople(Box<reaction_people::People>),
     /// The question before a message is deleted.
     ConfirmDelete(junto_client_core::protocol::ids::MessageId),
+    /// The question before the export of a conversation (ADR 0411).
+    ConfirmExport(ServerId, junto_client_core::protocol::ids::ConversationId),
     /// The emoji picker: for a reaction to a message, or for the text of a composer.
     Emoji(EmojiTarget),
     /// The dialog that forks the thread of the side panel into a channel.
@@ -200,7 +203,6 @@ pub(crate) enum Layer {
     /// holds the accounts that it lists.
     NewDirect,
     QuickSwitcher,
-    GroupConversation,
     GroupMemberships,
     /// The viewer of the pictures of a message (ADR 0740).
     Picture(Box<viewer::PictureViewer>),
@@ -262,6 +264,7 @@ impl Layer {
             | Layer::Forward(..)
             | Layer::ReactionPeople(..)
             | Layer::ConfirmDelete(..)
+            | Layer::ConfirmExport(..)
             | Layer::Emoji(..)
             | Layer::Fork(..)
             | Layer::RenameGroup(..)
@@ -272,7 +275,6 @@ impl Layer {
             | Layer::LinkAll
             | Layer::NewDirect
             | Layer::QuickSwitcher
-            | Layer::GroupConversation
             | Layer::GroupMemberships
             | Layer::Picture(..)
             | Layer::FileLink(..) => true,
@@ -284,12 +286,12 @@ impl Layer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmojiTarget {
     React(junto_client_core::protocol::ids::MessageId),
-    Compose(Pane),
+    Compose(Pen),
 }
 
 /// A list of messages with its composer: the one of the main area, or the thread of the
 /// side panel (ADR 0741).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pane {
     Main,
     Thread,
@@ -329,6 +331,95 @@ impl Pane {
             (Self::Thread, "read-only-bar") => "thread-read-only-bar",
             (Self::Thread, part) => part,
         }
+    }
+}
+
+/// One editor of messages of a pane: the composer at the bottom, which writes new messages,
+/// or the editor that changes a message in its row (ADR 0740).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Pen {
+    Compose(Pane),
+    Edit(Pane),
+}
+
+impl Pen {
+    pub fn pane(self) -> Pane {
+        match self {
+            Self::Compose(pane) | Self::Edit(pane) => pane,
+        }
+    }
+
+    /// The editor changes a message in its row.
+    pub fn edits(self) -> bool {
+        matches!(self, Self::Edit(_))
+    }
+
+    /// The identifier of a part of the editor; the editor of a row has names of its own, so
+    /// that it and the composer of its pane can be drawn at once.
+    pub(crate) fn id(self, part: &'static str) -> &'static str {
+        match self {
+            Self::Compose(pane) => pane.id(part),
+            Self::Edit(Pane::Main) => match part {
+                "composer" => "edit-composer",
+                "composer-input" => "edit-composer-input",
+                "composer-view" => "edit-composer-view",
+                "composer-preview" => "edit-composer-preview",
+                "emoji-completion" => "edit-emoji-completion",
+                "emoji-candidate" => "edit-emoji-candidate",
+                "send-message" => "edit-send-message",
+                "attach-file" => "edit-attach-file",
+                "insert-emoji" => "edit-insert-emoji",
+                "compose-problem" => "edit-compose-problem",
+                "compose-problem-line" => "edit-compose-problem-line",
+                "compose-problem-focus" => "edit-compose-problem-focus",
+                "composer-hint" => "edit-composer-hint",
+                "format-bold" => "edit-format-bold",
+                "format-italic" => "edit-format-italic",
+                "format-strike" => "edit-format-strike",
+                "format-code" => "edit-format-code",
+                "format-code-block" => "edit-format-code-block",
+                "format-heading" => "edit-format-heading",
+                "format-small" => "edit-format-small",
+                "format-spoiler" => "edit-format-spoiler",
+                "format-link" => "edit-format-link",
+                "format-list" => "edit-format-list",
+                "format-quote" => "edit-format-quote",
+                _ => part,
+            },
+            Self::Edit(Pane::Thread) => match part {
+                "composer" => "thread-edit-composer",
+                "composer-input" => "thread-edit-composer-input",
+                "composer-view" => "thread-edit-composer-view",
+                "composer-preview" => "thread-edit-composer-preview",
+                "emoji-completion" => "thread-edit-emoji-completion",
+                "emoji-candidate" => "thread-edit-emoji-candidate",
+                "send-message" => "thread-edit-send-message",
+                "attach-file" => "thread-edit-attach-file",
+                "insert-emoji" => "thread-edit-insert-emoji",
+                "compose-problem" => "thread-edit-compose-problem",
+                "compose-problem-line" => "thread-edit-compose-problem-line",
+                "compose-problem-focus" => "thread-edit-compose-problem-focus",
+                "composer-hint" => "thread-edit-composer-hint",
+                "format-bold" => "thread-edit-format-bold",
+                "format-italic" => "thread-edit-format-italic",
+                "format-strike" => "thread-edit-format-strike",
+                "format-code" => "thread-edit-format-code",
+                "format-code-block" => "thread-edit-format-code-block",
+                "format-heading" => "thread-edit-format-heading",
+                "format-small" => "thread-edit-format-small",
+                "format-spoiler" => "thread-edit-format-spoiler",
+                "format-link" => "thread-edit-format-link",
+                "format-list" => "thread-edit-format-list",
+                "format-quote" => "thread-edit-format-quote",
+                _ => part,
+            },
+        }
+    }
+}
+
+impl From<Pane> for Pen {
+    fn from(pane: Pane) -> Self {
+        Self::Compose(pane)
     }
 }
 
@@ -395,6 +486,9 @@ pub struct Shell {
     /// Where the open menu of a message was drawn first: it stays there while the message
     /// grows, such as with its first reaction (ADR 0730).
     message_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
+    /// Whether the open menu of a message offered "Who reacted" when it was first drawn: the
+    /// item keeps its place while the menu is open (ADR 0730).
+    pub(crate) message_menu_reacted: Option<bool>,
     pub(crate) layer: Layer,
     switcher: switcher::Switcher,
     profile: profile::ProfileUi,
@@ -564,6 +658,9 @@ pub struct Shell {
     /// The list and the composer of the thread of the side panel.
     pub(crate) thread_feed: feed::FeedList,
     pub(crate) thread_composer: composer::Composer,
+    /// The editors of a message in its row, of the main area and of the thread (ADR 0740).
+    pub(crate) edit_composer: composer::Composer,
+    pub(crate) thread_edit_composer: composer::Composer,
     pub(crate) pins_scroll: ScrollHandle,
     /// The name of the channel that a thread is forked into.
     pub(crate) fork_name: Entity<InputState>,
@@ -578,6 +675,9 @@ pub struct Shell {
     /// title of the main window show (ADR 0741).
     badge: Option<u64>,
     pub(crate) search_scroll: ScrollHandle,
+    pub(crate) followed_scroll: ScrollHandle,
+    /// The placeholder that the search field shows: where a new search starts.
+    pub(crate) search_placeholder: gpui::SharedString,
     pub(crate) transcript_list: recorded::TranscriptList,
     /// The forms and the shown parts of the transcript of the side panel (ADR 0616).
     pub(crate) transcript_edit: transcript_edit::TranscriptEdit,
@@ -618,6 +718,8 @@ pub struct Shell {
     search_from: Entity<InputState>,
     search_through: Entity<InputState>,
     search_date_invalid: bool,
+    /// "Custom range…" of the date filter of the search was chosen: its dates are shown.
+    pub(crate) search_custom_dates: bool,
     /// The press of the pointer that closed the list of a filter was on the box of that
     /// list: the click that follows does not open the list again.
     pub(crate) filter_closed_by_press: bool,
@@ -707,6 +809,8 @@ impl Shell {
         let member_search = member_search::MemberSearch::new(window, cx);
         let composer = composer::Composer::new(window, cx);
         let thread_composer = composer::Composer::new(window, cx);
+        let edit_composer = composer::Composer::new(window, cx);
+        let thread_edit_composer = composer::Composer::new(window, cx);
         let fork_name = Field::state(text::FORK_NAME, window, cx);
         let switcher = switcher::Switcher::new(window, cx);
         let groups = groups::Groups::new(window, cx);
@@ -781,10 +885,34 @@ impl Shell {
                 });
             }),
             switcher.observe(window, cx),
-            Self::observe_composer(Pane::Main, &composer.input, window, cx),
-            Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
-            Self::observe_formatting(Pane::Main, &composer.input, window, cx),
-            Self::observe_formatting(Pane::Thread, &thread_composer.input, window, cx),
+            Self::observe_composer(Pen::Compose(Pane::Main), &composer.input, window, cx),
+            Self::observe_composer(
+                Pen::Compose(Pane::Thread),
+                &thread_composer.input,
+                window,
+                cx,
+            ),
+            Self::observe_formatting(Pen::Compose(Pane::Main), &composer.input, window, cx),
+            Self::observe_formatting(
+                Pen::Compose(Pane::Thread),
+                &thread_composer.input,
+                window,
+                cx,
+            ),
+            Self::observe_composer(Pen::Edit(Pane::Main), &edit_composer.input, window, cx),
+            Self::observe_composer(
+                Pen::Edit(Pane::Thread),
+                &thread_edit_composer.input,
+                window,
+                cx,
+            ),
+            Self::observe_formatting(Pen::Edit(Pane::Main), &edit_composer.input, window, cx),
+            Self::observe_formatting(
+                Pen::Edit(Pane::Thread),
+                &thread_edit_composer.input,
+                window,
+                cx,
+            ),
             cx.observe_global_in::<crate::theme::ActiveTheme>(window, |this, _, cx| {
                 this.show_formatting(Pane::Main, cx);
                 this.show_formatting(Pane::Thread, cx);
@@ -1028,6 +1156,7 @@ impl Shell {
             layer_focus: cx.focus_handle(),
             thread_menu_placement: Default::default(),
             message_menu_placement: Default::default(),
+            message_menu_reacted: None,
             layer: Layer::None,
             switcher,
             profile: profile::ProfileUi::default(),
@@ -1133,6 +1262,8 @@ impl Shell {
             composer,
             thread_feed,
             thread_composer,
+            edit_composer,
+            thread_edit_composer,
             pins_scroll: ScrollHandle::new(),
             fork_name,
             contact_part,
@@ -1142,6 +1273,8 @@ impl Shell {
             notice_list: notices::NoticeList::new(),
             badge: None,
             search_scroll: ScrollHandle::new(),
+            followed_scroll: ScrollHandle::new(),
+            search_placeholder: gpui::SharedString::default(),
             transcript_list: recorded::TranscriptList::new(),
             transcript_edit,
             recording_files_closed_by_press: false,
@@ -1165,6 +1298,7 @@ impl Shell {
             search_from,
             search_through,
             search_date_invalid: false,
+            search_custom_dates: false,
             filter_closed_by_press: false,
             quiet_from,
             quiet_until,
@@ -1233,17 +1367,21 @@ impl Shell {
         shell
     }
 
-    pub(crate) fn pen(&self, pane: Pane) -> &composer::Composer {
-        match pane {
-            Pane::Main => &self.composer,
-            Pane::Thread => &self.thread_composer,
+    pub(crate) fn pen(&self, pen: impl Into<Pen>) -> &composer::Composer {
+        match pen.into() {
+            Pen::Compose(Pane::Main) => &self.composer,
+            Pen::Compose(Pane::Thread) => &self.thread_composer,
+            Pen::Edit(Pane::Main) => &self.edit_composer,
+            Pen::Edit(Pane::Thread) => &self.thread_edit_composer,
         }
     }
 
-    pub(crate) fn pen_mut(&mut self, pane: Pane) -> &mut composer::Composer {
-        match pane {
-            Pane::Main => &mut self.composer,
-            Pane::Thread => &mut self.thread_composer,
+    pub(crate) fn pen_mut(&mut self, pen: impl Into<Pen>) -> &mut composer::Composer {
+        match pen.into() {
+            Pen::Compose(Pane::Main) => &mut self.composer,
+            Pen::Compose(Pane::Thread) => &mut self.thread_composer,
+            Pen::Edit(Pane::Main) => &mut self.edit_composer,
+            Pen::Edit(Pane::Thread) => &mut self.thread_edit_composer,
         }
     }
 
@@ -1505,6 +1643,13 @@ impl Shell {
 
     /// Derives the view from the state once for the changes since the last drawing, and
     /// does what a change of the view asks of the window.
+    /// Takes the state as it is now, as the window does before its next frame. The screen
+    /// tool uses it to act on what a fixture shows within one step.
+    #[cfg(feature = "test-support")]
+    pub fn take_state_fixture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.take_state(window, cx);
+    }
+
     fn take_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(feature = "test-support")]
         {
@@ -1696,6 +1841,7 @@ impl Shell {
         self.menu_arranging = false;
         if matches!(layer, Layer::MessageMenu(_)) {
             self.message_menu_placement = Default::default();
+            self.message_menu_reacted = None;
         }
         let reaction = match &layer {
             Layer::ReactionPeople(dialog) => {
@@ -1740,9 +1886,7 @@ impl Shell {
                 state.end_thread_menu(open.owner, open.root_id, cx)
             });
         }
-        if matches!(self.layer, Layer::NewDirect | Layer::GroupConversation)
-            && !matches!(layer, Layer::NewDirect | Layer::GroupConversation)
-        {
+        if matches!(self.layer, Layer::NewDirect) && !matches!(layer, Layer::NewDirect) {
             self.groups.reset();
             self.state.update(cx, |state, cx| state.close_contacts(cx));
         }
@@ -1760,6 +1904,10 @@ impl Shell {
             && !matches!(layer, Layer::GroupMemberships)
         {
             self.memberships.reset();
+        }
+        if matches!(self.layer, Layer::Forward(_)) {
+            self.state
+                .update(cx, |state, cx| state.show_forward_threads(None, cx));
         }
         self.layer = layer;
         self.layer_focus.focus(window, cx);
@@ -1802,9 +1950,13 @@ impl Shell {
             self.reset_account_ui(window, cx);
             self.state.update(cx, |state, cx| state.close_admin(cx));
         }
-        if matches!(self.layer, Layer::NewDirect | Layer::GroupConversation) {
+        if matches!(self.layer, Layer::NewDirect) {
             self.groups.reset();
             self.state.update(cx, |state, cx| state.close_contacts(cx));
+        }
+        if matches!(self.layer, Layer::Forward(_)) {
+            self.state
+                .update(cx, |state, cx| state.show_forward_threads(None, cx));
         }
         if matches!(self.layer, Layer::LinkAll) {
             // The request with its link codes is gone with the layer.
@@ -2376,6 +2528,17 @@ impl Shell {
             | Layer::ConfirmForget(server_id)
             | Layer::ConfirmLogOut(server_id) => gone(server_id),
             Layer::ServerMenu(server_id, _) => gone(server_id),
+            // The export of a conversation that the server no longer shows is not asked for.
+            Layer::ConfirmExport(server_id, conversation_id) => {
+                gone(server_id)
+                    || view
+                        .selected
+                        .as_ref()
+                        .is_none_or(|server| server.id != *server_id)
+                    || view.lists().is_none_or(|lists| {
+                        !lists.directs.iter().any(|row| row.id == *conversation_id)
+                    })
+            }
             Layer::Forward(dialog) => {
                 self.state.read(cx).owner(dialog.server_id) != Some(dialog.owner)
             }
@@ -2409,11 +2572,15 @@ impl Shell {
                     && thread.is_none_or(|thread| thread.root_id != *message_id)
             }
             // The main area shows no channel and no conversation.
-            Layer::Emoji(EmojiTarget::Compose(Pane::Main)) => view.shown().place().is_none(),
+            Layer::Emoji(EmojiTarget::Compose(pen)) if pen.pane() == Pane::Main => {
+                view.shown().place().is_none() || (pen.edits() && self.pen(*pen).editing.is_none())
+            }
             // The thread of the side panel was closed.
-            Layer::Emoji(EmojiTarget::Compose(Pane::Thread)) => view
-                .workspace()
-                .is_none_or(|workspace| workspace.thread.is_none()),
+            Layer::Emoji(EmojiTarget::Compose(pen)) => {
+                view.workspace()
+                    .is_none_or(|workspace| workspace.thread.is_none())
+                    || (pen.edits() && self.pen(*pen).editing.is_none())
+            }
             // The thread was closed, or the server made the channel.
             Layer::Fork(dialog) => {
                 view.workspace()
@@ -2506,10 +2673,6 @@ impl Shell {
                         .is_some_and(|mode| !self.group_current(mode, cx))
             }
             Layer::GroupMemberships => !self.group_memberships_current(cx),
-            Layer::GroupConversation => self
-                .groups
-                .mode
-                .is_none_or(|mode| !self.group_current(mode, cx)),
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
             Layer::FileLink(target) => target.is_stale(self.state.read(cx)),
             Layer::ThreadMenu(open) => open.is_stale(view, self.state.read(cx)),
@@ -2596,6 +2759,9 @@ impl Shell {
             Layer::Forward(_) => self.render_forward_dialog(window, cx),
             Layer::ReactionPeople(_) => self.render_reaction_people(window, cx),
             Layer::ConfirmDelete(message_id) => self.render_confirm_delete(*message_id, window, cx),
+            Layer::ConfirmExport(server_id, conversation_id) => {
+                self.render_confirm_export(*server_id, *conversation_id, cx)
+            }
             Layer::Emoji(_) => self.render_emoji_picker(window, cx),
             Layer::Fork(_) => self.render_fork_dialog(view, window, cx),
             Layer::Welcome => self.render_welcome(window, cx).into_any_element(),
@@ -2634,7 +2800,6 @@ impl Shell {
             Layer::StatusText(_) => self.render_status_text(cx),
             Layer::QuickSwitcher => self.render_switcher(window, cx),
             Layer::NewDirect => self.render_new_direct(window, cx),
-            Layer::GroupConversation => self.render_group_details(cx),
             Layer::GroupMemberships => self.render_group_memberships(cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
             Layer::FileLink(_) => self.render_linked_file(window, cx),

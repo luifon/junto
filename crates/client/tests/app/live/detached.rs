@@ -801,9 +801,9 @@ fn the_call_window_of_a_direct_call_has_its_conversation(cx: &mut TestAppContext
         state.open_conversation(server_id, other, cx)
     });
     window.until("conversation shown", |window| {
-        window.shows("start-direct-call")
+        window.shows("conversation-call")
     });
-    window.click("start-direct-call");
+    window.click("conversation-call");
     window.until("the other account receives a ring", |_| {
         admin
             .handle

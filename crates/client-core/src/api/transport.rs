@@ -305,7 +305,10 @@ fn build(
         .request(method, request.url)
         .header(reqwest::header::ACCEPT, accepted)
         .header("Junto-Notification-Preferences", "1")
-        .header(junto_protocol::message::GROUPS_HEADER, "1");
+        .header(
+            junto_protocol::message::GROUPS_HEADER,
+            junto_protocol::message::GROUPS_WITH_OPTIONAL_NAMES,
+        );
     builder = builder.header(
         "Junto-Event-Revision",
         junto_protocol::events::EVENT_REVISION.to_string(),

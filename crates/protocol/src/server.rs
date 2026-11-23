@@ -33,6 +33,10 @@ pub struct Capabilities {
     /// the two devices (`/api/v1/account/device-link-relay`).
     #[serde(default)]
     pub device_link_relay: bool,
+    /// The server lists the followed threads of a workspace
+    /// (`GET /api/v1/workspaces/{workspace_id}/threads`, ADR 0413).
+    #[serde(default)]
+    pub workspace_threads: bool,
 }
 
 /// What the health route reports when the server can serve requests.

@@ -121,38 +121,67 @@ impl Shell {
             .into_any_element()
     }
 
-    /// Opens the settings of the channel that the main area shows.
-    pub(crate) fn open_shown_channel_settings(
+    /// Asks for an export of a direct or group conversation, and opens the page of the
+    /// exports, which shows its state (ADR 0411).
+    pub(crate) fn export_conversation(
         &mut self,
+        server_id: ServerId,
+        conversation_id: junto_client_core::protocol::ids::ConversationId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let target = self.view.as_ref().and_then(|view| {
-            let workspace = view.workspace()?;
-            Some((workspace.id, workspace.channel.as_ref()?.id))
-        });
-        if let Some((workspace_id, channel_id)) = target {
-            self.open_channel_settings(workspace_id, channel_id, ChannelPage::Overview, window, cx);
+        if self
+            .view
+            .as_ref()
+            .and_then(|view| view.selected.as_ref())
+            .map(|server| server.id)
+            != Some(server_id)
+        {
+            return;
         }
+        self.open_server_admin(AdminPage::Exports, window, cx);
+        self.state.update(cx, |state, cx| {
+            state.export_conversation(server_id, conversation_id, cx);
+        });
     }
 
-    /// Asks for an export of the direct conversation that the main area shows, and opens
-    /// the page of the exports, which shows its state.
-    pub(crate) fn export_shown_conversation(
+    /// The question before the export of a conversation: what the file holds and where it
+    /// will be.
+    pub(crate) fn render_confirm_export(
         &mut self,
-        window: &mut Window,
+        server_id: ServerId,
+        conversation_id: junto_client_core::protocol::ids::ConversationId,
         cx: &mut Context<Self>,
-    ) {
-        let target = self.view.as_ref().and_then(|view| {
-            let server_id = view.selected.as_ref()?.id;
-            Some((server_id, view.lists()?.conversation.as_ref()?.id))
-        });
-        if let Some((server_id, conversation_id)) = target {
-            self.open_server_admin(AdminPage::Exports, window, cx);
-            self.state.update(cx, |state, cx| {
-                state.export_conversation(server_id, conversation_id, cx);
-            });
-        }
+    ) -> gpui::AnyElement {
+        let theme = crate::theme::theme(cx);
+        crate::ui::Dialog::new(text::conversations::EXPORT_TITLE, self.layer_focus())
+            .selector("confirm-export")
+            .on_close(Self::handler(cx, |this, window, cx| {
+                this.close_layer(window, cx)
+            }))
+            .child(
+                div()
+                    .typeface(theme.types.notice, &theme)
+                    .ink(theme.colors.ink_2)
+                    .child(text::conversations::EXPORT_ABOUT),
+            )
+            .child(crate::ui::dialog_footer([
+                Button::new("cancel-export")
+                    .label(text::CANCEL)
+                    .selector("cancel-export")
+                    .on_click(cx.listener(|this, _, window, cx| this.close_layer(window, cx)))
+                    .into_any_element(),
+                Button::new("start-export")
+                    .kind(crate::ui::ButtonKind::Primary)
+                    .label(text::conversations::EXPORT_START)
+                    .selector("start-export")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.export_conversation(server_id, conversation_id, window, cx);
+                    }))
+                    .into_any_element(),
+            ]))
+            .into_any_element()
     }
 
     fn send_days(

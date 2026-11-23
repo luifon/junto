@@ -23,6 +23,7 @@ impl Admin {
             document,
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world
             .run(self.handle.api().reply_in_thread(root_id, &message))
@@ -190,12 +191,12 @@ fn a_person_answers_in_a_thread_and_sees_what_is_new_in_it(cx: &mut TestAppConte
     // the channel and the channel column show what is new in the thread.
     window.click("close-thread");
     assert!(!window.shows("thread-panel"));
-    // The person wrote in the thread and follows it by the rule of the server: it stays
-    // listed under its channel, without a sign (ADR 0796).
-    window.until("the followed thread under its channel", |window| {
-        window.shows_named(format!("thread-row:{root_id}"))
+    // The person wrote in the thread and follows it by the rule of the server. A read
+    // followed thread has no row under its channel: the panel "Threads" lists it
+    // (ADR 0796).
+    window.until("the read thread leaves the channel column", |window| {
+        !window.shows_named(format!("thread-row:{root_id}"))
     });
-    assert!(!window.shows_named(format!("thread-unread:{root_id}")));
     let mention = Document {
         blocks: vec![Block::Paragraph {
             content: vec![
@@ -289,9 +290,13 @@ fn a_fork_tells_each_refusal_and_shows_the_new_channel(cx: &mut TestAppContext) 
             .is_some_and(|thread| thread.may_fork)
     };
 
-    // The roles of a new member hold no "manage channel": the controls say so, and the
-    // server refuses the request.
+    // The roles of a new member hold no "manage channel": the menu of the thread has no
+    // fork, and the server refuses the request.
     assert!(!may_fork(&mut window));
+    window.click("thread-more");
+    assert!(window.shows("context-action:Copy link"));
+    assert!(!window.shows("context-action:Fork into a channel…"));
+    window.press("escape");
     window.in_shell(|shell, window, cx| {
         shell.open_fork_dialog(root_id, ChannelKind::Text, window, cx);
     });
@@ -311,7 +316,7 @@ fn a_fork_tells_each_refusal_and_shows_the_new_channel(cx: &mut TestAppContext) 
     // With the permission the button opens the dialog, and the fork is made.
     admin.allow_everyone(&world, &[WorkspacePermission::ManageChannel]);
     window.until("the permission", may_fork);
-    window.click("fork-text");
+    window.thread_menu_action("Fork into a channel…");
     assert!(window.shows("fork-dialog"));
     // A dialog without a name sends nothing.
     window.in_shell(|shell, window, cx| shell.submit_fork(window, cx));
@@ -347,7 +352,7 @@ fn a_fork_tells_each_refusal_and_shows_the_new_channel(cx: &mut TestAppContext) 
                     })
         },
     );
-    assert!(window.shows("fork-link") && !window.shows("fork-text"));
+    assert!(window.shows("fork-link") && window.shows("thread-forks"));
 
     // A thread has one fork: the server refuses a second one.
     window.in_shell(|shell, window, cx| {
@@ -710,6 +715,7 @@ fn a_person_writes_to_another_person_and_a_channel_marks_permanent_messages(
         document: document("Hello back"),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(admin.handle.api().send_message(direct, &answer))
@@ -946,11 +952,11 @@ fn a_person_follows_a_thread_and_stops_following_it(cx: &mut TestAppContext) {
         "You do not follow this thread."
     );
     assert_eq!(text::followed::action(control.following), "Follow");
-    assert!(window.shows("thread-follow-state") && window.shows("thread-follow"));
-    assert!(!window.shows("thread-follow-default") && !window.shows("thread-follow-refused"));
+    assert!(window.shows("thread-follow-button") && !window.shows("thread-follow-refused"));
+    assert!(!window.follow_menu_offers("Use the default"));
 
-    // The member presses "Follow": the server stores the choice.
-    window.click("thread-follow");
+    // The member chooses "Follow" in the menu of the bell: the server stores the choice.
+    window.follow_menu_action("Follow");
     window.until("the choice to follow", |window| {
         follow(window).is_some_and(|control| {
             control.following && control.setting == Some(true) && !control.busy
@@ -962,7 +968,7 @@ fn a_person_follows_a_thread_and_stops_following_it(cx: &mut TestAppContext) {
         "You follow this thread."
     );
     assert_eq!(control.refused, None);
-    assert!(window.shows("thread-follow-default"));
+    assert!(window.follow_menu_offers("Use the default"));
 
     // The panel is closed. A thread without a reply is in no list.
     window.click("close-thread");
@@ -1007,27 +1013,26 @@ fn a_person_follows_a_thread_and_stops_following_it(cx: &mut TestAppContext) {
         entry(window).is_some_and(|entry| entry.open && entry.unread == 0)
     });
 
-    // The panel is closed: the thread stays under its channel as a thread that the
-    // member follows, without a sign.
+    // The panel is closed: a read followed thread has no row under its channel
+    // (ADR 0796).
     window.click("close-thread");
     assert!(!window.shows("thread-panel"));
-    window.until("the followed thread under its channel", |window| {
-        entry(window).is_some_and(|entry| {
-            !entry.open
-                && entry.unread == 0
-                && entry.mentions == 0
-                && entry.title.as_deref() == Some("Tracks or mixdown?")
-        })
-    });
-    assert!(window.shows_named(format!("thread-row:{root_id}")));
+    window.until(
+        "the read followed thread leaves the channel column",
+        |window| entry(window).is_none(),
+    );
 
-    // The member opens the thread from that row and stops following it.
-    window.click_named(format!("thread-row:{root_id}"));
+    // The member opens the thread from the panel "Threads" and stops following it.
+    window.click("threads-row");
+    window.until("the panel lists the followed thread", |window| {
+        window.shows_named(format!("followed-thread:{root_id}"))
+    });
+    window.click_named(format!("followed-thread:{root_id}"));
     window.until("the follow state of the followed thread", |window| {
         follow(window).is_some_and(|control| control.following && control.setting == Some(true))
     });
     assert_eq!(text::followed::action(true), "Stop following");
-    window.click("thread-follow");
+    window.follow_menu_action("Stop following");
     window.until("the choice not to follow", |window| {
         follow(window).is_some_and(|control| {
             !control.following && control.setting == Some(false) && !control.busy
@@ -1098,6 +1103,7 @@ fn in_a_direct_conversation_a_person_replies_edits_reacts_and_sends_a_file(
         document: document("Can you send the mix?"),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     let question = world.run(api.send_message(direct, &question)).unwrap().id;
     window.until_message("Can you send the mix?");
@@ -1329,6 +1335,8 @@ fn an_inline_thread_preview_reads_and_toggles_follow_without_opening_the_thread(
     world
         .run(window.handle().api().set_thread_follow(root, true))
         .unwrap();
+    // A new reply makes the followed thread unread, so the channel column lists it too.
+    admin.reply(&world, root, document("Another take."));
     window.until("the followed source is also displayed", |window| {
         window.shows_named(format!("thread-row:{root}"))
     });
@@ -1364,5 +1372,97 @@ fn an_inline_thread_preview_reads_and_toggles_follow_without_opening_the_thread(
     world.run(admin.handle.api().delete_message(root)).unwrap();
     window.until("the removed preview closes its menu", |window| {
         !window.shows("thread-menu")
+    });
+}
+
+/// The entry "Threads" of the channel column lists the threads of the workspace that the
+/// person follows, unread ones first, and a row opens its thread (ADR 0796).
+#[gpui::test]
+fn the_threads_entry_lists_the_followed_threads_of_the_workspace(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, channel, root) = with_root(cx, &world);
+    let other = admin.text_channel(&world, &mut window, "mixing");
+    let other_root = admin.send(&world, other, document("Which compressor?")).id;
+    let own = window.own_account();
+    let api = window.handle().api();
+    // The person follows the first thread by choice and has read it; the other one names
+    // the person in a reply, so it is followed by the rule and unread.
+    admin.reply(&world, root, document("Tracks."));
+    world.run(api.set_thread_follow(root, true)).unwrap();
+    admin.reply(&world, other_root, crate::notices::mention("Asking ", own));
+    window.until("the other thread is unread under its channel", |window| {
+        window
+            .channels()
+            .iter()
+            .flat_map(|row| &row.threads)
+            .any(|thread| thread.root_id == other_root && thread.unread > 0)
+    });
+
+    window.click("threads-row");
+    window.until(
+        "the panel lists both threads, the unread one first",
+        |window| {
+            window
+                .view()
+                .workspace()
+                .and_then(|workspace| workspace.followed.clone())
+                .is_some_and(|panel| {
+                    panel
+                        .rows
+                        .iter()
+                        .map(|row| (row.root_id, row.channel_id))
+                        .collect::<Vec<_>>()
+                        == [(other_root, other), (root, channel)]
+                })
+        },
+    );
+    assert!(window.shows("followed-panel"));
+    assert_eq!(window.selected_channel(), channel);
+
+    // The row takes the focus with Tab and opens its thread with Enter (ADR 0796).
+    window.tab_to(crate::harness::selector(format!(
+        "followed-thread:{other_root}"
+    )));
+    window.press("enter");
+    window.until("the row opens its thread in its channel", |window| {
+        window.selected_channel() == other
+            && window
+                .view()
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .is_some_and(|thread| thread.root_id == other_root)
+    });
+    assert!(!window.shows("followed-panel"));
+}
+
+/// A failed read of the Threads list is stated with a retry, not as an empty list
+/// (ADR 0796).
+#[gpui::test]
+fn a_failed_read_of_the_threads_list_is_stated_and_read_again(cx: &mut TestAppContext) {
+    use crate::support::{Fault, FaultProxy};
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let channel = window.selected_channel();
+    let root = admin.send(&world, channel, document("Mixing notes")).id;
+    admin.reply(&world, root, document("First take."));
+    world
+        .run(window.handle().api().set_thread_follow(root, true))
+        .unwrap();
+    let workspace = window.view().workspace().unwrap().id;
+    proxy.fail_ending(
+        &format!("/workspaces/{workspace}/threads"),
+        [Fault::Refused],
+    );
+    window.click("threads-row");
+    window.until("the failure is stated with a retry", |window| {
+        window.shows("followed-retry")
+    });
+    assert!(!window.shows("no-followed-threads"));
+    window.click("followed-retry");
+    window.until("the list is read again", |window| {
+        window.shows_named(format!("followed-thread:{root}"))
     });
 }

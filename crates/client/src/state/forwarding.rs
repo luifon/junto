@@ -110,9 +110,31 @@ impl AppState {
                     owner,
                     workspace_id: None,
                     place: PlaceId::Direct(group.id),
-                    label: format!("{name} · {}", group.name),
+                    label: format!(
+                        "{name} · {}",
+                        super::view::group_title(server_id, group, None, &model, &self.known)
+                    ),
                 });
             }
+            // The open threads, the unread threads, the followed threads of the shown
+            // channel and of its workspace (ADR 0740).
+            let followed = self
+                .known
+                .followed
+                .list
+                .held()
+                .filter(|((held, _), _)| *held == server_id)
+                .map(|(_, threads)| threads)
+                .unwrap_or_default();
+            // The followed threads of the workspace of the dialog, of every channel (ADR 0747).
+            let of_workspace = self
+                .known
+                .followed
+                .forward
+                .held()
+                .filter(|((held, _), _)| *held == server_id)
+                .map(|(_, threads)| threads)
+                .unwrap_or_default();
             let roots = model
                 .timelines
                 .iter()
@@ -120,17 +142,21 @@ impl AppState {
                     PlaceId::Thread { root_id, .. } => Some(root_id),
                     _ => None,
                 })
-                .chain(model.threads.iter().map(|thread| thread.root_id));
+                .chain(model.threads.iter().map(|thread| thread.root_id))
+                .chain(followed.iter().map(|thread| thread.root_id))
+                .chain(of_workspace.iter().map(|thread| thread.root_id));
             for root_id in roots {
-                let root = model
+                let root: Option<&Message> = model
                     .timelines
                     .iter()
                     .flat_map(|timeline| timeline.messages.iter().chain(timeline.root.iter()))
                     .find(|message| message.id == root_id)
+                    .map(|message| &**message)
                     .or_else(|| match model.named(root_id) {
-                        Some(Named::Read(message)) => Some(message),
+                        Some(Named::Read(message)) => Some(&**message),
                         _ => None,
-                    });
+                    })
+                    .or_else(|| self.known.followed.roots.get(server_id, root_id));
                 let Some(root) = root else {
                     continue;
                 };
@@ -223,7 +249,10 @@ impl AppState {
                 else {
                     return Preview::Unavailable;
                 };
-                (None, group.name.clone())
+                (
+                    None,
+                    super::view::group_title(server.id(), group, None, &model, &self.known),
+                )
             }
             MessagePlace::Direct {
                 conversation_id, ..
@@ -247,6 +276,7 @@ impl AppState {
         origin: Origin,
         id: MessageId,
         destination: Destination,
+        comment: Option<Document>,
         cx: &mut Context<Self>,
     ) -> oneshot::Receiver<Result<(), String>> {
         let (mut answer, receive) = oneshot::channel();
@@ -297,6 +327,9 @@ impl AppState {
                     let document = snapshot(&origin, id, &message, &names);
                     crate::compose::check(&document, !message.attachments.is_empty())
                         .map_err(text::compose_problem)?;
+                    if let Some(comment) = &comment {
+                        crate::compose::check(comment, false).map_err(text::compose_problem)?;
+                    }
                     if !message.attachments.is_empty() {
                         let model = target
                             .live()
@@ -362,7 +395,7 @@ impl AppState {
                         return Err(text::FORWARD_UNAVAILABLE.to_owned());
                     }
                     if transfers
-                        .send(destination.place, document, None, &uploads.0)
+                        .send_forward(destination.place, document, comment, &uploads.0)
                         .is_none()
                     {
                         return Err(text::FORWARD_UNAVAILABLE.to_owned());
@@ -519,6 +552,7 @@ impl AppState {
                 self.selection.conversations.remove(&destination.server_id);
                 if let PlaceId::Thread { root_id, .. } = destination.place {
                     self.selection.thread = Some((destination.server_id, channel_id, root_id));
+                    self.selection.threads = None;
                 }
             }
         }
@@ -604,7 +638,13 @@ fn snapshot(origin: &Origin, id: MessageId, message: &Message, names: &Names) ->
         message_id: id,
         verified: false,
     }];
-    for block in message.document.iter().flat_map(Document::content_blocks) {
+    // The comment of a forward that is forwarded again stays above its content (ADR 0408).
+    for block in message
+        .comment
+        .iter()
+        .chain(message.document.iter())
+        .flat_map(Document::content_blocks)
+    {
         blocks.push(match block {
             Block::Heading {
                 level,

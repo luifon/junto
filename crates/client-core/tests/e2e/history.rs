@@ -19,6 +19,7 @@ async fn send(owner: &ServerHandle, place: PlaceId, text: &str) -> Message {
         document: document(text),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     owner.api().send_message(place, &message).await.unwrap()
 }

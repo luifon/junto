@@ -37,9 +37,9 @@ fn moderation_notice_keeps_controls(cx: &mut TestAppContext, direct: bool) {
             state.open_conversation(admin.handle.id(), admin.handle.account().unwrap(), cx);
         });
         window.until("the direct call control is drawn", |window| {
-            window.shows("start-direct-call")
+            window.shows("conversation-call")
         });
-        "start-direct-call".to_owned()
+        "conversation-call".to_owned()
     } else {
         let channel = window.selected_channel();
         let messages: Vec<_> = (0..60)

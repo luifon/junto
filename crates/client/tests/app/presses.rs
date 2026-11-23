@@ -300,6 +300,7 @@ fn a_press_waits_for_its_own_request_while_a_proxy_holds_an_earlier_one(cx: &mut
                 document: document("the answer"),
                 reply_to: Some(original.id),
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

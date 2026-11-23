@@ -8,7 +8,7 @@ use junto_authz::{Request, WorkspacePermission};
 use junto_protocol::{
     audit::AuditEvent,
     events::Event,
-    ids::{ChannelId, MessageId},
+    ids::{ChannelId, MessageId, WorkspaceId},
     message::{
         FollowedThreads, ForkThread, MarkRead, Message, MessagePage, MessagePlace, SendMessage,
         SetThreadFollow, ThreadPage, ThreadState,
@@ -503,6 +503,64 @@ fn thread_cursor(value: Option<&str>) -> ApiResult<Option<(uuid::Uuid, uuid::Uui
             ))
         })
         .transpose()
+}
+
+fn workspace_thread_cursor(
+    value: Option<&str>,
+) -> ApiResult<Option<(i32, uuid::Uuid, uuid::Uuid)>> {
+    value
+        .map(|value| {
+            let invalid = || ApiError::invalid("invalid thread cursor");
+            let (unread, rest) = value.split_once(':').ok_or_else(invalid)?;
+            let (newest, root) = rest.split_once(':').ok_or_else(invalid)?;
+            let unread = match unread {
+                "0" => 0,
+                "1" => 1,
+                _ => return Err(invalid()),
+            };
+            Ok::<_, ApiError>((
+                unread,
+                newest.parse::<uuid::Uuid>().map_err(|_| invalid())?,
+                root.parse::<uuid::Uuid>().map_err(|_| invalid())?,
+            ))
+        })
+        .transpose()
+}
+
+/// The threads of a workspace that the caller follows in the channels whose history it
+/// reads: unread ones first, each group with the newest reply first, in pages (ADR 0413).
+/// The caller is a member of the workspace.
+#[utoipa::path(get,path="/api/v1/workspaces/{workspace_id}/threads",tag="messages",params(("workspace_id"=WorkspaceId,Path),FollowedQuery),security(("session"=[])),responses((status=200,body=junto_protocol::message::WorkspaceThreads),ApiError))]
+pub async fn workspace_followed(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(workspace_id): ApiPath<WorkspaceId>,
+    ApiQuery(query): ApiQuery<FollowedQuery>,
+) -> ApiResult<Json<junto_protocol::message::WorkspaceThreads>> {
+    let limit = query.limit.unwrap_or(50);
+    if !(1..=200).contains(&limit) {
+        return Err(ApiError::invalid("limit must be 1 to 200"));
+    }
+    let before = workspace_thread_cursor(query.before.as_deref())?;
+    let mut counted = false;
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        super::search::read_rate(&app, &access, &mut counted)?;
+        let allowed = crate::access::visibility::places(connection, &access).await?;
+        if !allowed.workspaces.contains(&workspace_id) {
+            return Err(ApiError::not_found());
+        }
+        messages::threads::workspace_followed(
+            connection,
+            access.account_id,
+            workspace_id,
+            &allowed.history_channels,
+            before,
+            limit,
+        )
+        .await
+    })
+    .map(Json)
 }
 
 /// The threads of a channel that the caller follows, the one with the newest reply first,

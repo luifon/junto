@@ -98,7 +98,7 @@ impl Prejoin {
                         .group_conversations
                         .iter()
                         .find(|group| group.id == conversation_id)
-                        .map(|group| group.name.clone())
+                        .map(|group| state.group_title(self.target.server_id, &model, group))
                 })
                 .unwrap_or_default(),
             CallPlace::Direct {

@@ -441,6 +441,7 @@ fn mention(text: &str, account_id: AccountId) -> SendMessage {
         },
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     }
 }
 

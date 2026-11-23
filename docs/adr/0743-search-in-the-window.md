@@ -14,7 +14,8 @@ Query:
 
 - The header of a channel and of a direct conversation has the search field, including when the account has no workspace. Enter sends the text; the text is not sent while the person types. The search covers every place of the shown server that the account can read.
 - A text of more than 1,024 bytes is refused before a request, and empty text opens the search criteria. With no text or criteria the window prompts for a filter without requesting all history.
-- The panel has three filters: a channel of the shown workspace, a member of the shown workspace as the author, and a time span of "any time", "today", "last 7 days" or "last 30 days". "Today" starts when the day began in the time zone of the person. A changed filter sends the search again.
+- A search started from the field of the header while the main area shows a channel or a conversation starts in that place; the field names it ("Search #general"), or the server elsewhere ("Search Acme Studio"). The place is a filter that the person removes with the button of its chip, and the search then covers the server. A search that is open keeps its filters for a new text. Reason: searching the shown channel took three presses, and the field did not say what it searched (Slack starts in the channel, Discord names the server). Test: `search::a_search_starts_in_the_shown_channel_and_its_place_can_be_removed`.
+- The filters stand in one line of chips that open the menus of their choices: In (anywhere on this server, a channel whose history the person reads, grouped by workspace, the direct messages, or one conversation), From (a member of the shown workspace as the author), Date ("any time", "today", "last 7 days", "last 30 days", and "Custom range…", which shows the From and Through dates), Has (a file, a link, a picture; several can be on), and the chip "Mentions me", which turns on and off. A chip that is set names its choice. "Today" starts when the day began in the time zone of the person. A changed filter sends the search again. Reason: the panel always drew eleven controls, and the channel select and the direct-messages switch were one filter in two controls that could contradict each other.
 
 State:
 
@@ -42,7 +43,7 @@ Jump:
 
 - Each search and each further page is one counted request. Typing sends nothing.
 - The count beside the title is the count of the listed results, with a plus sign while the server has more, also at the bound of 1,000.
-- The filters offer the channels and the members of the shown workspace. A result of another workspace of the server is listed, and cannot be chosen as a filter from there.
+- The filter In offers the channels of every workspace of the server whose history the person reads; From offers the members of the shown workspace.
 - A transcript result shows the number of its line and not its time in the recording, because the result does not hold that time.
 - The results are what the account could read at the time of their request. A result of a place that the state still holds stays listed when the server stops giving its message or its recording to the account; opening it is refused then.
 - The marks follow the words of the query and not the match of the server. They can differ for a query with nested operators, and for a script whose words hold combining marks.
@@ -50,8 +51,8 @@ Jump:
 
 Search-result rows expose their current Go to message or Open transcript action through the shared context menu, with Copy text for the displayed excerpt and Copy link. A message result copies the message application address; a transcript result copies its recording address. Navigation uses the same target and permission-checked state flow as the existing row click. The popup key includes the owner, target, query and filters, so a replacement search does not retain the previous menu. Existing row focus and keyboard behavior are preserved. Window tests: `context_menus::a_search_result_menu_copies_its_text_and_link_and_opens_its_target` and `search::a_transcript_search_result_menu_copies_its_line_and_recording_link_and_opens_it` cover both kinds, copying without navigation and the original target-opening actions.
 
-The panel offers independent file, link, picture, current-account mention and
-direct-conversation switches alongside the channel, author and date choices.
+The file, link, picture and current-account mention filters are independent of each
+other and of the place, author and date choices.
 Changing any filter starts a new first page and withdraws results of the previous
 filter combination. Retry and further-page requests keep the complete filter set.
 
@@ -87,8 +88,9 @@ retain their controls, paging and result cap; only Files replaces each page and
 keeps chronological back cursors. Without a workspace the server projection
 retains search results and known conversation participants as author choices.
 
-A search reads the server capabilities before sending extensions. Content,
-mention and direct switches show a reason and take no input when unsupported;
+A search reads the server capabilities before sending extensions. The chips Has and
+Mentions me show a reason and take no input when unsupported, and In offers no
+conversation;
 ordinary text and its existing filters remain available. The core API also
 refuses unsupported extension requests, including scoped Files. No page is
 filtered locally to emulate an absent server capability.

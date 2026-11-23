@@ -31,6 +31,7 @@ fn reply_quotes_load_older_history_at_the_original_message(cx: &mut TestAppConte
                 document: document("the answer"),
                 reply_to: Some(original.id),
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -73,6 +74,7 @@ fn reply_quotes_use_keyboard_activation_and_refuse_a_deleted_original(cx: &mut T
                 document: document("the answer"),
                 reply_to: Some(original.id),
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -118,6 +120,7 @@ fn reply_quotes_open_originals_in_conversations_and_threads_without_sending_a_dr
                 document: document("the private original"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -128,6 +131,7 @@ fn reply_quotes_open_originals_in_conversations_and_threads_without_sending_a_dr
                 document: document("the private answer"),
                 reply_to: Some(original.id),
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -154,6 +158,7 @@ fn reply_quotes_open_originals_in_conversations_and_threads_without_sending_a_dr
                 document: document("the second reply"),
                 reply_to: Some(first),
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -199,6 +204,7 @@ fn a_read_of_a_quoted_message_that_fails_for_a_time_is_read_again_by_itself(
                 document: document("the answer"),
                 reply_to: Some(original.id),
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -346,6 +352,7 @@ pub(crate) fn reply_behind_a_proxy(
                 document: document("the answer"),
                 reply_to: Some(original.id),
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

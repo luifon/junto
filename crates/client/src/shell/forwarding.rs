@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, Context, Entity, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
-    Styled, Subscription, Task, Window, div,
+    StatefulInteractiveElement, Styled, Subscription, Task, Window, div,
 };
 use gpui_base::input::InputState;
 use junto_client_core::Owner;
@@ -32,6 +32,10 @@ pub(crate) struct ForwardDialog {
     origin: Origin,
     message: MessageId,
     find: Entity<InputState>,
+    /// The comment that the forward carries (ADR 0408).
+    comment: Entity<gpui_base::input::TextareaState>,
+    /// The message link of the find field that was resolved last.
+    resolved: Option<String>,
     selected: Option<Destination>,
     request: Option<Task<()>>,
     error: Option<String>,
@@ -114,6 +118,19 @@ fn uri(origin: &Origin, message_id: MessageId) -> Option<String> {
 }
 
 impl Shell {
+    /// Opens the forward dialog of a message of the selected server, as Forward of the
+    /// message does.
+    pub fn open_forward_of(
+        &mut self,
+        message: MessageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(server_id) = self.state.read(cx).view().selected.map(|server| server.id) {
+            self.open_forward(server_id, message, window, cx);
+        }
+    }
+
     pub(super) fn open_forward(
         &mut self,
         server_id: ServerId,
@@ -128,8 +145,15 @@ impl Shell {
             return;
         };
         let find = Field::state(text::FORWARD_FIND, window, cx);
-        let subscription = cx.subscribe(&find, |_, _, _: &gpui_base::input::InputEvent, cx| {
-            cx.notify()
+        // A pasted message link chooses the thread or the place of that message at once.
+        let subscription = Field::observe(&find, window, cx, |this: &mut Self, _, window, cx| {
+            this.resolve_forward_link(window, cx);
+            cx.notify();
+        });
+        let comment = gpui::AppContext::new(cx, |cx| {
+            gpui_base::input::TextareaState::new(window, cx)
+                .placeholder(text::FORWARD_COMMENT)
+                .auto_grow(2, 5)
         });
         let dialog = ForwardDialog {
             server_id,
@@ -137,6 +161,8 @@ impl Shell {
             origin: server.entry().address.origin().clone(),
             message,
             find: find.clone(),
+            comment,
+            resolved: None,
             selected: None,
             request: None,
             error: None,
@@ -144,6 +170,19 @@ impl Shell {
             _find: subscription,
         };
         self.open_layer(Layer::Forward(Box::new(dialog)), window, cx);
+        // The dialog offers the followed threads of the shown workspace (ADR 0747).
+        let workspace = self
+            .view
+            .as_ref()
+            .filter(|view| {
+                view.selected
+                    .as_ref()
+                    .is_some_and(|server| server.id == server_id)
+            })
+            .and_then(|view| view.workspace())
+            .map(|workspace| (server_id, workspace.id));
+        self.state
+            .update(cx, |state, cx| state.show_forward_threads(workspace, cx));
         self.focus_field(&find, window, cx);
     }
 
@@ -179,10 +218,7 @@ impl Shell {
         {
             targets.push(target);
         }
-        let thread_link = matches!(
-            links::parse(find.read(cx).value().as_ref()),
-            Some(AppLink::Message { .. })
-        );
+        let comment = dialog.comment.clone();
         let theme = theme(cx);
         let height = (window.viewport_size().height - u(360.0).to_pixels(window.rem_size())).clamp(
             u(80.0).to_pixels(window.rem_size()),
@@ -232,16 +268,23 @@ impl Shell {
                 this.close_layer(window, cx)
             }))
             .child(Field::new(&find, text::FORWARD_FIND).selector("forward-find"))
-            .child(
-                Button::new("forward-thread-link")
-                    .label(text::FORWARD_THREAD_LINK)
-                    .selector("forward-thread-link")
-                    .disabled(waiting || !thread_link)
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.choose_forward_thread(window, cx)),
-                    ),
-            )
             .child(div().h(height).flex().flex_col().child(choices))
+            .child(
+                div()
+                    .id("forward-comment")
+                    .debug_selector(|| "forward-comment".to_owned())
+                    .role(gpui::Role::TextInput)
+                    .aria_label(text::FORWARD_COMMENT)
+                    .min_w_0()
+                    .p(u(8.0))
+                    .border_1()
+                    .border_color(gpui::Hsla::from(theme.colors.rule))
+                    .bg(gpui::Hsla::from(theme.colors.travertine_hi))
+                    .child(crate::ui::InputMenu::new(
+                        &comment,
+                        gpui_base::input::Textarea::new(&comment),
+                    )),
+            )
             .child(
                 crate::ui::notice_slot("forward-error-slot")
                     .centred()
@@ -274,8 +317,10 @@ impl Shell {
             return;
         };
         let (origin, id) = (dialog.origin.clone(), dialog.message);
+        let written = dialog.comment.read(cx).value().to_string();
+        let comment = (!written.trim().is_empty()).then(|| crate::compose::parse(&written, &[]));
         let receive = self.state.update(cx, |state, cx| {
-            state.forward_message(origin, id, target, cx)
+            state.forward_message(origin, id, target, comment, cx)
         });
         self.forward_request(
             async move {
@@ -289,18 +334,22 @@ impl Shell {
         );
     }
 
-    fn choose_forward_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Layer::Forward(dialog) = &self.layer else {
+    /// Resolves a message link that the find field holds, once per link: the thread of that
+    /// message becomes the chosen destination.
+    fn resolve_forward_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Layer::Forward(dialog) = &mut self.layer else {
             return;
         };
-        if dialog.request.is_some() {
+        let value = dialog.find.read(cx).value().trim().to_owned();
+        let Some(AppLink::Message { server, id }) = links::parse(&value) else {
+            return;
+        };
+        if dialog.resolved.as_deref() == Some(value.as_str()) {
             return;
         }
-        let Some(AppLink::Message { server, id }) =
-            links::parse(dialog.find.read(cx).value().as_ref())
-        else {
-            return;
-        };
+        dialog.resolved = Some(value);
+        // A link that is pasted while another is resolved replaces it.
+        dialog.request = None;
         let receive = self
             .state
             .update(cx, |state, cx| state.resolve_forward_thread(server, id, cx));
@@ -415,10 +464,28 @@ impl Shell {
             .and_then(|id| self.state.read(cx).server(id))
             .is_some_and(|server| server.entry().address.origin() == origin);
         let attributed = local && verified;
-        let heading = if local {
-            text::FORWARD_UNVERIFIED
+        // The caption names where the message comes from; the information mark beside it
+        // states whether this server confirms the copy (ADR 0740).
+        let source_name = self
+            .state
+            .read(cx)
+            .client()
+            .servers()
+            .into_iter()
+            .find(|server| server.entry().address.origin() == origin)
+            .map(|server| server.entry().name)
+            .unwrap_or_else(|| {
+                ServerAddress::parse(origin.as_str())
+                    .map(|address| address.host().to_owned())
+                    .unwrap_or_else(|_| origin.as_str().to_owned())
+            });
+        let heading = text::forwarded_from(&source_name);
+        let about = if attributed {
+            text::FORWARD_VERIFIED_ABOUT
+        } else if local {
+            text::FORWARD_EDITED_ABOUT
         } else {
-            text::FORWARD_REMOTE_UNVERIFIED
+            text::FORWARD_REMOTE_ABOUT
         };
         let preview = self.state.read(cx).forward_preview(origin, id);
         let available = matches!(&preview, Preview::Read(_));
@@ -451,30 +518,20 @@ impl Shell {
                     .as_deref()
                     .unwrap_or(text::UNKNOWN_PERSON);
                 let heading = if attributed {
-                    format!("{} · {author} · {}", text::FORWARDED_MESSAGE, source.place)
+                    format!("{} · {author}", text::forwarded_from(&source.place))
                 } else {
-                    heading.to_owned()
+                    heading.clone()
                 };
                 (format!("forward-message:{id}"), heading, Vec::new())
             }
             Preview::Reading => (
                 format!("forward-reading:{id}"),
-                if attributed {
-                    text::FORWARDED_MESSAGE
-                } else {
-                    heading
-                }
-                .to_owned(),
+                heading.clone(),
                 vec![div().child(text::FORWARD_LOADING).into_any_element()],
             ),
             Preview::Unavailable => (
                 format!("forward-unavailable:{id}"),
-                if attributed {
-                    text::FORWARDED_MESSAGE
-                } else {
-                    heading
-                }
-                .to_owned(),
+                heading.clone(),
                 vec![
                     div()
                         .child(text::FORWARD_ORIGIN_UNAVAILABLE)
@@ -510,7 +567,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .gap(u(3.0))
-                .child(text::FORWARDED_MESSAGE)
+                .child(div().flex_none().child(text::forwarded_from(&place)))
                 .child(" · ")
                 .child(crate::ui::PresenceMark::new(faces.presence(account), 9.0))
                 .child(
@@ -542,8 +599,7 @@ impl Shell {
                                 },
                             )),
                         ),
-                )
-                .child(div().min_w_0().truncate().child(format!(" · {place}")));
+                );
         } else {
             shown = shown.child(heading.clone());
         }
@@ -569,6 +625,14 @@ impl Shell {
                     .items_center()
                     .gap(u(8.0))
                     .child(caption)
+                    .child(
+                        div()
+                            .id(("forward-about", id.as_uuid().as_u128() as u64))
+                            .debug_selector(move || format!("forward-about:{id}"))
+                            .flex_none()
+                            .tooltip(crate::ui::tooltip(about))
+                            .child(crate::ui::icon(Icon::Info, 13.0, theme(cx).colors.ink_2)),
+                    )
                     .when(available, |row| {
                         row.child(
                             div()

@@ -78,7 +78,8 @@ pub(crate) enum AccountSource {
     },
     Profile,
     MentionCandidate {
-        pane: super::Pane,
+        /// The composer or the editor of a row whose mention picker shows the person.
+        pen: super::Pen,
         query: String,
         place: junto_client_core::model::PlaceId,
     },

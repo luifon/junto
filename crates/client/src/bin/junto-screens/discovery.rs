@@ -66,6 +66,7 @@ fn message(number: u32, place: MessagePlace, author: &str, minutes: i64, text: &
         pinned: false,
         files_removed_by_retention: false,
         reply_authors: Vec::new(),
+        comment: None,
     }
 }
 
@@ -591,7 +592,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         Screen::new("search-filter-menu", acme(|_| {})),
         |shell, window, cx| {
             searching(shell, retention(), window, cx);
-            shell.open(Open::SearchFilter(FilterKind::Channel), window, cx);
+            shell.open(Open::SearchFilter(FilterKind::In), window, cx);
         },
     )?;
     studio.draw(

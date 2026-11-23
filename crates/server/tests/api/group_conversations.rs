@@ -1259,3 +1259,75 @@ async fn an_inactive_member_returns_only_after_contact_is_restored() {
         );
     }
 }
+
+/// A group may have no name; a later rename gives it one or removes it, and a name longer
+/// than 80 characters is refused (ADR 0302).
+#[tokio::test]
+async fn a_group_may_have_no_name() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let third = server.join(&owner, "Third").await;
+    let (id, group) = create(&server, &writer, &[&reader, &third], "  ").await;
+    assert_eq!(group["name"], "");
+    let route = format!("{GROUPS}/{id}");
+    let renamed: Value = server
+        .patch(&reader, &route, &json!({"name":"Planning"}))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(renamed["name"], "Planning");
+    let unnamed: Value = server
+        .patch(&reader, &route, &json!({"name":""}))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(unnamed["name"], "");
+    server
+        .patch(&reader, &route, &json!({"name":"n".repeat(81)}))
+        .await
+        .error(ErrorCode::InvalidRequest);
+}
+
+/// A client of 0.2 requires a group name: for a group without a name it receives the names
+/// of the other members in the list, the snapshot and the events, while the stored name
+/// stays empty for a current client (ADR 0302).
+#[tokio::test]
+async fn a_client_that_requires_a_group_name_receives_the_names_of_the_other_members() {
+    use junto_protocol::events::{Event, Level};
+    use junto_protocol::message::{GROUPS_HEADER, GROUPS_WITH_REQUIRED_NAMES};
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let third = server.join(&owner, "Third").await;
+    let (id, _) = create(&server, &writer, &[&reader, &third], "Planning").await;
+    let mut older = server.stream_with_required_group_names(&reader).await;
+    older.subscribe(Level::Full, None).await;
+    server
+        .patch(&writer, &format!("{GROUPS}/{id}"), &json!({"name": ""}))
+        .await
+        .ok::<Value>(StatusCode::OK);
+    let older_read = |path: &'static str| {
+        let request = reqwest::Client::new()
+            .get(format!("{}{path}", server.base))
+            .header(GROUPS_HEADER, GROUPS_WITH_REQUIRED_NAMES)
+            .bearer_auth(&reader.token);
+        async move { request.send().await.unwrap().json::<Value>().await.unwrap() }
+    };
+    let listed = older_read(GROUPS).await;
+    assert_eq!(listed[0]["name"], "Third, Writer");
+    let snapshot = older_read("/api/v1/snapshot").await;
+    assert_eq!(snapshot["group_conversations"][0]["name"], "Third, Writer");
+    let current: Value = server.get(&reader, GROUPS).await.ok(StatusCode::OK);
+    assert_eq!(current[0]["name"], "");
+    let changed = server
+        .traffic(&reader, &mut older)
+        .await
+        .into_iter()
+        .find_map(|(_, event)| match event {
+            Event::GroupConversationChanged { group } if group.id == id => Some(group),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(changed.name, "Third, Writer");
+}

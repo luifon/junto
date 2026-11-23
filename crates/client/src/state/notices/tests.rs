@@ -165,6 +165,7 @@ impl Scene {
             pinned: false,
             files_removed_by_retention: false,
             reply_authors: Vec::new(),
+            comment: None,
         }
     }
 

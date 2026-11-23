@@ -650,7 +650,7 @@ pub(crate) fn open_page(
     });
 }
 
-/// Shows a channel of the channel list and opens its settings with the gear of its header.
+/// Shows a channel of the channel list and opens its settings from the menu of its row.
 #[track_caller]
 pub(crate) fn open_channel_settings(window: &mut Window, name: &str, channel_id: ChannelId) {
     window.until("the channel is in the channel list", |window| {
@@ -670,8 +670,8 @@ pub(crate) fn open_channel_settings(window: &mut Window, name: &str, channel_id:
             .workspace()
             .and_then(|workspace| workspace.channel.as_ref())
             .is_some_and(|channel| channel.id == channel_id);
-        if shown {
-            window.click_if_shown("channel-settings");
+        if shown && !window.shows("admin") {
+            window.open_settings_from_channel_menu(channel_id);
         }
         false
     });
@@ -1527,7 +1527,9 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
         |model| model.channel(plans).is_some(),
     );
 
-    // A member without "manage channel" has no page of the permissions.
+    // A member who may export the channel and does not hold "manage channel" opens its
+    // settings from the channel menu and has no page of the permissions (ADR 0761).
+    admin.allow_everyone(&world, &[WorkspacePermission::ExportChannel]);
     open_channel_settings(&mut window, "plans", plans);
     window.until("the settings have no page of the permissions", |window| {
         window.shows("channel-nav-archive") && !window.shows("channel-nav-permissions")
@@ -1731,6 +1733,7 @@ fn the_owner_exports_a_channel_saves_the_file_and_removes_the_export(cx: &mut Te
         document: document("kept in the export"),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(owner.api().send_message(PlaceId::Channel(plans), &message))
@@ -2243,8 +2246,8 @@ fn tab_reaches_each_archived_channel_of_a_member_who_may_not_restore(cx: &mut Te
     });
 }
 
-/// The settings of a channel that a member opens without "manage channel" show the page
-/// "Archive", the only one. When the role arrives, the pages of the channel
+/// The settings of a channel that a member who may export it opens without "manage channel"
+/// show the page "Archive", the only one. When the role arrives, the pages of the channel
 /// are offered, and the page that is shown stays (ADR 0761).
 #[gpui::test]
 fn a_role_that_arrives_keeps_the_shown_page_of_the_channel_settings(cx: &mut TestAppContext) {
@@ -2256,7 +2259,8 @@ fn a_role_that_arrives_keeps_the_shown_page_of_the_channel_settings(cx: &mut Tes
     let default = default_workspace(&world, &admin.handle);
     let notes = text_channel(&world, &admin.handle, default, "notes");
 
-    // The gear asks for the overview, which the member may not use.
+    // "Channel settings" asks for the overview, which the member may not use.
+    admin.allow_everyone(&world, &[WorkspacePermission::ExportChannel]);
     open_channel_settings(&mut window, "notes", notes);
     let unmanaged = ArchivePage {
         permanent: false,

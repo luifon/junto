@@ -10,7 +10,7 @@ use junto_client::app::{self, WindowStart};
 use junto_client::shell::Shell;
 use junto_client::state::view::{ChannelRow, Members, ServerStatus, ShellView};
 use junto_client::state::{AppState, Timing};
-use junto_client_core::protocol::ids::MessageId;
+use junto_client_core::protocol::ids::{ChannelId, MessageId};
 use junto_client_core::protocol::invite::CreateInvite;
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::version::SupportedVersions;
@@ -1113,6 +1113,64 @@ impl Window {
             gpui::MouseButton::Right,
         );
         self.settle();
+    }
+
+    /// Marks the place of the main area as read, as the key of "Mark as read" does.
+    pub fn mark_shown_as_read(&mut self) {
+        self.in_shell(|shell, _, cx| shell.mark_shown_as_read(cx));
+        self.settle();
+    }
+
+    /// Presses an item of the menu of the thread in the header of the thread panel.
+    #[track_caller]
+    pub fn thread_menu_action(&mut self, item: &str) {
+        self.click("thread-more");
+        self.click(selector(format!("context-action:{item}")));
+    }
+
+    /// Presses an item of the menu of the follow control of the thread panel.
+    #[track_caller]
+    pub fn follow_menu_action(&mut self, item: &str) {
+        self.click("thread-follow-button");
+        self.click(selector(format!("context-action:{item}")));
+    }
+
+    /// True when the menu of the follow control of the thread panel offers this item. The
+    /// menu is closed again.
+    pub fn follow_menu_offers(&mut self, item: &str) -> bool {
+        self.click("thread-follow-button");
+        let offered = self.shows(selector(format!("context-action:{item}")));
+        self.press("escape");
+        offered
+    }
+
+    /// Opens "Who reacted" of a message from the menu of the message, once the menu offers it:
+    /// the message holds a reaction that the window shows.
+    #[track_caller]
+    pub fn open_who_reacted(&mut self, message_id: MessageId) {
+        self.until("the menu of the message offers Who reacted", |window| {
+            window.right_click_message(message_id);
+            if window.shows("message-reaction-people") {
+                window.click("message-reaction-people");
+                return true;
+            }
+            window.press("escape");
+            false
+        });
+    }
+
+    /// Opens the menu of a channel row and presses its "Channel settings" item when the menu
+    /// offers it; otherwise closes the menu. Returns whether it pressed the item.
+    #[track_caller]
+    pub fn open_settings_from_channel_menu(&mut self, channel: ChannelId) -> bool {
+        self.right_click_named(format!("channel-row:{channel}"));
+        if self.click_if_shown("channel-settings") {
+            return true;
+        }
+        if self.shows("channel-menu") {
+            self.press("escape");
+        }
+        false
     }
 
     /// Opens a message menu outside its account, link and attachment targets.

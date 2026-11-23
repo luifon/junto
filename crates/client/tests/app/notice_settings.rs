@@ -597,6 +597,7 @@ fn a_direct_conversation_is_muted_and_unmuted_from_its_menu(cx: &mut TestAppCont
             document: document(words),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world
             .run(

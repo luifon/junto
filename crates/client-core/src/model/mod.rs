@@ -110,8 +110,8 @@ fn usable_group(
     group: &junto_protocol::message::GroupConversation,
     own: junto_protocol::ids::AccountId,
 ) -> bool {
-    !group.name.trim().is_empty()
-        && group.name.chars().count() <= 80
+    // A group may have no name (ADR 0302): the window names it by its people.
+    group.name.chars().count() <= 80
         && !group.name.chars().any(char::is_control)
         && (1..=10).contains(&group.account_ids.len())
         && group.account_ids.contains(&own)

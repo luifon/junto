@@ -1754,7 +1754,21 @@ async fn world() -> World {
         ),
         operation(
             Method::GET,
+            "/api/v1/workspaces/{workspace_id}/threads",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::GET,
             "/api/v1/channels/{channel_id}/permissions",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/channels/{channel_id}/viewers",
             &[&absent],
             none.clone(),
             &unknown,

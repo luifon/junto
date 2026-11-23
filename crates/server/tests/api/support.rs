@@ -1040,7 +1040,12 @@ impl TestServer {
         ));
 
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(junto_protocol::message::GROUPS_HEADER, "1".parse().unwrap());
+        headers.insert(
+            junto_protocol::message::GROUPS_HEADER,
+            junto_protocol::message::GROUPS_WITH_OPTIONAL_NAMES
+                .parse()
+                .unwrap(),
+        );
         let http = reqwest::Client::builder()
             .default_headers(headers)
             .build()

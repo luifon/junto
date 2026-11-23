@@ -16,16 +16,19 @@ use crate::state::search::{
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, ScrollArea, SelectBox,
-    SideHeader, StatePanel, StyleExt, Toggle, icon,
+    Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, ScrollArea, SideHeader,
+    StatePanel, StyleExt, icon,
 };
 
 /// One of the three filters of a search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterKind {
-    Channel,
+    /// Where the search looks: the server, a channel, the direct messages or a conversation.
+    In,
     Author,
     Date,
+    /// What a message holds: a file, a link, a picture.
+    Has,
 }
 
 /// The width of the search field in the header, in design pixels, in the full and in the
@@ -52,6 +55,11 @@ impl Shell {
         self.search_field.read(cx).value().to_string()
     }
 
+    /// The placeholder of the search field, which names where a new search starts.
+    pub fn search_placeholder(&self, _: &gpui::App) -> String {
+        self.search_placeholder.to_string()
+    }
+
     /// Searches the shown server for the text of the field.
     pub fn submit_search(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let Some(server_id) = self.state.read(cx).view().selected.map(|server| server.id) else {
@@ -59,8 +67,19 @@ impl Shell {
         };
         let text = self.search_text(cx);
         self.members_open = false;
+        // A search that starts from a channel or a conversation starts in it (ADR 0743).
+        let view = self.state.read(cx).view();
+        let shown = view
+            .lists()
+            .and_then(|lists| lists.conversation.as_ref())
+            .map(|conversation| junto_client_core::model::PlaceId::Direct(conversation.id))
+            .or_else(|| {
+                view.workspace()
+                    .and_then(|workspace| workspace.channel.as_ref())
+                    .map(|channel| junto_client_core::model::PlaceId::Channel(channel.id))
+            });
         self.state
-            .update(cx, |state, cx| state.search(server_id, &text, cx));
+            .update(cx, |state, cx| state.search(server_id, &text, shown, cx));
         cx.notify();
     }
 
@@ -72,6 +91,7 @@ impl Shell {
 
     /// Ends the search and empties its field.
     pub fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_custom_dates = false;
         self.state.update(cx, |state, cx| state.close_search(cx));
         self.type_search("", window, cx);
         if matches!(self.layer, Layer::SearchFilter(_)) {
@@ -83,6 +103,9 @@ impl Shell {
     /// Changes the filters of the search and runs it again.
     pub fn set_search_filters(&mut self, filters: Filters, cx: &mut Context<Self>) {
         self.search_date_invalid = false;
+        if !matches!(filters.date, DateFilter::Range { .. }) {
+            self.search_custom_dates = false;
+        }
         self.state
             .update(cx, |state, cx| state.set_search_filters(filters, cx));
         cx.notify();
@@ -166,37 +189,84 @@ impl Shell {
                 .into_any_element()
         };
         let (label, items): (&'static str, Vec<AnyElement>) = match kind {
-            FilterKind::Channel => {
+            FilterKind::In => {
+                let anywhere = Filters {
+                    channel: None,
+                    conversation: None,
+                    direct: false,
+                    ..filters
+                };
                 let mut items = vec![item(
-                    "search-channel:all".to_owned(),
+                    "search-in:server".to_owned(),
                     0,
-                    text::FILTER_ALL_CHANNELS.into(),
-                    filters.channel.is_none(),
-                    Filters {
-                        channel: None,
-                        ..filters
-                    },
+                    text::FILTER_ANYWHERE.into(),
+                    panel.scope.is_none(),
+                    anywhere,
                     cx,
                 )];
-                for (index, (channel_id, name, _)) in panel.channels.iter().enumerate() {
-                    // A channel whose history the person may not read is no filter
-                    // (ADR 0790).
-                    if panel.unreadable.contains(channel_id) {
+                let mut index = 1;
+                for (workspace_id, name, channels) in &panel.workspaces {
+                    if channels.is_empty() {
                         continue;
                     }
+                    let group = name.clone();
+                    let workspace_id = *workspace_id;
+                    items.push(
+                        div()
+                            .flex_none()
+                            .debug_selector(move || format!("search-in-group:{workspace_id}"))
+                            .child(crate::ui::menu_label(group, false, cx))
+                            .into_any_element(),
+                    );
+                    for (channel_id, name, _) in channels {
+                        items.push(item(
+                            format!("search-in:channel:{channel_id}"),
+                            index,
+                            format!("#{name}").into(),
+                            filters.channel == Some(*channel_id),
+                            Filters {
+                                channel: Some(*channel_id),
+                                ..anywhere
+                            },
+                            cx,
+                        ));
+                        index += 1;
+                    }
+                }
+                // A server without the filters of conversations offers none (ADR 0743).
+                let conversations = panel
+                    .capabilities
+                    .is_some_and(|supported| supported.filters);
+                if conversations {
+                    items.push(crate::ui::menu_separator(cx).into_any_element());
                     items.push(item(
-                        format!("search-channel:{channel_id}"),
-                        index + 1,
-                        name.clone().into(),
-                        filters.channel == Some(*channel_id),
+                        "search-in:direct".to_owned(),
+                        index,
+                        text::DIRECT_MESSAGES.into(),
+                        filters.direct,
                         Filters {
-                            channel: Some(*channel_id),
-                            ..filters
+                            direct: true,
+                            ..anywhere
                         },
                         cx,
                     ));
+                    index += 1;
+                    for (conversation_id, name) in &panel.conversations {
+                        items.push(item(
+                            format!("search-in:conversation:{conversation_id}"),
+                            index,
+                            name.clone().into(),
+                            filters.conversation == Some(*conversation_id),
+                            Filters {
+                                conversation: Some(*conversation_id),
+                                ..anywhere
+                            },
+                            cx,
+                        ));
+                        index += 1;
+                    }
                 }
-                (text::FILTER_CHANNEL, items)
+                (text::FILTER_IN, items)
             }
             FilterKind::Author => {
                 let mut items = vec![item(
@@ -225,9 +295,8 @@ impl Shell {
                 }
                 (text::FILTER_AUTHOR, items)
             }
-            FilterKind::Date => (
-                text::FILTER_DATE,
-                DateFilter::ALL
+            FilterKind::Date => {
+                let mut items: Vec<AnyElement> = DateFilter::ALL
                     .into_iter()
                     .enumerate()
                     .map(|(index, date)| {
@@ -240,8 +309,66 @@ impl Shell {
                             cx,
                         )
                     })
-                    .collect(),
-            ),
+                    .collect();
+                let custom = matches!(filters.date, DateFilter::Range { .. });
+                items.push(
+                    div()
+                        .flex_none()
+                        .debug_selector(|| "search-date-custom".to_owned())
+                        .child(
+                            MenuItem::new("filter-custom-dates", text::FILTER_CUSTOM_RANGE)
+                                .icon(if custom { Icon::Check } else { Icon::Minus })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.search_custom_dates = true;
+                                    this.close_layer(window, cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element(),
+                );
+                (text::FILTER_DATE, items)
+            }
+            FilterKind::Has => {
+                let options: [(&'static str, &'static str, bool, Filters); 3] = [
+                    (
+                        "search-has-file",
+                        text::FILTER_HAS_FILE,
+                        filters.has_file,
+                        Filters {
+                            has_file: !filters.has_file,
+                            ..filters
+                        },
+                    ),
+                    (
+                        "search-has-link",
+                        text::FILTER_HAS_LINK,
+                        filters.has_link,
+                        Filters {
+                            has_link: !filters.has_link,
+                            ..filters
+                        },
+                    ),
+                    (
+                        "search-has-picture",
+                        text::FILTER_HAS_PICTURE,
+                        filters.has_picture,
+                        Filters {
+                            has_picture: !filters.has_picture,
+                            ..filters
+                        },
+                    ),
+                ];
+                (
+                    text::FILTER_HAS,
+                    options
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (selector, title, on, next))| {
+                            item(selector.to_owned(), index, title.into(), on, next, cx)
+                        })
+                        .collect(),
+                )
+            }
         };
         div()
             .absolute()
@@ -271,7 +398,9 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The filters of a search, under the header of its panel.
+    /// The filters of a search in one line of chips under the header of its panel: In,
+    /// From, Date, Has and Mentions me (ADR 0743). Each chip opens the menu of its choices;
+    /// the chip of In carries a button that removes the place.
     fn render_filters(
         &mut self,
         panel: &SearchPanel,
@@ -279,203 +408,217 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
+        let filters = panel.filters;
         let open = match &self.layer {
             Layer::SearchFilter(kind) => Some(*kind),
             _ => None,
         };
-        let boxes: [(FilterKind, &'static str, SharedString, &'static str); 3] = [
+        // Why the server takes no filter now, as each chip states it.
+        let held: Option<&'static str> = match panel.capabilities {
+            Some(supported)
+                if supported.filters && (!panel.text.is_empty() || supported.filter_only) =>
+            {
+                None
+            }
+            Some(supported) if supported.filters => Some(text::FILTERS_NEED_TEXT),
+            Some(_) => Some(text::FILTERS_UNSUPPORTED),
+            None => Some(text::FILTERS_UNCONFIRMED),
+        };
+        let has: Vec<&'static str> = [
+            (filters.has_file, text::FILTER_HAS_FILE),
+            (filters.has_link, text::FILTER_HAS_LINK),
+            (filters.has_picture, text::FILTER_HAS_PICTURE),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect();
+        let chips: [(FilterKind, &'static str, Option<String>, &'static str); 4] = [
             (
-                FilterKind::Channel,
-                text::FILTER_CHANNEL,
-                panel
-                    .channel
-                    .as_ref()
-                    .map_or(text::FILTER_ALL_CHANNELS.into(), |(_, name)| {
-                        name.clone().into()
-                    }),
-                "search-channel",
+                FilterKind::In,
+                text::FILTER_IN,
+                panel.scope.clone(),
+                "search-in",
             ),
             (
                 FilterKind::Author,
                 text::FILTER_AUTHOR,
-                panel
-                    .author
-                    .as_ref()
-                    .map_or(text::FILTER_ANYONE.into(), |(_, name)| name.clone().into()),
+                panel.author.as_ref().map(|(_, name)| name.clone()),
                 "search-author",
             ),
             (
                 FilterKind::Date,
                 text::FILTER_DATE,
-                text::date_filter(panel.date).into(),
+                (filters.date != DateFilter::default())
+                    .then(|| text::date_filter(panel.date).to_owned()),
                 "search-date",
+            ),
+            (
+                FilterKind::Has,
+                text::FILTER_HAS,
+                (!has.is_empty()).then(|| has.join(", ")),
+                "search-has",
             ),
         ];
         let mut row = div()
             .flex()
+            .flex_wrap()
             .flex_none()
+            .items_center()
             .gap(u(6.0))
             .pt(u(8.0))
             .px(u(14.0))
-            .pb(u(10.0))
+            .pb(u(8.0))
             .bg(Hsla::from(colors.limestone))
             .border_b_1()
             .border_color(Hsla::from(colors.rule));
-        for (kind, label, value, selector) in boxes {
+        for (kind, name, value, selector) in chips {
             let menu = (open == Some(kind)).then(|| self.render_filter_menu(kind, panel, cx));
+            let chosen = value.is_some();
+            let label: SharedString = match &value {
+                Some(value) => format!("{name}: {value}").into(),
+                None => name.into(),
+            };
+            let removable = kind == FilterKind::In && chosen;
             row = row.child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .mb(u(3.0))
-                            .text_size(u(12.5))
-                            .line_height(u(16.0))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .ink(colors.bronze)
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .child(
-                                SelectBox::new(selector, label, value)
-                                    .selector(selector)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_search_filter(kind, window, cx);
-                                    })),
-                            )
-                            .children(menu),
-                    ),
-            );
-        }
-        let filters = panel.filters;
-        let mut content = div().flex().flex_col().gap(u(6.0)).px(u(14.0)).pb(u(8.0));
-        let options: [(&'static str, &'static str, bool, Filters); 5] = [
-            (
-                "search-has-file",
-                text::search::HAS_FILE,
-                filters.has_file,
-                Filters {
-                    has_file: !filters.has_file,
-                    ..filters
-                },
-            ),
-            (
-                "search-has-link",
-                text::search::HAS_LINK,
-                filters.has_link,
-                Filters {
-                    has_link: !filters.has_link,
-                    ..filters
-                },
-            ),
-            (
-                "search-has-picture",
-                text::search::HAS_PICTURE,
-                filters.has_picture,
-                Filters {
-                    has_picture: !filters.has_picture,
-                    ..filters
-                },
-            ),
-            (
-                "search-mentions-me",
-                text::search::MENTIONS_ME,
-                filters.mentions_me,
-                Filters {
-                    mentions_me: !filters.mentions_me,
-                    ..filters
-                },
-            ),
-            (
-                "search-direct",
-                text::search::DIRECT_MESSAGES,
-                filters.direct,
-                Filters {
-                    direct: !filters.direct,
-                    ..filters
-                },
-            ),
-        ];
-        for (selector, title, on, next) in options {
-            content = content.child(
-                div()
+                    .relative()
                     .flex()
+                    .flex_none()
                     .items_center()
-                    .justify_between()
-                    .child(title)
                     .child(
-                        Toggle::new(selector, title, on, (text::ON, text::OFF))
-                            .held(match panel.capabilities {
-                                Some(supported)
-                                    if supported.filters
-                                        && (!panel.text.is_empty() || supported.filter_only) =>
-                                {
-                                    None
-                                }
-                                Some(supported) if supported.filters => {
-                                    Some(text::search::FILTERS_NEED_TEXT)
-                                }
-                                Some(_) => Some(text::search::FILTERS_UNSUPPORTED),
-                                None => Some(text::search::SUPPORT_UNKNOWN),
+                        Button::new(selector)
+                            .kind(if chosen {
+                                ButtonKind::Default
+                            } else {
+                                ButtonKind::Ghost
                             })
+                            .label(label)
+                            .icon(Icon::ChevronDown)
                             .selector(selector)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_search_filters(next, cx);
+                            .disabled(kind == FilterKind::Has && held.is_some())
+                            .when_some(held.filter(|_| kind == FilterKind::Has), |chip, reason| {
+                                chip.tooltip(reason)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_search_filter(kind, window, cx);
                             })),
-                    ),
+                    )
+                    .when(removable, |chip| {
+                        chip.child(
+                            Button::new("search-in-remove")
+                                .kind(ButtonKind::Ghost)
+                                .icon(Icon::X)
+                                .tooltip(text::FILTER_IN_REMOVE)
+                                .selector("search-in-remove")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.set_search_filters(
+                                        Filters {
+                                            channel: None,
+                                            conversation: None,
+                                            direct: false,
+                                            ..filters
+                                        },
+                                        cx,
+                                    );
+                                })),
+                        )
+                    })
+                    .children(menu),
             );
         }
-        content = content
-            .child(
-                div()
-                    .flex()
-                    .gap(u(6.0))
-                    .child(
-                        div().flex_1().min_w_0().child(text::search::FROM).child(
-                            Field::new(&self.search_from, "From date").selector("search-from"),
+        row = row.child(
+            Button::new("search-mentions-me")
+                .kind(if filters.mentions_me {
+                    ButtonKind::Default
+                } else {
+                    ButtonKind::Ghost
+                })
+                .label(text::FILTER_MENTIONS_ME)
+                .when(filters.mentions_me, |chip| chip.icon(Icon::Check))
+                .selector("search-mentions-me")
+                .disabled(held.is_some())
+                .when_some(held, |chip, reason| chip.tooltip(reason))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_search_filters(
+                        Filters {
+                            mentions_me: !filters.mentions_me,
+                            ..filters
+                        },
+                        cx,
+                    );
+                })),
+        );
+        // "Custom range…" of the Date menu, or a range that is set, shows the two dates.
+        let custom = self.search_custom_dates || matches!(filters.date, DateFilter::Range { .. });
+        let mut content = div().flex().flex_col().gap(u(6.0));
+        if custom {
+            content = content
+                .px(u(14.0))
+                .py(u(8.0))
+                .border_b_1()
+                .border_color(Hsla::from(colors.rule))
+                .child(
+                    div()
+                        .flex()
+                        .gap(u(6.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(text::FILTER_FROM_DATE)
+                                .child(
+                                    Field::new(&self.search_from, text::FILTER_FROM_DATE)
+                                        .selector("search-from"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(text::FILTER_THROUGH_DATE)
+                                .child(
+                                    Field::new(&self.search_through, text::FILTER_THROUGH_DATE)
+                                        .selector("search-through"),
+                                ),
                         ),
-                    )
-                    .child(div().flex_1().min_w_0().child(text::search::THROUGH).child(
-                        Field::new(&self.search_through, "Through date").selector("search-through"),
-                    )),
-            )
-            .child(
-                Button::new("search-apply-dates")
-                    .label(text::search::APPLY_DATES)
-                    .selector("search-apply-dates")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let format = time::macros::format_description!("[year]-[month]-[day]");
-                        let from =
-                            time::Date::parse(this.search_from.read(cx).value().trim(), format);
-                        let through =
-                            time::Date::parse(this.search_through.read(cx).value().trim(), format);
-                        if let (Ok(from), Ok(through)) = (from, through)
-                            && from <= through
-                            && through.next_day().is_some()
-                        {
-                            this.search_date_invalid = false;
-                            this.set_search_filters(
-                                Filters {
-                                    date: DateFilter::Range { from, through },
-                                    ..filters
-                                },
-                                cx,
+                )
+                .child(
+                    Button::new("search-apply-dates")
+                        .label(text::FILTER_APPLY_DATES)
+                        .selector("search-apply-dates")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let format = time::macros::format_description!("[year]-[month]-[day]");
+                            let from =
+                                time::Date::parse(this.search_from.read(cx).value().trim(), format);
+                            let through = time::Date::parse(
+                                this.search_through.read(cx).value().trim(),
+                                format,
                             );
-                        } else {
-                            this.search_date_invalid = true;
-                            cx.notify();
-                        }
-                    })),
-            );
-        if self.search_date_invalid {
-            content = content.child(
-                div()
-                    .debug_selector(|| "search-date-invalid".to_owned())
-                    .child(text::search::DATES_HELP),
-            );
+                            if let (Ok(from), Ok(through)) = (from, through)
+                                && from <= through
+                                && through.next_day().is_some()
+                            {
+                                this.search_date_invalid = false;
+                                this.set_search_filters(
+                                    Filters {
+                                        date: DateFilter::Range { from, through },
+                                        ..filters
+                                    },
+                                    cx,
+                                );
+                            } else {
+                                this.search_date_invalid = true;
+                                cx.notify();
+                            }
+                        })),
+                );
+            if self.search_date_invalid {
+                content = content.child(
+                    div()
+                        .debug_selector(|| "search-date-invalid".to_owned())
+                        .child(text::FILTER_DATES_INVALID),
+                );
+            }
         }
         div()
             .flex()

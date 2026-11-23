@@ -4966,7 +4966,8 @@ async fn token_search_capabilities_use_server_discovery_and_reject_another_serve
     };
     assert!(
         matches!(fixed.send_message(crate::model::PlaceId::Channel(channel), &junto_protocol::message::SendMessage {
-        document, reply_to: None, attachments: Vec::new()
+        document, reply_to: None, attachments: Vec::new(),
+        comment: None,
     }).await, Err(ApiError::Request(reason)) if reason.contains("update"))
     );
     assert_eq!(server.count(&format!("/channels/{channel}/messages")), 0);

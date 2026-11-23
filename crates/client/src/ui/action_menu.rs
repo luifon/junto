@@ -270,6 +270,41 @@ fn with_row_button(
     }
 }
 
+/// The icon button that opens a menu of actions on a press, such as the follow control of a
+/// thread. The binding creates the button, as it does the menu button of a row (ADR 0731).
+pub struct ButtonMenu {
+    pub icon: Icon,
+    /// The tooltip and the accessible label.
+    pub label: SharedString,
+    pub selector: &'static str,
+}
+
+pub fn bind_button_menu(
+    frame: Stateful<Div>,
+    id: impl Into<ElementId>,
+    button: ButtonMenu,
+    actions: Vec<RowAction>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Stateful<Div> {
+    let id = id.into();
+    let popup = popup_state(&id, window, cx);
+    let opener = popup.clone();
+    let frame = frame.child(
+        super::Button::new(button.selector)
+            .kind(super::ButtonKind::Ghost)
+            .icon(button.icon)
+            .tooltip(button.label.clone())
+            .accessible_label(button.label)
+            .selector(button.selector)
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                opener.update(cx, |popup, cx| popup.open(window, cx));
+            }),
+    );
+    bind_menu(frame, id, actions, false, None, window, cx)
+}
+
 fn popup_state(id: &ElementId, window: &mut Window, cx: &mut App) -> Entity<Popup> {
     window.use_keyed_state((id.clone(), "actions"), cx, |_, cx| Popup {
         focus: cx.focus_handle(),

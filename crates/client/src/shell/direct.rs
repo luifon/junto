@@ -3,204 +3,191 @@
 use super::Shell;
 use crate::{
     assets::Icon,
-    state::direct::RingOutcome,
     text,
+    text::conversations as words,
     theme::u,
-    ui::{Button, ButtonKind, Notice},
+    ui::{Button, Notice},
 };
-use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div};
-use junto_client_core::protocol::{
-    call::CallPlace,
-    ids::{AccountId, ServerId},
-};
+use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div, prelude::FluentBuilder};
+use junto_client_core::protocol::{call::CallPlace, ids::ServerId};
 
 impl Shell {
+    /// What a conversation shows above its messages while the call window draws its call:
+    /// the statement with Return. Otherwise nothing: the call starts from "Call" in the
+    /// header, and the outcome of a call is a line of the messages (ADR 0741).
     pub(crate) fn render_conversation_call(
-        &mut self,
+        &self,
         server: ServerId,
         conversation: &crate::state::view::DirectRow,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if let Some(other) = conversation.account_id {
-            return self.render_direct_call(server, other, cx);
+        let state = self.state.read(cx);
+        let separate = state.is_call_detached()
+            && state.media_calls().call.is_some_and(|call| {
+                call.target.server_id == server
+                    && match (conversation.account_id, call.target.place) {
+                        (None, CallPlace::Group { conversation_id }) => {
+                            conversation_id == conversation.id
+                        }
+                        (
+                            Some(other),
+                            CallPlace::Direct {
+                                low_account_id,
+                                high_account_id,
+                            },
+                        ) => low_account_id == other || high_account_id == other,
+                        _ => false,
+                    }
+            });
+        if separate {
+            return div()
+                .flex_none()
+                .p(u(12.0))
+                .child(
+                    Notice::new(text::CALL_SEPARATE)
+                        .selector("call-in-separate-window")
+                        .action(self.return_call_button(cx)),
+                )
+                .into_any_element();
         }
+        div().flex_none().into_any_element()
+    }
+
+    /// The buttons of the header of a conversation (ADR 0741): "Call", and the profile of the
+    /// other person or the people of a group. A closed conversation offers its buttons
+    /// disabled with the reason; while a call of the conversation rings here, no Call.
+    pub(crate) fn render_conversation_buttons(
+        &mut self,
+        view: &crate::state::view::ShellView,
+        server: ServerId,
+        conversation: &crate::state::view::DirectRow,
+        people_open: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let colors = crate::theme::theme(cx).colors;
         let id = conversation.id;
+        let other = conversation.account_id;
         let owner = self
             .state
             .read(cx)
             .server(server)
             .and_then(|server| server.owner());
-        let separate = self.state.read(cx).is_call_detached()
-            && self.state.read(cx).media_calls().call.is_some_and(|call| {
-                call.target.server_id == server
-                    && call.target.place
-                        == CallPlace::Group {
-                            conversation_id: id,
-                        }
-            });
-        if separate {
-            return Notice::new(text::CALL_SEPARATE)
-                .action(self.return_call_button(cx))
-                .into_any_element();
-        }
-        let call = Button::new("start-group-call")
-            .label(text::DIRECT_CALL)
-            .icon(Icon::Phone)
-            .kind(ButtonKind::Primary)
-            .selector("start-group-call")
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if owner.is_some()
-                    && this
-                        .state
-                        .read(cx)
-                        .server(server)
-                        .and_then(|server| server.owner())
-                        == owner
-                {
-                    this.state
-                        .update(cx, |state, cx| state.start_group_call(server, id, cx));
-                }
-            }));
-        let control = self.join_control(
-            call,
-            ButtonKind::Primary,
-            super::device_checks::JoinCheck {
-                target: junto_media::calls::CallTarget {
-                    server_id: server,
-                    place: CallPlace::Group {
-                        conversation_id: id,
-                    },
-                },
-                invitation: None,
-                arrow: "start-group-call-check",
-            },
-            cx,
-        );
-        div()
-            .flex()
-            .flex_none()
-            .p(u(12.0))
-            .child(control)
-            .into_any_element()
-    }
-
-    /// What a direct conversation shows above its messages while the main window does not
-    /// draw its call: the button that starts a direct-message call, or the statement that
-    /// the call window draws the call of the conversation with Return, and the outcome of
-    /// the last call with the person. The call of the conversation is drawn as the call of
-    /// a voice channel is (ADR 0735).
-    pub(crate) fn render_direct_call(
-        &mut self,
-        server: ServerId,
-        other: AccountId,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let state = self.state.read(cx);
-        let latest = state
-            .direct_calls()
-            .rings
-            .iter()
-            .filter(|((id, _), ring)| *id == server && ring.other == other)
-            .max_by_key(|(_, ring)| ring.invitation.created_at)
-            .map(|(_, ring)| ring);
-        let history = history_label(
-            state.direct_calls().finished.get(&(server, other)).copied(),
-            latest.map(|ring| (ring.outcome, ring.incoming)),
-        );
-        let incoming = self.view.as_ref().is_some_and(|view| view.invitations.iter().any(|invited| invited.target.server_id == server && matches!(invited.target.place, CallPlace::Direct { low_account_id, high_account_id } if low_account_id == other || high_account_id == other)));
-        let separate = state.is_call_detached()
-            && state.media_calls().call.is_some_and(|call| {
-                call.target.server_id == server
-                    && matches!(call.target.place, CallPlace::Direct { low_account_id, high_account_id } if low_account_id == other || high_account_id == other)
-            });
-        let own = state.server(server).and_then(|server| server.account());
-        let call = if separate {
-            Notice::new(text::CALL_SEPARATE)
-                .selector("call-in-separate-window")
-                .action(self.return_call_button(cx))
-                .into_any_element()
-        } else if incoming {
-            div().into_any_element()
-        } else {
-            let start = Button::new("start-direct-call")
-                .label(text::DIRECT_CALL)
-                .icon(Icon::Phone)
-                .kind(ButtonKind::Primary)
-                .selector("start-direct-call")
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state
-                        .update(cx, |state, cx| state.start_direct_call(server, other, cx))
-                }));
-            match own {
-                Some(own) => div()
-                    .flex()
-                    .child(self.join_control(
-                        start,
-                        ButtonKind::Primary,
-                        super::device_checks::JoinCheck {
-                            target: junto_media::calls::CallTarget {
-                                server_id: server,
-                                place: CallPlace::direct(own, other),
-                            },
-                            invitation: None,
-                            arrow: "start-direct-call-check",
+        let closed = conversation.departure.is_some()
+            || view
+                .lists()
+                .and_then(|lists| lists.feed.as_ref())
+                .is_some_and(|feed| {
+                    feed.failed == Some(junto_client_core::model::ReadFailure::NotFound)
+                });
+        let incoming = view.invitations.iter().any(|invited| {
+            invited.target.server_id == server
+                && match (other, invited.target.place) {
+                    (
+                        Some(other),
+                        CallPlace::Direct {
+                            low_account_id,
+                            high_account_id,
                         },
-                        cx,
-                    ))
-                    .into_any_element(),
-                None => start.into_any_element(),
+                    ) => low_account_id == other || high_account_id == other,
+                    (None, CallPlace::Group { conversation_id }) => conversation_id == id,
+                    _ => false,
+                }
+        });
+        let mut buttons = Vec::new();
+        let own = self
+            .state
+            .read(cx)
+            .server(server)
+            .and_then(|server| server.account());
+        let target = match other {
+            Some(other) => own.map(|own| CallPlace::direct(own, other)),
+            None => Some(CallPlace::Group {
+                conversation_id: id,
+            }),
+        }
+        .map(|place| junto_media::calls::CallTarget {
+            server_id: server,
+            place,
+        });
+        if !incoming {
+            let call = Button::new("conversation-call")
+                .icon(Icon::Phone)
+                .tooltip(if closed {
+                    words::CLOSED
+                } else {
+                    text::DIRECT_CALL
+                })
+                .accessible_label(text::DIRECT_CALL)
+                .disabled(closed)
+                .selector("conversation-call")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if owner.is_none()
+                        || this
+                            .state
+                            .read(cx)
+                            .server(server)
+                            .and_then(|server| server.owner())
+                            != owner
+                    {
+                        return;
+                    }
+                    this.state.update(cx, |state, cx| match other {
+                        Some(other) => state.start_direct_call(server, other, cx),
+                        None => state.start_group_call(server, id, cx),
+                    });
+                }));
+            // The arrow of the join control of the calls (ADR 0735) opens the device check
+            // before the call; a closed conversation has no call to check.
+            match target.filter(|_| !closed) {
+                Some(target) => buttons.push(self.join_control(
+                    call,
+                    crate::ui::ButtonKind::Default,
+                    super::device_checks::JoinCheck {
+                        target,
+                        invitation: None,
+                        arrow: "conversation-devices",
+                    },
+                    cx,
+                )),
+                None => buttons.push(call.into_any_element()),
             }
-        };
-        div()
-            .flex_none()
-            .p(u(12.0))
-            .child(call)
-            .child(
-                crate::ui::notice_slot("direct-notice-area").children(
-                    history.map(|line| Notice::new(line).selector("direct-call-history")),
-                ),
-            )
-            .into_any_element()
-    }
-}
-
-fn history_label(
-    finished: Option<RingOutcome>,
-    latest: Option<(RingOutcome, bool)>,
-) -> Option<&'static str> {
-    match finished.or_else(|| latest.map(|(outcome, _)| outcome)) {
-        Some(RingOutcome::Missed)
-            if finished.is_some() || latest.is_none_or(|(_, incoming)| !incoming) =>
-        {
-            Some(text::NO_ANSWER)
         }
-        Some(RingOutcome::Missed) => Some(text::MISSED_CALL),
-        Some(RingOutcome::Declined) => Some(text::DIRECT_CALL_DECLINED),
-        Some(RingOutcome::Cancelled) if latest.is_some_and(|(_, incoming)| incoming) => {
-            Some(text::MISSED_CALL)
+        match other {
+            Some(other) => buttons.push(
+                Button::new("conversation-profile")
+                    .icon(Icon::Person)
+                    .tooltip(words::PROFILE)
+                    .accessible_label(words::PROFILE)
+                    .selector("conversation-profile")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.show_profile(
+                            crate::ui::OpenProfile {
+                                server,
+                                account: other,
+                            },
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+            ),
+            None => buttons.push(
+                Button::new("conversation-people")
+                    .icon(Icon::People)
+                    .tooltip(words::PEOPLE)
+                    .accessible_label(words::PEOPLE)
+                    .selector("conversation-people")
+                    .when(people_open, |button| {
+                        button
+                            .bg(gpui::Hsla::from(colors.limestone_lo))
+                            .shadow_none()
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_group_people(server, id, window, cx);
+                    }))
+                    .into_any_element(),
+            ),
         }
-        Some(RingOutcome::Cancelled) => Some(text::DIRECT_CALL_CANCELLED),
-        Some(RingOutcome::Ended | RingOutcome::EndedElsewhere) => Some(text::DIRECT_CALL_ENDED),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn no_answer_uses_the_current_call_direction_even_after_an_older_incoming_call() {
-        assert_eq!(
-            history_label(Some(RingOutcome::Missed), Some((RingOutcome::Missed, true))),
-            Some(text::NO_ANSWER)
-        );
-        assert_eq!(
-            history_label(None, Some((RingOutcome::Cancelled, true))),
-            Some(text::MISSED_CALL)
-        );
-        assert_eq!(
-            history_label(None, Some((RingOutcome::Cancelled, false))),
-            Some(text::DIRECT_CALL_CANCELLED)
-        );
+        buttons
     }
 }

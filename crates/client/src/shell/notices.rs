@@ -30,9 +30,9 @@ use crate::state::view::{ServerLists, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Avatar, Button, ButtonKind, ChannelRow, ContextMenuExt, Dialog, Field, Menu, MenuItem, Notice,
-    Segmented, SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label,
-    menu_separator, scroll_bar, unread_dot,
+    Avatar, Button, ButtonKind, ContextMenuExt, Dialog, Field, Menu, MenuItem, Notice, Segmented,
+    SideHeader, StatePanel, StyleExt, Toggle, icon, menu_label, menu_separator, scroll_bar,
+    unread_dot,
 };
 
 /// The icon of the place of a message.
@@ -406,39 +406,57 @@ impl Shell {
         cx.notify();
     }
 
-    /// The entry of the channel column that opens the notices of the server, with the
-    /// count of the notices that the person has not read. `in_call`: the main area shows
-    /// the call of this device, whose side panel is the panel of the call: the notices
-    /// open there (ADR 0742).
-    pub(crate) fn render_notices_row(
+    /// The bell beside the search field that opens the activity of the shown server in the
+    /// side panel, with the count of the notices that the person has not read (ADR 0742).
+    /// `in_call`: the button stands at the top of the panel of the call, whose side panel
+    /// the list opens in.
+    pub(crate) fn render_activity_button(
         &mut self,
         lists: &ServerLists,
         in_call: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let unread = lists.unread_notices;
-        let sign = (unread > 0).then(|| UnreadSign {
-            mentions: Some(text::unread_count(unread as u64).into()),
-            label: text::unread_notices(unread).into(),
-        });
+        let open = if in_call {
+            self.call_notices_open(cx)
+        } else {
+            lists.notices.is_some()
+        };
+        let label: SharedString = if unread > 0 {
+            format!("{}, {}", text::ACTIVITY, text::unread_notices(unread)).into()
+        } else {
+            text::ACTIVITY.into()
+        };
+        let colors = theme(cx).colors;
         div()
             .flex_none()
-            .debug_selector(|| "notices-row".to_owned())
+            .debug_selector(|| "activity".to_owned())
             .child(
-                ChannelRow::new("notices-row", Icon::Bell, text::NOTIFICATIONS)
-                    .selected(lists.notices.is_some())
-                    .unread(sign)
+                Button::new("activity-button")
+                    .icon(Icon::Bell)
+                    .tooltip(text::ACTIVITY)
+                    .accessible_label(label)
+                    .count((unread > 0).then(|| text::unread_count(unread as u64)))
+                    .selector("activity-button")
+                    .when(open, |button| {
+                        button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_notices(cx);
-                        // A narrow window draws the panel of the call over the stage
-                        // only while it is open.
                         if in_call {
-                            this.open_call_panel(cx);
+                            if this.call_notices_open(cx) {
+                                this.close_call_notices(cx);
+                            } else {
+                                this.open_call_notices(cx);
+                                this.open_call_panel(cx);
+                            }
+                            cx.notify();
+                        } else {
+                            this.toggle_notices(cx);
                         }
                     })),
             )
-            .when(unread > 0, |row| {
-                row.child(
+            .when(unread > 0, |button| {
+                button.child(
                     div()
                         .absolute()
                         .size_0()
@@ -510,7 +528,7 @@ impl Shell {
                     });
                 }))
         });
-        let header = SideHeader::new(text::NOTIFICATIONS)
+        let header = SideHeader::new(text::ACTIVITY)
             .title_bar()
             .icon(Icon::Bell)
             .note(if panel.unread > 0 {
@@ -524,11 +542,24 @@ impl Shell {
                     .items_center()
                     .gap(u(4.0))
                     .children(mark_all)
+                    // The notification levels of the person on the server: the page
+                    // Notifications of "Your account" in Server settings (ADR 0742).
+                    .child(
+                        Button::new("activity-settings")
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::Gear)
+                            .tooltip(text::SERVER_NOTIFICATIONS)
+                            .accessible_label(text::SERVER_NOTIFICATIONS)
+                            .selector("activity-settings")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_own_notifications(server_id, window, cx);
+                            })),
+                    )
                     .child(
                         Button::new("close-notices")
                             .kind(ButtonKind::Ghost)
                             .icon(Icon::X)
-                            .tooltip(text::CLOSE_NOTIFICATIONS)
+                            .tooltip(text::CLOSE_ACTIVITY)
                             .selector("close-notices")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if in_call {
@@ -612,7 +643,7 @@ impl Shell {
                     div()
                         .id("notice-list")
                         .role(Role::List)
-                        .aria_label(text::NOTIFICATIONS)
+                        .aria_label(text::ACTIVITY)
                         .debug_selector(|| "notice-list".to_owned())
                         .size_full()
                         .child(list(state.clone(), render).size_full().pb(u(6.0))),
@@ -631,7 +662,7 @@ impl Shell {
         } else {
             side_panel(
                 &theme,
-                text::NOTIFICATIONS,
+                text::ACTIVITY,
                 "notices-panel",
                 self.panel_width(Panel::Notices, theme.metrics.side_panel_width, cx),
             )
@@ -803,7 +834,7 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        self.row_menu("notice-menu", text::NOTIFICATIONS.to_owned(), items, cx)
+        self.row_menu("notice-menu", text::ACTIVITY.to_owned(), items, cx)
     }
 
     /// The control above the oldest listed notice that reads the older ones.
@@ -939,24 +970,15 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        items.push(
-            MenuItem::new("channel-mark-read", text::MARK_AS_READ)
-                .icon(Icon::CheckDouble)
-                .when(channel.selected, |item| {
-                    item.shortcut(junto_client_core::keybinds::KeyAction::MarkChannelRead)
-                })
-                .selector("channel-mark-read")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    this.state.update(cx, |state, _| {
-                        state.mark_place_as_read(
-                            server_id,
-                            junto_client_core::model::PlaceId::Channel(channel_id),
-                        );
-                    });
-                }))
-                .into_any_element(),
-        );
+        items.extend(self.read_item(
+            "channel",
+            server_id,
+            junto_client_core::model::PlaceId::Channel(channel_id),
+            channel.holds_messages,
+            channel.unread.unread(),
+            channel.selected,
+            cx,
+        ));
         if let Some(status) = self.voice_status_item(server_id, channel, cx) {
             items.push(status);
         }
@@ -988,19 +1010,16 @@ impl Shell {
                 }))
                 .into_any_element(),
         );
-        if channel.allowed.manage {
+        if channel.allowed.channel_settings(channel.kind) {
             items.push(
-                MenuItem::new("channel-edit", text::EDIT_CHANNEL)
+                MenuItem::new("channel-settings", text::admin::CHANNEL_SETTINGS)
                     .icon(Icon::Gear)
-                    .selector("channel-edit")
+                    .selector("channel-settings")
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_admin(
-                            crate::state::admin::AdminOpen::Channel {
-                                server_id,
-                                workspace_id,
-                                channel_id,
-                                page: crate::state::admin::ChannelPage::Overview,
-                            },
+                        this.open_settings_of_channel(
+                            server_id,
+                            workspace_id,
+                            channel_id,
                             window,
                             cx,
                         );
@@ -1062,24 +1081,17 @@ impl Shell {
                     );
                 }))
                 .into_any_element(),
-            MenuItem::new("direct-mark-read", text::MARK_AS_READ)
-                .icon(Icon::CheckDouble)
-                .when(direct.selected, |item| {
-                    item.shortcut(junto_client_core::keybinds::KeyAction::MarkChannelRead)
-                })
-                .selector("direct-mark-read")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    this.state.update(cx, |state, _| {
-                        state.mark_place_as_read(
-                            server_id,
-                            junto_client_core::model::PlaceId::Direct(conversation_id),
-                        );
-                    });
-                }))
-                .into_any_element(),
-            menu_separator(cx).into_any_element(),
         ];
+        items.extend(self.read_item(
+            "direct",
+            server_id,
+            junto_client_core::model::PlaceId::Direct(conversation_id),
+            direct.holds_messages,
+            direct.unread.unread(),
+            direct.selected,
+            cx,
+        ));
+        items.push(menu_separator(cx).into_any_element());
         items.insert(
             1,
             MenuItem::new("direct-copy-link", text::COPY_TARGET_LINK)
@@ -1205,18 +1217,54 @@ impl Shell {
                     }
                 }),
             );
-            items.push(
-                MenuItem::new("group-details", text::conversations::MENU)
-                    .selector("group-details-open")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if !matches!(this.layer, Layer::DirectMenu(id) if id == conversation_id) {
-                            return;
-                        }
-                        this.open_group_details(owner, conversation_id, window, cx);
-                    }))
-                    .into_any_element(),
-            );
+            // The people of the group, and leaving it, are in its panel "People" (ADR 0741).
+            for (selector, label, icon_shown, leaving) in [
+                (
+                    "group-details-open",
+                    text::conversations::PEOPLE,
+                    Icon::People,
+                    false,
+                ),
+                (
+                    "group-leave-open",
+                    text::conversations::LEAVE,
+                    Icon::Leave,
+                    true,
+                ),
+            ] {
+                items.push(
+                    MenuItem::new(selector, label)
+                        .icon(icon_shown)
+                        .selector(selector)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if !matches!(this.layer, Layer::DirectMenu(id) if id == conversation_id)
+                            {
+                                return;
+                            }
+                            this.close_layer(window, cx);
+                            this.state.update(cx, |state, cx| {
+                                state.select_conversation(server_id, conversation_id, cx)
+                            });
+                            this.open_group_details(owner, conversation_id, window, cx);
+                            this.groups.leaving = leaving;
+                        }))
+                        .into_any_element(),
+                );
+            }
         }
+        // The export asks first, and its file is in Exports of the account (ADR 0411).
+        items.push(
+            MenuItem::new("direct-export", text::conversations::EXPORT)
+                .icon(Icon::Download)
+                .selector("direct-export")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if !matches!(this.layer, Layer::DirectMenu(id) if id == conversation_id) {
+                        return;
+                    }
+                    this.open_layer(Layer::ConfirmExport(server_id, conversation_id), window, cx);
+                }))
+                .into_any_element(),
+        );
         if let Some(account_id) = account_id {
             items.extend(
                 self.mute_items(&direct.mute, "direct", cx, move |this, length, cx| {
@@ -1232,6 +1280,49 @@ impl Shell {
             items,
             cx,
         )
+    }
+
+    /// The one read item of a channel or a conversation (ADR 0742): "Mark as read" while the
+    /// place has unread messages, "Mark as unread" while it has none, and no item for a place
+    /// without messages. `prefix` names the selectors, such as `channel-mark-read`.
+    #[allow(clippy::too_many_arguments)]
+    fn read_item(
+        &mut self,
+        prefix: &'static str,
+        server_id: ServerId,
+        place: junto_client_core::model::PlaceId,
+        holds_messages: bool,
+        unread: bool,
+        shown: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !holds_messages {
+            return None;
+        }
+        let item = if unread {
+            MenuItem::new("mark-read", text::MARK_AS_READ)
+                .icon(Icon::CheckDouble)
+                .when(shown, |item| {
+                    item.shortcut(junto_client_core::keybinds::KeyAction::MarkChannelRead)
+                })
+                .selector(format!("{prefix}-mark-read"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state
+                        .update(cx, |state, _| state.mark_place_as_read(server_id, place));
+                }))
+        } else {
+            MenuItem::new("mark-unread", text::MARK_AS_UNREAD)
+                .icon(Icon::Unread)
+                .selector(format!("{prefix}-mark-unread"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state.update(cx, |state, cx| {
+                        state.mark_place_unread(server_id, place, cx)
+                    });
+                }))
+        };
+        Some(item.into_any_element())
     }
 
     fn row_menu(

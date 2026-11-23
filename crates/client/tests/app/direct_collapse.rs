@@ -29,6 +29,7 @@ fn a_person_collapses_the_direct_messages_with_the_menu_pointer_and_keyboard_and
                     document: document(words),
                     reply_to: None,
                     attachments: Vec::new(),
+                    comment: None,
                 },
             ))
             .unwrap()

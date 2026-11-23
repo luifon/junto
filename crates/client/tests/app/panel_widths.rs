@@ -100,7 +100,7 @@ fn the_edge_of_a_panel_changes_its_width_within_its_bounds_and_the_width_is_kept
 
     // Another side panel keeps its own width.
     window.click("members-button");
-    window.click("notices-row");
+    window.click("activity-button");
     window.until("the notices are open", |window| {
         window.shows("notices-panel")
     });

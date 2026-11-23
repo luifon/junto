@@ -2921,6 +2921,7 @@ pub(super) mod calls {
                 share_screen: true,
                 voice_activity: true,
                 set_user_limit: true,
+                export: true,
             }
         );
     }

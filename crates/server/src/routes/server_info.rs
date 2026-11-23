@@ -32,6 +32,7 @@ pub async fn get_server_info(State(app): State<AppState>) -> ApiResult<Json<Serv
         capabilities: junto_protocol::server::Capabilities {
             afk_channel: true,
             channel_topics: true,
+            workspace_threads: true,
             message_format: junto_protocol::message::DocumentFormat {
                 event_revision: junto_protocol::events::EVENT_REVISION,
             },

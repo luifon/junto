@@ -110,6 +110,64 @@ pub const FOLLOWED_QUERY: &str = "select root_id,latest_id from thread_reads
       and (latest_id,root_id)<($3,$4)
     order by latest_id desc,root_id desc limit $5";
 
+pub const WORKSPACE_FOLLOWED_QUERY: &str =
+    "select r.root_id,r.latest_id,(r.position<r.latest)::int,r.place_id
+    from thread_reads r join channels c on c.id=r.place_id
+    where r.account_id=$1 and c.workspace_id=$2 and r.place_id=any($3) and r.following
+      and r.latest_id is not null
+      and ((r.position<r.latest)::int,r.latest_id,r.root_id)<($4,$5,$6)
+    order by (r.position<r.latest)::int desc,r.latest_id desc,r.root_id desc limit $7";
+
+/// One page of the threads of a workspace that the account follows in the channels of
+/// `channels`: the threads with unread replies first, then the others, each group with the
+/// newest reply first (ADR 0413). The continuation names the group, the newest reply and
+/// the root of the last thread.
+pub async fn workspace_followed(
+    connection: &mut PgConnection,
+    account: AccountId,
+    workspace: junto_protocol::ids::WorkspaceId,
+    channels: &[ChannelId],
+    before: Option<(i32, Uuid, Uuid)>,
+    limit: u32,
+) -> ApiResult<junto_protocol::message::WorkspaceThreads> {
+    let (unread, newest, root) = before.unwrap_or((2, Uuid::max(), Uuid::max()));
+    let mut rows: Vec<(MessageId, Uuid, i32, ChannelId)> = sqlx::query_as(WORKSPACE_FOLLOWED_QUERY)
+        .bind(account)
+        .bind(workspace)
+        .bind(channels)
+        .bind(unread)
+        .bind(newest)
+        .bind(root)
+        .bind(i64::from(limit) + 1)
+        .fetch_all(&mut *connection)
+        .await?;
+    let more = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    let next = if more {
+        rows.last()
+            .map(|(root, newest, unread, _)| format!("{unread}:{newest}:{root}"))
+    } else {
+        None
+    };
+    let roots: Vec<_> = rows.iter().map(|(id, _, _, _)| *id).collect();
+    let threads = states(connection, account, &roots)
+        .await?
+        .into_iter()
+        .filter_map(|state| {
+            let channel_id = rows
+                .iter()
+                .find(|(id, _, _, _)| *id == state.root_id)
+                .map(|(_, _, _, channel)| *channel)?;
+            Some(junto_protocol::message::WorkspaceThread { channel_id, state })
+        })
+        .collect();
+    Ok(junto_protocol::message::WorkspaceThreads {
+        threads,
+        more,
+        next,
+    })
+}
+
 /// One page of the threads of a channel that the account follows, read ones included
 /// (ADR 0413). The caller has decided that the account sees the channel.
 pub async fn followed(

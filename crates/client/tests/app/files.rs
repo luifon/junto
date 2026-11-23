@@ -41,6 +41,7 @@ fn the_controls_of_a_file_download_it_cancel_the_download_and_show_the_file(
             document: document("The budget"),
             reply_to: None,
             attachments: vec![attachment_id],
+            comment: None,
         };
         admin
             .handle
@@ -159,6 +160,7 @@ fn try_again_after_a_failed_download_downloads_the_file_again(cx: &mut TestAppCo
             .unwrap();
         let message = SendMessage {
             document: document("The notes"),
+            comment: None,
             reply_to: None,
             attachments: vec![attachment_id],
         };

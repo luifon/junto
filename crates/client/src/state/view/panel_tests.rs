@@ -41,6 +41,7 @@ pub(super) fn message(
         reply_count: 0,
         last_reply: None,
         reply_authors: Vec::new(),
+        comment: None,
         pinned: false,
         files_removed_by_retention: false,
     }

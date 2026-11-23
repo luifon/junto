@@ -192,6 +192,9 @@ pub async fn load_messages(
                 pinned: row.try_get("pinned")?,
                 files_removed_by_retention: row.try_get("files_removed_by_retention")?,
                 reply_authors: row.try_get("reply_authors")?,
+                comment: row
+                    .try_get::<Option<Json<Document>>, _>("comment")?
+                    .map(|value| value.0),
                 reactions: reactions
                     .iter()
                     .filter(|(message, _, _, _)| *message == id)
@@ -641,7 +644,7 @@ pub(crate) async fn erase(
     .await?;
     if has_replies {
         sqlx::query("update messages set
-             document=null,system=null,author_id=null,edited_at=null,permanent=false,deleted=true,recording_id=null,notifies=null
+             document=null,comment=null,system=null,author_id=null,edited_at=null,permanent=false,deleted=true,recording_id=null,notifies=null
              where id=$1")
             .bind(id)
             .execute(&mut *connection)

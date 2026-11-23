@@ -471,6 +471,7 @@ fn paragraph(text: &str) -> junto_client_core::protocol::message::SendMessage {
         },
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     }
 }
 
