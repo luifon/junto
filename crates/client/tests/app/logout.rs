@@ -30,6 +30,13 @@ fn a_person_logs_out_and_the_device_logs_in_again_only_when_the_person_asks(
             .is_some_and(|selected| selected.can_log_out)
     });
     window.click("menu-log-out");
+    // The logout asks first, with what it ends and what stays; Cancel keeps the session.
+    assert!(window.shows("confirm-log-out"));
+    window.click("cancel");
+    assert_ne!(window.status(), Some(ServerStatus::LoggedOutByPerson));
+    window.click("server-menu-button");
+    window.click("menu-log-out");
+    window.click("confirm");
     window.until("the logout is shown", |window| {
         window.status() == Some(ServerStatus::LoggedOutByPerson)
     });

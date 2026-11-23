@@ -197,18 +197,7 @@ impl Shell {
                     .label(text::JOIN)
                     .icon(Icon::Speaker)
                     .kind(ButtonKind::Primary)
-                    .when(!invited.may_connect, |button| {
-                        button
-                            .tooltip(text::not_permitted(
-                                junto_client_core::protocol::WorkspacePermission::Connect,
-                            ))
-                            .disabled(true)
-                    })
-                    .selector(if invited.may_connect {
-                        "invitation-join"
-                    } else {
-                        "invitation-join-refused"
-                    }),
+                    .selector("invitation-join"),
                 Button::new(id("invitation-decline"))
                     .label(text::DECLINE)
                     .selector("invitation-decline"),
@@ -348,11 +337,17 @@ impl Shell {
                             .debug_selector(move || format!("invitation-decline:{invitation_id}"))
                             .child(decline),
                     )
-                    .child(
-                        div()
-                            .debug_selector(move || format!("invitation-accept:{invitation_id}"))
-                            .child(accept),
-                    ),
+                    // Without "connect" an invitation into a channel offers no join
+                    // (ADR 0790).
+                    .when(direct || invited.may_connect, |actions| {
+                        actions.child(
+                            div()
+                                .debug_selector(move || {
+                                    format!("invitation-accept:{invitation_id}")
+                                })
+                                .child(accept),
+                        )
+                    }),
             )
             .when(direct, |card| card.border_color(Hsla::from(colors.cypress)));
         div()

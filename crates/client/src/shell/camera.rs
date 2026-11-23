@@ -15,7 +15,7 @@ use crate::ui::StyleExt;
 const OWN_PREVIEW_PIXELS: (u32, u32) = (640, 360);
 
 pub(crate) fn default_name() -> &'static str {
-    "First available camera"
+    crate::text::FIRST_CAMERA
 }
 
 /// The people whose tiles the stage leaves out: with "Hide people without video" on, every

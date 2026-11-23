@@ -21,46 +21,12 @@ struct Part {
 }
 
 struct TextCopy {
-    links: Vec<(Range<usize>, String)>,
     replacements: Vec<(Range<usize>, String)>,
 }
 
 type CopyTargets = Rc<TextCopy>;
 
 impl Part {
-    fn target(&self, byte: usize) -> Option<&(Range<usize>, String)> {
-        self.targets
-            .as_ref()?
-            .links
-            .iter()
-            .find(|(range, _)| range.contains(&byte))
-    }
-
-    fn copy_bounds(&self, byte: usize) -> Bounds<Pixels> {
-        if let Some((range, _)) = self.target(byte)
-            && let (Some(from), Some(to)) = (
-                self.layout.position_for_index(range.start),
-                self.layout.position_for_index(range.end),
-            )
-        {
-            if from.y == to.y {
-                return Bounds::new(
-                    from,
-                    size((to.x - from.x).max(px(1.0)), self.layout.line_height()),
-                )
-                .intersect(&self.visible);
-            }
-            return Bounds::new(
-                point(self.visible.left(), from.y),
-                size(
-                    self.visible.size.width,
-                    to.y - from.y + self.layout.line_height(),
-                ),
-            )
-            .intersect(&self.visible);
-        }
-        self.visible
-    }
     fn source_byte(&self, byte: usize) -> usize {
         let mut copied = 0;
         let mut at = 0;
@@ -97,6 +63,7 @@ impl Part {
 }
 
 thread_local! {
+    static OWNED_PRESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static MESSAGE: RefCell<Option<Rc<Paint>>> = const { RefCell::new(None) };
     static COPY_TARGETS: RefCell<Option<CopyTargets>> = const { RefCell::new(None) };
 }
@@ -113,9 +80,7 @@ struct Selection {
     pressed: bool,
     origin: Option<Point<Pixels>>,
     dragging: bool,
-    hovered: Option<(usize, usize)>,
     focus: Option<FocusHandle>,
-    control: Option<Bounds<Pixels>>,
     history: History,
     pointer: Option<Point<Pixels>>,
     scrolling: bool,
@@ -231,6 +196,12 @@ impl Selection {
 }
 
 impl TextSelection {
+    /// The text that the selection holds now, as Cmd/Ctrl+C copies it.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn selected_text(&self) -> String {
+        self.0.borrow().text()
+    }
+
     #[cfg(feature = "test-support")]
     pub(crate) fn painted_text(&self) -> Vec<String> {
         self.0
@@ -348,9 +319,6 @@ impl TextSelection {
         });
     }
 
-    pub fn control(&self, bounds: Option<Bounds<Pixels>>) {
-        self.0.borrow_mut().control = bounds;
-    }
     pub fn scope(&self, scope: String) {
         let mut held = self.0.borrow_mut();
         if held.scope.as_ref() != Some(&scope) {
@@ -364,20 +332,6 @@ impl TextSelection {
     pub fn focus(&self, focus: FocusHandle) {
         self.0.borrow_mut().focus = Some(focus);
     }
-    pub fn hovered(&self) -> Option<(String, Bounds<Pixels>)> {
-        let held = self.0.borrow();
-        if held.pressed || held.dragging {
-            return None;
-        }
-        let (index, byte) = held.hovered?;
-        let part = held.parts.get(index)?;
-        let value = part.target(byte).map_or_else(
-            || part.copied(0..part.text.len()),
-            |(_, value)| value.clone(),
-        );
-        Some((value, part.copy_bounds(byte)))
-    }
-
     pub(crate) fn stop_drag(&self) {
         let mut held = self.0.borrow_mut();
         held.pressed = false;
@@ -389,10 +343,16 @@ impl TextSelection {
         let mut held = self.0.borrow_mut();
         held.start = None;
         held.end = None;
-        held.hovered = None;
         held.history.clear();
         held.pointer = None;
     }
+}
+
+/// A control that handles its press alone claims the press that it received (ADR 0731): the
+/// selection, which saw the press first, starts no selection and no drag from it, also where
+/// the text of the row lies under the control.
+pub(crate) fn claim_press() {
+    OWNED_PRESS.set(true);
 }
 
 /// Enables selection for the read-only text of a subtree. Fields and action labels use
@@ -429,26 +389,16 @@ impl SelectableText {
         }
     }
 
-    pub fn rich(
-        child: impl IntoElement,
-        links: Vec<(Range<usize>, String)>,
-        replacements: Vec<(Range<usize>, String)>,
-    ) -> Self {
+    /// Text whose shown ranges copy another source, such as a mention that copies its name.
+    pub fn rich(child: impl IntoElement, replacements: Vec<(Range<usize>, String)>) -> Self {
         Self {
             child: child.into_any_element(),
             selection: None,
-            targets: Some(Rc::new(TextCopy {
-                links,
-                replacements,
-            })),
+            targets: Some(Rc::new(TextCopy { replacements })),
             covered: None,
             message: None,
             observed_message: false,
         }
-    }
-
-    pub fn value(child: impl IntoElement, value: String) -> Self {
-        Self::rich(child, vec![(0..usize::MAX, value)], Vec::new())
     }
 
     pub fn cover(child: impl IntoElement, selection: TextSelection) -> Self {
@@ -544,13 +494,8 @@ impl Element for SelectableText {
             if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
                 return;
             }
+            OWNED_PRESS.set(false);
             let mut held = down.0.borrow_mut();
-            if held
-                .control
-                .is_some_and(|bounds| bounds.contains(&event.position))
-            {
-                return;
-            }
             held.history.clear();
             held.pointer = Some(event.position);
             held.start = held.hit(event.position);
@@ -596,13 +541,7 @@ impl Element for SelectableText {
                 return;
             }
             let mut held = moved.0.borrow_mut();
-            if held
-                .control
-                .is_some_and(|bounds| bounds.contains(&event.position))
-            {
-                return;
-            }
-            if cx.has_active_drag() {
+            if cx.has_active_drag() || OWNED_PRESS.get() {
                 held.pressed = false;
                 held.dragging = false;
                 return;
@@ -629,32 +568,22 @@ impl Element for SelectableText {
                     moved.scroll(window);
                     cx.stop_propagation();
                 }
-            } else {
-                if event.pressed_button != Some(MouseButton::Left) {
-                    held.pressed = false;
-                    held.pointer = None;
-                }
-                let hovered = held.hit(event.position);
-                let hover_bounds = held.hovered.and_then(|(index, byte)| {
-                    held.parts.get(index).map(|part| part.copy_bounds(byte))
-                });
-                let keep = hover_bounds.is_some_and(|bounds| {
-                    held.control
-                        .as_ref()
-                        .map_or(bounds, |control| bounds.union(control))
-                        .contains(&event.position)
-                });
-                let on_text = hovered.is_some();
-                if hovered != held.hovered && (on_text || !keep) {
-                    held.hovered = hovered;
-                    window.refresh();
-                }
+            } else if event.pressed_button != Some(MouseButton::Left) {
+                held.pressed = false;
+                held.pointer = None;
             }
         });
         let released = selection.clone();
         window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
             if phase == DispatchPhase::Capture {
                 let mut held = released.0.borrow_mut();
+                if OWNED_PRESS.get() {
+                    held.start = None;
+                    held.end = None;
+                    held.history.clear();
+                    held.pressed = false;
+                    held.dragging = false;
+                }
                 if held.pressed && held.dragging {
                     held.end = held.nearest(event.position);
                     if let Some(anchor) =
@@ -749,12 +678,6 @@ impl Element for SelectableText {
         );
         {
             let mut held = selection.0.borrow_mut();
-            if let Some((index, _)) = held.hovered
-                && painted.get(index).map(|part| &part.text)
-                    != held.parts.get(index).map(|part| &part.text)
-            {
-                held.hovered = None;
-            }
             if held.history.start.is_none()
                 && let (Some(start), Some(end)) = (held.start, held.end)
             {

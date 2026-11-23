@@ -883,9 +883,11 @@ impl Shell {
                         }),
                 ),
             )
-            .when_some(form.help, |column, help| {
-                column.child(sentence(help, theme).mt(u(5.0)))
-            })
+            // A refusal that is the help itself is shown once, as the refusal.
+            .when_some(
+                form.help.filter(|help| self.admin.invalid != Some(*help)),
+                |column, help| column.child(sentence(help, theme).mt(u(5.0))),
+            )
     }
 
     pub(crate) fn render_admin(
@@ -1096,16 +1098,18 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (workspace_id, channel_id) = (settings.workspace_id, settings.channel_id);
-        let mut column = div().flex().flex_col().pt(u(6.0)).pb(u(10.0)).child(
-            div()
-                .flex_none()
-                .pt(u(10.0))
-                .px(u(14.0))
-                .pb(u(4.0))
-                .typeface(theme.types.label, theme)
-                .ink(theme.colors.bronze)
-                .truncate()
-                .child(text::admin::channel_name(settings.kind, &settings.name)),
+        // The row back to the page that lists the channel, as in the settings of a category
+        // and of a person.
+        let mut column = self.settings_nav_head(
+            text::admin::channel_name(settings.kind, &settings.name),
+            if settings.archived {
+                AdminPage::Archive
+            } else {
+                AdminPage::Channels
+            },
+            "channel-nav-back",
+            theme,
+            cx,
         );
         for page in settings.pages.iter().copied() {
             let name = text::admin::channel_page_name(page);
@@ -1191,23 +1195,24 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let account_id = settings.account_id;
-        let mut column = self
-            .settings_nav_head(
-                crate::shell::people::person_name(
-                    &self.faces(server),
-                    account_id,
-                    settings.name.clone(),
-                    "person-settings-name",
-                ),
-                settings.listed_on(),
-                "person-nav-back",
-                theme,
-                cx,
-            )
+        // The presence of the person stands before the name, as in the rows of people.
+        let title = div()
+            .flex()
+            .items_center()
+            .gap(u(6.0))
+            .min_w_0()
             .child(crate::ui::PresenceMark::new(
                 self.state.read(cx).presence(server, account_id),
                 12.,
+            ))
+            .child(crate::shell::people::person_name(
+                &self.faces(server),
+                account_id,
+                settings.name.clone(),
+                "person-settings-name",
             ));
+        let mut column =
+            self.settings_nav_head(title, settings.listed_on(), "person-nav-back", theme, cx);
         for page in settings.pages.iter().copied() {
             let name = text::admin::overrides::person_page_name(page);
             column = column.child(

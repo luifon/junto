@@ -8,14 +8,39 @@ use gpui::{
 };
 
 use super::{
-    Avatar, Badge, ContextMenuExt, Meter, RecordingMark, StyleExt, focus_ring_inside, icon,
-    selection_mark, tooltip, unread_dot,
+    Avatar, Badge, ContextMenuExt, MENU_ROW, MenuButton, Meter, RecordingMark, StyleExt,
+    focus_ring_inside, icon, selection_mark, tooltip, unread_dot,
 };
 use crate::assets::Icon;
 use crate::theme::{theme, u};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 type MenuHandler = std::rc::Rc<dyn Fn(&mut Window, &mut App) + 'static>;
+
+/// The menu button at the right end of a row with a menu, over what the row shows there.
+fn row_menu_button(
+    row: &ElementId,
+    open: MenuHandler,
+    shown: bool,
+    ground: gpui::Rgba,
+    dark: bool,
+) -> gpui::Div {
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .right(u(6.0))
+        .flex()
+        .items_center()
+        .child(
+            MenuButton::new("row-menu")
+                .selector(format!("menu-button:{row}"))
+                .shown(shown)
+                .ground(ground)
+                .when(dark, MenuButton::dark)
+                .on_open(move |window, cx| open(window, cx)),
+        )
+}
 
 /// One workspace of a server, in the server book or in the menu of a collapsed server.
 #[derive(IntoElement)]
@@ -141,6 +166,7 @@ impl RenderOnce for WorkspaceRow {
             None => self.name.clone(),
         };
         let sign = self.unread.as_ref().map(|sign| sign.element(cx));
+        let id = self.id.clone();
         div()
             .id(self.id)
             .role(Role::ListItem)
@@ -171,8 +197,9 @@ impl RenderOnce for WorkspaceRow {
             .when(self.open && !self.selected, |row| {
                 row.bg(Hsla::from(colors.basalt_3))
             })
-            .when_some(self.on_menu, |row, open| {
-                row.on_context_menu(move |window, cx| open(window, cx))
+            .when_some(self.on_menu.clone(), |row, open| {
+                row.group(MENU_ROW)
+                    .on_context_menu(move |window, cx| open(window, cx))
             })
             .when(!self.in_menu, |row| {
                 // The branch of the tree line that joins the row to its server.
@@ -216,6 +243,15 @@ impl RenderOnce for WorkspaceRow {
             })
             .child(div().flex_1().min_w_0().truncate().child(self.name))
             .children(sign)
+            .when_some(self.on_menu, |row, open| {
+                row.child(row_menu_button(
+                    &id,
+                    open,
+                    self.open || focus.is_focused(window),
+                    colors.basalt_3,
+                    true,
+                ))
+            })
     }
 }
 
@@ -312,13 +348,19 @@ impl RenderOnce for CategoryHeader {
             actions.push(action.clone());
         }
         actions.extend(self.actions);
+        let focus = window
+            .use_keyed_state((id.clone(), "focus"), cx, |_, cx| {
+                cx.focus_handle().tab_stop(true)
+            })
+            .read(cx)
+            .clone();
+        let focused = focus.is_focused(window);
         let frame = div()
             .id(id.clone())
             .relative()
             .role(Role::Group)
             .aria_label(label)
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
             .focus_visible(move |style| style.shadow(ring))
             .flex()
             .flex_none()
@@ -402,7 +444,7 @@ impl RenderOnce for CategoryHeader {
                 ),
             )
         });
-        super::bind_action_menu(frame, id, actions, window, cx)
+        super::bind_row_action_menu(frame, id, super::RowMenu::end(focused), actions, window, cx)
     }
 }
 
@@ -631,6 +673,7 @@ impl RenderOnce for ChannelRow {
                     .into_any_element(),
             })
             .collect();
+        let id = self.id.clone();
         div()
             .id(self.id)
             .role(Role::ListItem)
@@ -687,8 +730,9 @@ impl RenderOnce for ChannelRow {
             .when(self.open && !self.selected, |row| {
                 row.bg(Hsla::from(colors.limestone_hover))
             })
-            .when_some(self.on_menu, |row, open| {
-                row.on_context_menu(move |window, cx| open(window, cx))
+            .when_some(self.on_menu.clone(), |row, open| {
+                row.group(MENU_ROW)
+                    .on_context_menu(move |window, cx| open(window, cx))
             })
             .child(match self.avatar {
                 Some(seed) => Avatar::new(seed, 16.0)
@@ -739,6 +783,19 @@ impl RenderOnce for ChannelRow {
                         .gap(u(8.0))
                         .children(states),
                 )
+            })
+            .when_some(self.on_menu, |row, open| {
+                row.child(row_menu_button(
+                    &id,
+                    open,
+                    self.open || focus.is_focused(window),
+                    if self.selected {
+                        colors.limestone_lo
+                    } else {
+                        colors.limestone_hover
+                    },
+                    false,
+                ))
             })
     }
 }
@@ -902,6 +959,7 @@ impl RenderOnce for OccupantRow {
                 .tooltip(tooltip(label))
                 .child(drawn)
         });
+        let id = self.id.clone();
         div()
             .id(self.id)
             .role(Role::ListItem)
@@ -909,6 +967,7 @@ impl RenderOnce for OccupantRow {
             .when_some(self.selector, |row, selector| {
                 row.debug_selector(move || selector.to_string())
             })
+            .relative()
             .flex()
             .flex_none()
             .items_center()
@@ -921,10 +980,11 @@ impl RenderOnce for OccupantRow {
             .ink(colors.ink_2)
             .hover(move |style| style.bg(Hsla::from(colors.limestone_hover)))
             .when(self.open, |row| row.bg(Hsla::from(colors.limestone_hover)))
-            .when_some(self.on_menu, |row, open| {
+            .when_some(self.on_menu.clone(), |row, open| {
                 let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
                 let (by_click, by_key) = (open.clone(), open);
-                row.track_focus(&focus)
+                row.group(MENU_ROW)
+                    .track_focus(&focus)
                     .children(super::reveal::report(&focus, window))
                     .focus_visible(move |style| style.shadow(ring))
                     .on_context_menu(move |window, cx| by_click(window, cx))
@@ -960,5 +1020,14 @@ impl RenderOnce for OccupantRow {
                     .gap(u(7.0))
                     .children(marks),
             )
+            .when_some(self.on_menu, |row, open| {
+                row.child(row_menu_button(
+                    &id,
+                    open,
+                    self.open || focus.is_focused(window),
+                    colors.limestone_hover,
+                    false,
+                ))
+            })
     }
 }

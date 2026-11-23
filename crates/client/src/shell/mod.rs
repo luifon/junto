@@ -117,6 +117,7 @@ pub(crate) enum Layer {
     Profile,
     ConfirmRemove(ServerId),
     ConfirmForget(ServerId),
+    ConfirmLogOut(ServerId),
     /// The dialog in which the person chooses what to share. It holds the lists of the
     /// system, which are larger than every other layer.
     SharePicker(Box<share::SharePicker>),
@@ -221,6 +222,7 @@ impl Layer {
             | Layer::Profile
             | Layer::ConfirmRemove(..)
             | Layer::ConfirmForget(..)
+            | Layer::ConfirmLogOut(..)
             | Layer::SharePicker(..)
             | Layer::Forward(..)
             | Layer::ReactionPeople(..)
@@ -287,7 +289,7 @@ impl Pane {
             (Self::Thread, "format-spoiler") => "thread-format-spoiler",
             (Self::Thread, "send-message") => "thread-send-message",
             (Self::Thread, "attach-file") => "thread-attach-file",
-            (Self::Thread, "attach-file-refused") => "thread-attach-file-refused",
+            (Self::Thread, "mention-picker-scroll") => "thread-mention-picker-scroll",
             (Self::Thread, "messages-state") => "thread-messages-state",
             (Self::Thread, "no-messages") => "thread-no-messages",
             (Self::Thread, "read-only-bar") => "thread-read-only-bar",
@@ -1505,6 +1507,16 @@ impl Shell {
         self.open_layer(Layer::ConfirmRemove(server_id), window, cx);
     }
 
+    /// Asks whether this device logs out of a server, as "Log out" in its menu does.
+    pub fn ask_to_log_out(
+        &mut self,
+        server_id: ServerId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_layer(Layer::ConfirmLogOut(server_id), window, cx);
+    }
+
     /// Opens a part of the window that a start argument or a tool names.
     pub fn open(&mut self, open: Open, window: &mut Window, cx: &mut Context<Self>) {
         match open {
@@ -1809,6 +1821,16 @@ impl Shell {
             .update(cx, |state, cx| state.select_server(server_id, cx));
     }
 
+    /// The context menu of a server icon of the collapsed server book opens: the hover menu of
+    /// the icon closes and stays closed until the pointer leaves the icon and comes back, as
+    /// after a press, so that it does not lie over the context menu.
+    pub(crate) fn open_server_icon_context(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        self.hover_menu_pressed = Some(server_id);
+        if matches!(self.hover_menu, Some((open, _)) if open == server_id) {
+            self.close_hover_menu(cx);
+        }
+    }
+
     /// The pointer entered or left the open hover menu.
     pub(crate) fn hover_in_hover_menu(&mut self, hovered: bool, cx: &mut Context<Self>) {
         self.hover_menu_pointer.1 = hovered;
@@ -1955,7 +1977,7 @@ impl Render for Shell {
                     .relative()
                     .size_full()
                     .child(detached)
-                    .children(self.render_copy_control(window, cx))
+                    .children(self.render_copied_confirmation(cx))
                     .children(self.render_message_link_refusal(cx)),
                 self.text_selection.clone(),
             )
@@ -2124,7 +2146,7 @@ impl Render for Shell {
                 window,
                 cx,
             ))
-            .children(self.render_copy_control(window, cx));
+            .children(self.render_copied_confirmation(cx));
         crate::selectable::SelectableText::new(shell, self.text_selection.clone())
             .into_any_element()
     }
@@ -2240,7 +2262,9 @@ impl Shell {
     fn drop_stale_layer(&mut self, view: &ShellView, window: &mut Window, cx: &mut Context<Self>) {
         let gone = |server_id: &ServerId| !view.servers.iter().any(|row| row.id == *server_id);
         let stale = match &self.layer {
-            Layer::ConfirmRemove(server_id) | Layer::ConfirmForget(server_id) => gone(server_id),
+            Layer::ConfirmRemove(server_id)
+            | Layer::ConfirmForget(server_id)
+            | Layer::ConfirmLogOut(server_id) => gone(server_id),
             Layer::ServerMenu => view.selected.is_none(),
             Layer::Forward(dialog) => {
                 self.state.read(cx).owner(dialog.server_id) != Some(dialog.owner)
@@ -2464,6 +2488,9 @@ impl Shell {
                 .into_any_element(),
             Layer::ConfirmForget(server_id) => self
                 .render_confirm_forget(*server_id, view, window, cx)
+                .into_any_element(),
+            Layer::ConfirmLogOut(server_id) => self
+                .render_confirm_log_out(*server_id, view, cx)
                 .into_any_element(),
             Layer::SharePicker(_) => self.render_share_picker(window, cx),
             Layer::Admin => self.render_admin(window, cx),

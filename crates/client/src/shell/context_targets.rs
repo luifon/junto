@@ -37,6 +37,14 @@ impl Shell {
         }
     }
 
+    fn server_context_id(surface: &str, server: &junto_client_core::ServerHandle) -> SharedString {
+        SharedString::from(format!(
+            "server-context:{surface}:{:?}:{:?}",
+            server.entry().key(),
+            server.owner()
+        ))
+    }
+
     pub(super) fn bind_server_context(
         &mut self,
         frame: Stateful<Div>,
@@ -50,9 +58,19 @@ impl Shell {
         };
         let key = server.entry().key();
         let owner = server.owner();
-        bind_lazy_action_menu(
-            frame.focusable().tab_stop(true),
-            SharedString::from(format!("server-context:{surface}:{key:?}:{owner:?}")),
+        // The row of the server in the expanded server list shows the menu button, also while
+        // it holds the keyboard focus; the icon of the collapsed list has no room for it.
+        let id = Self::server_context_id(surface, &server);
+        let focus = crate::ui::row_focus(id.clone(), window, cx);
+        let row = (surface == "server-row").then(|| {
+            crate::ui::RowMenu::end(focus.is_focused(window))
+                .dark()
+                .selector(format!("menu-button:server:{server_id}"))
+        });
+        crate::ui::bind_lazy_row_action_menu(
+            frame.track_focus(&focus),
+            id,
+            row,
             window,
             cx,
             |window, cx| {

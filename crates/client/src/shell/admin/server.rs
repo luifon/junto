@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, PathPromptOptions, Role,
-    StatefulInteractiveElement, Styled, Window, div,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 
 use junto_client_core::model::AdminPart;
@@ -271,7 +271,7 @@ impl Shell {
         };
         let sending = view.sending(AskKind::SetLogo);
         let removing = view.sending(AskKind::RemoveLogo);
-        let held = (!page.may_change).then_some(txt::LOGO_NEEDS);
+        // Without the permission the logo has no controls (ADR 0790).
         let controls: AnyElement = match self.admin.mode {
             Some(Mode::RemoveLogo) => self
                 .render_row_question(
@@ -293,7 +293,7 @@ impl Shell {
                 )
                 .into_any_element(),
             _ => {
-                let busy = sending || removing || held.is_some();
+                let busy = sending || removing;
                 let choose = Button::new("logo-choose")
                     .label(if sending {
                         text::admin::SENDING
@@ -345,18 +345,19 @@ impl Shell {
                     .min_h(u(LOGO_SIZE))
                     .child(logo),
             )
-            .child(
-                self.mode_row(
-                    &[Mode::RemoveLogo],
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .mt(u(10.0))
-                        .child(controls),
-                ),
-            )
-            .children(held.map(|reason| sentence(reason, &theme).mt(u(5.0))))
+            .when(page.may_change, |page| {
+                page.child(
+                    self.mode_row(
+                        &[Mode::RemoveLogo],
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .mt(u(10.0))
+                            .child(controls),
+                    ),
+                )
+            })
             .children(refusal(refused, "logo-refused"))
             .child(group_label(txt::ATTACHMENTS, &theme))
             .child(sentence(txt::ATTACHMENTS_HELP, &theme).mb(u(4.0)))

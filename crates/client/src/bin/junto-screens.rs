@@ -3066,6 +3066,11 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
         Screen::new("remove-server-question", vec![acme(), waiting()]),
         |shell, window, cx| shell.ask_to_remove(id(2), window, cx),
     )?;
+    // "Log out" asks first, with what the logout ends and what stays (ADR 0730).
+    studio.draw(
+        Screen::new("log-out-question", vec![acme(), harbor()]),
+        |shell, window, cx| shell.ask_to_log_out(id(1), window, cx),
+    )?;
     Ok(())
 }
 

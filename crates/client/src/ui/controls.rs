@@ -8,7 +8,9 @@ use gpui::{
 };
 use gpui_base::slider::{Slider, SliderIndicator, SliderState, SliderThumb, SliderTrack};
 
-use super::{Band, BandKind, StyleExt, focus_ring, focus_ring_inside, icon, ledge, tooltip};
+use super::{
+    Band, BandKind, OwnPress, StyleExt, focus_ring, focus_ring_inside, icon, ledge, tooltip,
+};
 use crate::assets::Icon;
 use crate::theme::{theme, u};
 
@@ -86,6 +88,7 @@ impl Toggle {
             icon: None,
             disabled: self.held.is_some(),
             detail: self.held.clone(),
+            shortcut: None,
             handler: Some(handler.clone()),
         }]
     }
@@ -131,6 +134,7 @@ impl RenderOnce for Toggle {
                     .tooltip(tooltip(reason)),
                 None => toggle
                     .cursor_pointer()
+                    .own_press_focusing(&focus)
                     .track_focus(&focus)
                     .children(super::reveal::report(&focus, window))
                     .focus_visible(move |style| style.shadow(ring))
@@ -280,6 +284,7 @@ impl RenderOnce for Stepper {
                 .map(|button| match handler {
                     Some(handler) => button
                         .cursor_pointer()
+                        .own_press_focusing(&focus)
                         .track_focus(&focus)
                         .children(super::reveal::report(&focus, window))
                         .hover(move |style| style.bg(Hsla::from(colors.travertine)))
@@ -391,6 +396,7 @@ impl RenderOnce for SelectBox {
             .font_weight(gpui::FontWeight::NORMAL)
             .ink(colors.ink)
             .cursor_pointer()
+            .own_press_focusing(&focus)
             .track_focus(&focus)
             .children(super::reveal::report(&focus, window))
             .hover(move |style| style.bg(Hsla::from(colors.travertine)))
@@ -478,6 +484,7 @@ impl RenderOnce for Tab {
             },
             Some(label.clone()),
             Some(self.on),
+            false,
         );
         let tab = div();
         #[cfg(feature = "test-support")]
@@ -524,6 +531,7 @@ impl RenderOnce for Tab {
                     )
             })
             .cursor_pointer()
+            .own_press_focusing(&focus)
             .track_focus(&focus)
             .children(super::reveal::report(&focus, window))
             .focus_visible(move |style| style.shadow(ring))

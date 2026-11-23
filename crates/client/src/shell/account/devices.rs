@@ -382,6 +382,8 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
+            // Room at the right end for the menu button of the row (ADR 0731).
+            .pr(u(28.0))
             .child(
                 named(
                     format!("device-row-{device_id}"),
@@ -393,9 +395,11 @@ impl Shell {
                 view.refused(rename).or(view.refused(remove)),
                 "device-refused",
             ));
-        let row = crate::ui::bind_action_menu(
+        let focused = focus.is_focused(window);
+        let row = crate::ui::bind_row_action_menu(
             row,
             SharedString::from(format!("device-actions-{device_id}")),
+            crate::ui::RowMenu::overlay(focused),
             actions,
             window,
             cx,

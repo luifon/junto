@@ -369,7 +369,7 @@ impl Shell {
                                     card.recording_id, file.segment_id
                                 )
                                 .into(),
-                                text::COPY_NAME,
+                                text::COPY_FILE_NAME,
                                 file_title(file),
                             ),
                             item,
@@ -396,7 +396,7 @@ impl Shell {
                 card,
                 (
                     format!("recording-file-menu:{}:text", card.recording_id).into(),
-                    text::COPY_NAME,
+                    text::COPY_FILE_NAME,
                     text::RECORDING_TRANSCRIPT_TEXT.to_owned(),
                 ),
                 item,
@@ -979,11 +979,8 @@ impl Shell {
             .h(u(26.0))
             .px(u(8.0));
         let button = match card.request {
-            TranscriptRequest::NotOffered => return None,
-            TranscriptRequest::NotAllowed => button
-                .label(label)
-                .tooltip(text::transcripts::REQUEST_NEEDS)
-                .disabled(true),
+            // Without the permission the request is absent (ADR 0790).
+            TranscriptRequest::NotOffered | TranscriptRequest::NotAllowed => return None,
             TranscriptRequest::Allowed { sending } => button
                 .label(if sending {
                     text::transcripts::REQUESTING
@@ -1451,32 +1448,26 @@ impl Shell {
             );
         }
         actions.push(div().flex_1().into_any_element());
-        // The removal: offered to a person whose roles hold the permission, and stated
-        // as not allowed to another person.
-        actions.push(if card.may_remove {
-            Button::new(("remove-recording", index))
-                .icon(Icon::Trash)
-                .label(if card.removing {
-                    text::RECORDING_REMOVING
-                } else {
-                    text::REMOVE
-                })
-                .tooltip(text::REMOVE_RECORDING)
-                .disabled(card.removing)
-                .selector("remove-recording")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.ask_to_remove_recording(server_id, recording_id, window, cx);
-                }))
-                .into_any_element()
-        } else {
-            Button::new(("remove-recording", index))
-                .icon(Icon::Trash)
-                .label(text::REMOVE)
-                .tooltip(text::RECORDING_REMOVE_NEEDS_PERMISSION)
-                .disabled(true)
-                .selector("remove-recording")
-                .into_any_element()
-        });
+        // The removal: offered to a person who holds the permission, absent for another
+        // person (ADR 0790).
+        if card.may_remove {
+            actions.push(
+                Button::new(("remove-recording", index))
+                    .icon(Icon::Trash)
+                    .label(if card.removing {
+                        text::RECORDING_REMOVING
+                    } else {
+                        text::REMOVE
+                    })
+                    .tooltip(text::REMOVE_RECORDING)
+                    .disabled(card.removing)
+                    .selector("remove-recording")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.ask_to_remove_recording(server_id, recording_id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         // The files that are saved, and what happened to each.
         let mut downloads: Vec<AnyElement> = Vec::new();
         for (position, file) in detail.files.iter().enumerate() {

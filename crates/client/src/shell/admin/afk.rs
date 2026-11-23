@@ -46,9 +46,9 @@ impl Shell {
                 .child(
                     Button::new("afk-settings-retry")
                         .label(if admin.changing {
-                            "Loading AFK settings"
+                            crate::text::admin::AFK_LOADING
                         } else {
-                            "Retry AFK settings"
+                            crate::text::admin::AFK_RETRY
                         })
                         .disabled(admin.changing)
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -73,7 +73,7 @@ impl Shell {
                     .disabled(admin.changing)
                     .on_click(change(server, workspace, toggle, cx)),
             )
-            .child("Move people after no microphone speech and no keyboard or mouse input for:");
+            .child(crate::text::admin::AFK_AFTER);
         let mut times = div().flex().gap(u(8.0));
         for (minutes, selector) in [
             (5, "afk-time-5"),
@@ -98,7 +98,7 @@ impl Shell {
                     .on_click(change(server, workspace, value, cx)),
             );
         }
-        form = form.child(times).child("Meeting mode, direct calls and group calls are exempt. The AFK channel allows listening only.");
+        form = form.child(times).child(crate::text::admin::AFK_EXEMPT);
         let mut choices = div()
             .id("afk-channel-options")
             .flex()

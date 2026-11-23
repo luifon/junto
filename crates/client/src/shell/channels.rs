@@ -6,7 +6,6 @@ use gpui::{
     ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, div,
     prelude::FluentBuilder,
 };
-use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::ServerId;
 use junto_client_core::protocol::structure::ChannelKind;
 
@@ -1495,7 +1494,7 @@ impl Shell {
                             MicrophoneButton::NotPermitted => Button::new("microphone")
                                 .kind(ButtonKind::SquareHeld)
                                 .icon(Icon::MicrophoneHeld)
-                                .tooltip(text::not_permitted(WorkspacePermission::Speak))
+                                .tooltip(text::MICROPHONE_CLOSED_IN_CALL)
                                 .disabled(true),
                         }
                         .selector("microphone")

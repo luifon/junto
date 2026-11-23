@@ -258,26 +258,32 @@ impl Shell {
         .on_close(Self::handler(cx, |this, window, cx| {
             this.close_profile(window, cx)
         }))
-        .child(content)
-        .child(dialog_footer([
-            Button::new("profile-message")
-                .label(text::profile::MESSAGE)
-                .icon(Icon::Chat)
-                .kind(ButtonKind::Primary)
-                .selector("profile-message")
-                .disabled(!view.can_contact())
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.profile_contact(false, window, cx)),
-                )
-                .into_any_element(),
-            Button::new("profile-call")
-                .label(text::profile::CALL)
-                .icon(Icon::Phone)
-                .selector("profile-call")
-                .disabled(!view.can_contact())
-                .on_click(cx.listener(|this, _, window, cx| this.profile_contact(true, window, cx)))
-                .into_any_element(),
-        ]));
+        .child(content);
+        // The own card offers no message and no call to the own account.
+        let own_card = view.account == view.owner.account_id;
+        let dialog = dialog.when(!own_card, |dialog| {
+            dialog.child(dialog_footer([
+                Button::new("profile-message")
+                    .label(text::profile::MESSAGE)
+                    .icon(Icon::Chat)
+                    .kind(ButtonKind::Primary)
+                    .selector("profile-message")
+                    .disabled(!view.can_contact())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.profile_contact(false, window, cx)),
+                    )
+                    .into_any_element(),
+                Button::new("profile-call")
+                    .label(text::profile::CALL)
+                    .icon(Icon::Phone)
+                    .selector("profile-call")
+                    .disabled(!view.can_contact())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.profile_contact(true, window, cx)),
+                    )
+                    .into_any_element(),
+            ]))
+        });
         div()
             .id("profile-overlay")
             .absolute()

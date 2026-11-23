@@ -34,9 +34,11 @@ pub mod people;
 pub mod permissions;
 pub mod presence;
 pub mod profile;
+pub mod search;
 pub mod switcher;
 pub mod transcripts;
 pub mod tray;
+pub mod voice_status;
 
 pub const APP_NAME: &str = "Junto";
 pub const CLOCK_FORMAT: &str = "Time format";
@@ -198,11 +200,12 @@ pub fn occupancy(inside: usize, limit: u32, full: bool) -> String {
 // The profile strip.
 pub const CLOSE_MICROPHONE: &str = "Mute microphone";
 pub const OPEN_MICROPHONE: &str = "Unmute microphone";
+pub const MICROPHONE_CLOSED_IN_CALL: &str = "Your microphone is closed in this call";
 pub const MICROPHONE_HELD: &str =
     "Your microphone is blocked by a moderator or by meeting mode. You cannot unmute.";
 pub const SOUND_OUTPUT_ON: &str = "Turn sound off";
 pub const SOUND_OUTPUT_OFF: &str = "Turn sound on";
-pub const APP_SETTINGS: &str = "App settings";
+pub const APP_SETTINGS: &str = "Settings";
 pub const NO_NAME_YET: &str = "No name yet";
 
 /// The line above the profile strip about the sound of this device: what holds, in strong
@@ -257,11 +260,6 @@ pub fn sound_warning(warning: &SoundWarning) -> (String, String) {
             "The sound output is not working.".to_owned(),
             " Choose another output device in the app settings, under Voice and video.".to_owned(),
         ),
-        SoundWarning::SpeakNotPermitted => (
-            "You cannot speak in this channel.".to_owned(),
-            " You hear the call, and the others do not hear you or the sound of your share."
-                .to_owned(),
-        ),
         SoundWarning::PushToTalkRequired => (
             "This channel requires push-to-talk.".to_owned(),
             " Your microphone sends only while you hold the push-to-talk key.".to_owned(),
@@ -276,13 +274,11 @@ pub const CALL_ENTERING: &str = "Joining…";
 pub const CALL_ENTERING_HELP: &str = "Waiting for the server to confirm that you joined.";
 pub const CALL_CONNECTING: &str = "Connecting…";
 pub const MICROPHONE_PAUSED: &str = "Your microphone is paused until the call reconnects.";
-pub const LEAVE: &str = "Leave";
 pub const LEAVE_CALL: &str = "Leave call";
 pub const SHOW_CALL: &str = "Show the call";
 pub const CALL_TIME: &str = "Call time";
-pub const CAMERA_NOT_AVAILABLE: &str = "Camera. Cameras are not in this version.";
 pub const RAISE_HAND: &str = "Raise your hand";
-pub const LOWER_HAND: &str = "Lower your hand";
+pub const LOWER_HAND: &str = "Lower hand";
 pub const TURN_ON_CAMERA: &str = "Turn on camera";
 pub const TURN_OFF_CAMERA: &str = "Turn off camera";
 pub const CAMERA_ON: &str = "Camera on";
@@ -298,12 +294,12 @@ pub const MEETING_WHILE_BLOCKED: &str =
     "Your microphone is blocked, so you cannot turn on meeting mode.";
 pub const MEETING_TURN_OFF: &str = "Turn off meeting mode. Every microphone in the call is \
      unblocked, also the ones that a moderator blocked.";
-pub const LOCK_ROOM: &str = "Lock room";
+pub const LOCK_ROOM: &str = "Lock call";
 pub const LOCK_ROOM_HELP: &str = LOCK_ROOM_SETTING_HELP;
 pub const LOCK_ROOM_SETTING_HELP: &str = "Only these people can join: people invited by \
      someone in the call, people let in after they ask to join, and people moved in by a \
      moderator.";
-pub const LOCK_NO_PERMISSION: &str = "You do not have the “lock room” permission.";
+pub const LOCK_NO_PERMISSION: &str = "You do not have the “lock call” permission.";
 pub const USER_LIMIT: &str = "User limit";
 pub const USER_LIMIT_HELP: &str = "The most people who can join on their own. When the call is \
      full, a person asks to join and someone in the call lets them in. People invited by \
@@ -324,10 +320,9 @@ pub const MEETING_PRESENTER_HELP: &str =
 pub const MEETING_PARTICIPANT_HELP: &str =
     "Microphones are blocked. Raise your hand to ask to speak.";
 pub const RAISED_A_HAND: &str = " raised their hand";
-pub const ALLOW: &str = "Allow";
+pub const ALLOW: &str = "Allow to speak";
 pub const ALLOW_TO_SPEAK: &str = "Allow to speak";
 pub const LOWER_HAND_OF_PERSON: &str = "Lower hand";
-pub const LOWER_HAND_HELP: &str = "Their microphone stays as it is.";
 pub const NO_RAISED_HAND: &str = "No hand is raised.";
 pub const MAY_SPEAK_NOT_OPEN: &str = " may speak and has not unmuted yet";
 pub const YOU_MAY_SPEAK: &str = "You may speak";
@@ -465,15 +460,15 @@ pub fn entry_prompt(name: Option<&str>, channel: &str) -> String {
 }
 
 // Invitations.
-pub const INVITE_A_MEMBER: &str = "Invite a member";
+pub const INVITE_A_MEMBER: &str = "Invite";
 pub const FIND_A_MEMBER: &str = "Find a member";
 pub const CLEAR_MEMBER_SEARCH: &str = "Clear member search";
 pub const INVITE: &str = "Invite";
 pub const INVITED: &str = "Invited";
-pub const WITHDRAW_INVITATION: &str = "Cancel the invitation";
+pub const WITHDRAW_INVITATION: &str = "Cancel invitation";
 pub const NO_MEMBER_TO_INVITE: &str = "Every member of the workspace is in the call.";
 pub const NO_MEMBER_FOUND: &str = "No member has this name.";
-pub const JOIN: &str = "Join";
+pub const JOIN: &str = "Join call";
 pub const DECLINE: &str = "Decline";
 pub const INVITATION_DECLINED: &str = "Your invitation was declined.";
 pub const INVITATION_EXPIRED: &str = "Your invitation ended after one minute without an answer.";
@@ -485,7 +480,7 @@ pub fn invite_to(channel: &str) -> String {
 pub fn invite_help(channel: &str) -> String {
     format!(
         "The member gets an invitation to join {channel}. If they accept, they join, even when \
-         the room is locked or full."
+         the call is locked or full."
     )
 }
 
@@ -529,19 +524,14 @@ pub fn invitation(by: Option<&str>, channel: Option<&str>) -> String {
 }
 
 // The menu of a person in a voice channel.
-pub const INVITE_TO_MY_ROOM: &str = "Invite to my call";
+pub const INVITE_TO_MY_ROOM: &str = "Invite";
 pub const MOVE_TO: &str = "Move to…";
-pub const PERMISSION_MOVE: &str = "Permission: move members";
 pub const MODERATION: &str = "Moderation";
 pub const MUTE_FOR_EVERYONE: &str = "Block microphone";
 pub const REMOVE_MICROPHONE_BLOCK: &str = "Unblock microphone";
-pub const PERMISSION_MUTE: &str = "Permission: mute members";
 pub const BLOCK_SOUND: &str = "Block call sound";
 pub const REMOVE_SOUND_BLOCK: &str = "Unblock call sound";
-pub const PERMISSION_DEAFEN: &str = "Permission: deafen members";
 pub const DISCONNECT: &str = "Disconnect";
-pub const PERMISSION_DISCONNECT: &str = "Permission: disconnect members";
-pub const PERSON_MENU_KEYS: &str = "Keyboard: Menu or Shift + F10";
 pub const BACK: &str = "Back";
 pub const OPEN_PERSON_MENU: &str = "Right click or Shift + F10: the menu of this person";
 
@@ -559,16 +549,16 @@ pub fn call_refused(reason: &str) -> String {
 }
 
 // The share of this device.
-pub const SHARE_SCREEN: &str = "Share your screen";
+pub const SHARE_SCREEN: &str = "Share";
 pub const SHARE_STARTING: &str = "Starting your share…";
-pub const SHARE_RUNS: &str = "Stop sharing or share another";
+pub const SHARE_RUNS: &str = "Share";
 pub const YOUR_SHARES: &str = "Your shares";
 pub const SHARE_ANOTHER: &str = if cfg!(target_os = "linux") {
     "Share another screen or window"
 } else {
     "Share another screen, window or application"
 };
-pub const STOP_ALL_SHARES: &str = "Stop every share";
+pub const STOP_ALL_SHARES: &str = "Stop all shares";
 pub const SHARE_STARTS: &str = "Starts…";
 
 /// Why "Share another" is disabled: the person runs as many shares as one person can in the
@@ -593,7 +583,7 @@ pub fn share_viewer_names(names: &[String]) -> String {
     format!("Watching: {}", names.join(", "))
 }
 pub const SHARE_NOT_ON_THIS_SYSTEM: &str = SHARE_UNSUPPORTED;
-pub const SHARE_PICKER_TITLE: &str = "Share your screen";
+pub const SHARE_PICKER_TITLE: &str = "Share";
 pub const SHARE_READING: &str = if cfg!(target_os = "linux") {
     "Reading the screens and windows…"
 } else {
@@ -911,8 +901,8 @@ pub fn share_resolution(resolution: ShareResolution) -> &'static str {
 
 // The recording of a call.
 pub const RECORD: &str = "Record";
-pub const START_RECORDING: &str = "Record this call";
-pub const START_NEW_RECORDING: &str = "Start a new recording";
+pub const START_RECORDING: &str = "Record";
+pub const START_NEW_RECORDING: &str = "Record";
 pub const STOP: &str = "Stop";
 pub const STOP_RECORDING: &str = "Stop recording";
 pub const STOPPING: &str = "Stopping…";
@@ -1032,7 +1022,7 @@ pub const JOIN_CALL: &str = "Join call";
 pub const JOINING_CALL: &str = "Joining…";
 pub const ENTER_VOICE_CHANNEL: &str = "Join the call of this voice channel";
 pub const ROOM_CONTROLS_RETURN: &str =
-    "The room controls are shown again when the call reconnects.";
+    "The call controls are shown again when the call reconnects.";
 pub const CONNECTING_TO_CALL: &str = "Connecting to the call…";
 pub const CONNECTING_TO_CALL_HELP: &str = "Junto is connecting to the media server. The others \
      hear you when the connection is ready.";
@@ -1236,7 +1226,7 @@ pub fn push_to_talk_question(key: TalkKey) -> String {
 }
 
 // The key bindings (ADR 0777) and how the keys of a call reach Junto (ADR 0776).
-pub const KEYBINDS: &str = "Keybinds";
+pub const KEYBINDS: &str = "Keyboard shortcuts";
 pub const KEYBINDS_HELP: &str = "Each action can have a key combination. Set records the next keys \
      that you press; Escape stops. Every binding works while Junto is in front.";
 pub const RESET_ALL_KEYBINDS: &str = "Reset all";
@@ -1274,8 +1264,8 @@ pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'stati
         ToggleCamera => "Turn the camera on or off",
         ShareScreen => "Share a screen or a window",
         StopWatching => "Stop watching a share",
-        LeaveCall => "Leave the call",
-        AnswerCall => "Answer a call",
+        LeaveCall => "Leave call",
+        AnswerCall => "Accept call",
         DeclineCall => "Decline a call",
         ShowCall => "Show the call",
         ToggleCallPanel => "Open or close the panel of the call",
@@ -1292,7 +1282,7 @@ pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'stati
         ToggleServerBook => "Collapse or expand the server book",
         Search => "Search",
         Notices => "Notices",
-        JumpToNewest => "Jump to the newest message",
+        JumpToNewest => "Go to newest messages",
         MembersList => "Members",
         PinnedMessages => "Pinned messages",
         MarkChannelRead => "Mark the channel as read",
@@ -1301,10 +1291,10 @@ pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'stati
         EditLastMessage => "Edit the last own message",
         UploadFile => "Upload a file",
         OpenDirectMessages => "Direct messages",
-        NewDirectMessage => "New direct message",
+        NewDirectMessage => "New message",
         OpenSettings => "Settings",
         OpenAdministration => "Administration",
-        OpenKeybinds => "Keybinds",
+        OpenKeybinds => "Keyboard shortcuts",
         QuickSwitcher => "Quick switcher",
         ZoomIn => "Zoom in",
         ZoomOut => "Zoom out",
@@ -1357,6 +1347,16 @@ pub fn keys_portal_failed(reason: &str) -> String {
          mute key work while a window of Junto is in front.",
         sentence(reason)
     )
+}
+
+/// The keys of the system for an edit of text, such as Copy: Command with the letter on
+/// macOS, Control with it elsewhere.
+pub fn editing_keys(letter: char) -> String {
+    if cfg!(target_os = "macos") {
+        format!("Command+{letter}")
+    } else {
+        format!("Control+{letter}")
+    }
 }
 
 /// The keys of a binding as the settings name them.
@@ -1535,7 +1535,9 @@ pub const LOGGED_OUT_BY_PERSON: &str = "Your account and the key of this device 
      device. Junto logs in again only when you press Log in.";
 pub const LOG_IN: &str = "Log in";
 pub const LOG_OUT: &str = "Log out";
-pub const LOG_OUT_HELP: &str = "Ends the session of this device. The account and its key stay.";
+pub const LOG_OUT_TITLE: &str = "Log out of this server?";
+pub const LOG_OUT_CONFIRM: &str =
+    "This ends the session of this device. The account and its key stay.";
 pub const LOG_OUT_UNAVAILABLE: &str = "This device has no account here that is logged in.";
 pub const LOCKED_STATE: &str = "Locked";
 pub const CONNECTING_TITLE: &str = "Connecting to the server";
@@ -1781,10 +1783,8 @@ pub fn scale_percent(scale: u32) -> String {
 
 // The menu of a server.
 pub const KEEP_CONNECTED: &str = "Keep connected in the background";
-pub const KEEP_CONNECTED_HELP: &str = "Off: the server connects only while it is selected.";
 pub const ON: &str = "On";
 pub const OFF: &str = "Off";
-pub const REMOVE_SERVER_HELP: &str = "Deletes the entry and the key of this device.";
 pub const REMOVE: &str = "Remove";
 
 pub const REMOVE_SERVER_TITLE: &str = "Remove this server from this device?";
@@ -2000,21 +2000,20 @@ pub const MESSAGES: &str = "Messages";
 pub const MESSAGES_LOADING: &str = "Reading the messages…";
 pub const MESSAGES_FAILED_TITLE: &str = "The messages could not be read";
 pub const MESSAGES_FAILED: &str = "The server did not answer, or it refused the request.";
-pub const MESSAGES_GONE: &str = "The server does not give this place to your account.";
+pub const MESSAGES_GONE: &str = "Your account cannot open this channel or conversation.";
 pub const MESSAGES_STALE: &str = "These messages may miss recent changes.";
-pub const READ_AGAIN: &str = "Read again";
+pub const READ_AGAIN: &str = "Try again";
 pub const NO_MESSAGES_TITLE: &str = "No messages yet";
-pub const NO_MESSAGES: &str = "Write the first message of this place.";
+pub const NO_MESSAGES: &str = "No messages yet. Write the first one.";
 pub const HISTORY_START: &str = "This is the start of the history.";
 pub const EARLIER_MESSAGES: &str = "Earlier messages";
 pub const READING_EARLIER: &str = "Reading earlier messages…";
 pub const LATER_MESSAGES: &str = "Later messages";
 pub const READING_LATER: &str = "Reading later messages…";
-pub const GO_TO_END: &str = "Go to the newest messages";
+pub const GO_TO_END: &str = "Go to newest messages";
 pub const NEW_MESSAGES: &str = "New";
 pub const MARK_AS_READ: &str = "Mark as read";
-pub const EDIT_CHANNEL: &str = "Edit channel";
-pub const MARK_AS_READ_HELP: &str = "Mark every message of this channel as read";
+pub const EDIT_CHANNEL: &str = "Channel settings";
 pub const EDITED: &str = "edited";
 pub const DELETED_MESSAGE: &str = "This message was deleted.";
 pub const QUOTE_DELETED: &str = "Deleted message";
@@ -2114,7 +2113,6 @@ pub const THREAD_GONE_TITLE: &str = "This thread does not exist any more";
 pub const THREAD_GONE: &str = "Its first message was deleted, or the channel is not open to you.";
 pub const THREAD_FAILED: &str = "The thread could not be read.";
 pub const NO_REPLIES: &str = "No replies yet. Write the first one.";
-pub const THREADS_OF_CHANNEL: &str = "Threads with something new";
 pub const THREAD_IN_CALL: &str = "This thread opens after you leave the call of its channel.";
 pub const FORK_THREAD: &str = "Fork thread into…";
 pub const FORK_COPIES: &str = "replies are copied to it";
@@ -2129,13 +2127,18 @@ pub const FORK_CREATE: &str = "Create the channel";
 pub const FORK_SENDING: &str = "Creating the channel…";
 pub const FORK_NOT_ALLOWED: &str = "Your roles do not allow this. A fork needs \"manage channel\" in this channel and in \
      its workspace.";
-pub const FORK_NEEDS_PERMISSION: &str = "A fork needs the permission \"manage channel\".";
 pub const FORK_EXISTS: &str = "This thread was forked already. A thread has one fork.";
 pub const FORK_THREAD_GONE: &str = "This thread does not exist any more.";
 pub const FORK_NAME_REFUSED: &str =
     "The server does not take this name. A name has 1 to 64 characters.";
 pub const FORKED_INTO: &str = "Forked into";
 pub const PINS: &str = "Pins";
+pub const OPEN_FILE: &str = "Open file";
+pub const MOVED_TO_AFK: &str = "You were moved to AFK after being inactive.";
+pub const REJOIN_PREVIOUS_CHANNEL: &str = "Rejoin previous channel";
+pub const NO_ANSWER: &str = "No answer";
+pub const FIRST_CAMERA: &str = "First available camera";
+pub const FILES: &str = "Files";
 pub const SHOW_PINS: &str = "Show the pinned messages";
 pub const CLOSE_PINS: &str = "Close the pinned messages";
 pub const PINS_LOADING: &str = "Reading the pinned messages…";
@@ -2180,8 +2183,8 @@ pub fn panel_edge(panel: junto_client_core::settings::Panel) -> &'static str {
     }
 }
 pub const MESSAGE_PERSON: &str = "Message";
-pub const NEW_DIRECT: &str = "New direct message";
-pub const NEW_DIRECT_TITLE: &str = "New direct message";
+pub const NEW_DIRECT: &str = "New message";
+pub const NEW_DIRECT_TITLE: &str = "New message";
 pub const NEW_DIRECT_ABOUT: &str = "The people you can write to on this server: the members of \
      your workspaces and the administrators of the server. An administrator can write to \
      every account.";
@@ -2200,10 +2203,6 @@ pub const NO_CONTACT: &str =
 pub const CONVERSATION_CLOSED: &str = "You and this person share no workspace on this server any more. The messages are kept \
      and are shown again when you share one.";
 pub const NO_DIRECT_MESSAGES: &str = "Write the first message of this conversation.";
-
-pub fn message_person(name: &str) -> String {
-    format!("Write a direct message to {name}")
-}
 
 /// The text of the field in which a person writes to another person.
 pub fn direct_placeholder(name: &str) -> String {
@@ -2368,8 +2367,8 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
         "entry_requested" => (Plain, "{actor} asked to join"),
         "entry_accepted" => (Plain, "{actor} let {subject} in"),
         "entry_denied" => (Plain, "{actor} did not let {subject} in"),
-        "call_locked" => (Plain, "{actor} locked the room"),
-        "call_unlocked" => (Plain, "{actor} unlocked the room"),
+        "call_locked" => (Plain, "{actor} locked the call"),
+        "call_unlocked" => (Plain, "{actor} unlocked the call"),
         "joined_by_invitation" => (Plain, "{actor} joined by invitation"),
         "person_joined" => (Plain, "{actor} joined the call"),
         "person_left" => (Plain, "{actor} left the call"),
@@ -2403,7 +2402,7 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
         "permanent_messages_turned_on" => (Plain, "{actor} turned on permanent messages"),
         "permanent_messages_turned_off" => (Plain, "{actor} turned off permanent messages"),
         "channel_override_set" => (Plain, "{actor} changed the permissions of this channel"),
-        "channel_call_settings_updated" => (Plain, "{actor} changed the settings of the room"),
+        "channel_call_settings_updated" => (Plain, "{actor} changed the settings of the call"),
         "call_microphone_blocked" => (Plain, "{actor} blocked the microphone of {subject}"),
         "call_microphone_unblocked" => (Plain, "{actor} unblocked the microphone of {subject}"),
         "call_sound_blocked" => (Plain, "{actor} blocked the call sound of {subject}"),
@@ -2663,8 +2662,8 @@ pub const CLOSE_NOTIFICATIONS: &str = "Close the notifications";
 pub const MARK_ALL_READ: &str = "Mark all as read";
 pub const MARKING_ALL_READ: &str = "Marking…";
 pub const NO_NOTICES_TITLE: &str = "No notifications";
-pub const NO_NOTICES: &str =
-    "A mention, a direct message, and a reply in a thread that you wrote in are listed here.";
+pub const NO_NOTICES: &str = "Mentions, direct messages, replies in threads that you wrote in, new messages in \
+     places that notify you of every message, and missed calls are listed here.";
 pub const NOTICES_READING: &str = "Reading the notifications…";
 /// The archived list of a workspace could not be read (ADR 0762).
 pub const ARCHIVED_NOTICES_NOT_READ: &str =
@@ -3067,8 +3066,6 @@ pub const OPEN_RECORDING: &str =
     "Download the video and play it in the video player of this computer";
 pub const REMOVE_RECORDING: &str = "Remove this recording with its files and its transcript";
 pub const RECORDING_REMOVING: &str = "Removing…";
-pub const RECORDING_REMOVE_NEEDS_PERMISSION: &str =
-    "Removing a recording needs the permission \"manage recordings\".";
 pub const REMOVE_RECORDING_TITLE: &str = "Remove this recording?";
 pub const REMOVE_RECORDING_CONFIRM: &str = "The server deletes the video, the audio files and the transcript for everyone. This cannot be undone.";
 pub const TRANSCRIPT: &str = "Transcript";
@@ -3350,7 +3347,7 @@ pub const DO_NOT_DISTURB: &str = "Do not disturb";
 pub const DO_NOT_DISTURB_HELP: &str =
     "No notification of the system is shown. Unread signs still follow new messages.";
 pub const DAILY_QUIET: &str = "Daily quiet time";
-pub const DAILY_QUIET_HELP: &str = "The same as \"do not disturb\", every day between the two times. The times keep the distance from UTC of the day on which they were set.";
+pub const DAILY_QUIET_HELP: &str = "Every day between the two times, notifications are held back. The times follow the chosen time zone.";
 pub const QUIET_FROM: &str = "From";
 pub const QUIET_UNTIL: &str = "Until";
 pub const QUIET_SET: &str = "Set";
@@ -3387,7 +3384,7 @@ pub fn quiet_failed(server: &str, reason: &str) -> String {
 
 pub const CAMERA: &str = "Camera";
 
-pub const DIRECT_CALL: &str = "Direct call";
+pub const DIRECT_CALL: &str = "Call";
 pub const CALLING: &str = "Calling…";
 
 /// "Calling Ada…": the stage of a direct-message call while it rings.
@@ -3452,6 +3449,8 @@ pub fn redeemed_workspaces(names: &[String], unknown: usize) -> String {
     format!("Your account is now a member of {list}.")
 }
 pub const COPY_TARGET_LINK: &str = "Copy link";
+pub const COPY_FILE_LINK: &str = "Copy link to file";
+pub const COPY_LINK_ADDRESS: &str = "Copy link address";
 
 pub const EDIT_TEXT_MENU: &str = "Edit text";
 pub const CUT_SELECTION: &str = "Cut";
@@ -3460,7 +3459,11 @@ pub const PASTE_TEXT: &str = "Paste";
 pub const SELECT_ALL_TEXT: &str = "Select all";
 
 pub const ROW_ACTIONS: &str = "Row actions";
+pub const MORE_ACTIONS: &str = "More actions";
 pub const COPY_TEXT: &str = "Copy text";
+pub const COPY_CODE: &str = "Copy code";
+pub const COPY_DETAILS: &str = "Copy details";
+pub const COPY_VERSION: &str = "Copy version";
 
 pub const COPY_MESSAGE_LINK: &str = "Copy link to message";
 
@@ -3486,20 +3489,11 @@ pub const FORWARD_NONE: &str = "No writable destinations match.";
 
 pub const FORWARD_THREAD_LINK: &str = "Use thread link";
 
-pub const VIEW_ORIGINAL: &str = "View original";
+pub const VIEW_ORIGINAL: &str = "Go to message";
 
 pub const MARK_UNREAD: &str = "Mark unread";
 
 pub const WHO_REACTED: &str = "Who reacted";
-pub const NO_REACTIONS_YET: &str = "No reactions yet";
-
-/// The second line of "Who reacted": how many reactions the message has.
-pub fn reaction_total(count: u64) -> String {
-    match count {
-        1 => "1 reaction".to_owned(),
-        count => format!("{count} reactions"),
-    }
-}
 pub const REACTION_PEOPLE_LOADING: &str = "Reading the people who reacted…";
 pub const REACTION_PEOPLE_UNAVAILABLE: &str =
     "These reactions are unavailable, or you do not have access to this message.";
@@ -3510,7 +3504,7 @@ pub const UNAVAILABLE_REACTOR: &str = "This account is no longer available.";
 pub const REACTION_PREVIOUS: &str = "Previous people";
 pub const REACTION_NEXT: &str = "Next people";
 
-pub const VIEW_QUOTED_MESSAGE: &str = "View quoted message";
+pub const VIEW_QUOTED_MESSAGE: &str = "Go to message";
 
 pub const UNKNOWN_CHANNEL_REFERENCE: &str = "channel";
 pub const CHANNEL_REFERENCE: &str = "Channel";
@@ -3893,7 +3887,6 @@ mod tests {
             SoundWarning::MicrophoneFailed,
             SoundWarning::SoundHeld { by: ana },
             SoundWarning::OutputFailed,
-            SoundWarning::SpeakNotPermitted,
             SoundWarning::PushToTalkRequired,
         ] {
             let (strong, rest) = sound_warning(&warning);

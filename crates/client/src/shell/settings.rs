@@ -541,48 +541,54 @@ impl Shell {
         };
         vec![
             group_label(text::INTERFACE, theme).into_any_element(),
-            Toggle::new(
-                "start-at-login",
+            titled_switch(
                 text::start_at_login(startup.profile.as_deref()),
-                startup
-                    .status
-                    .is_some_and(junto_client_core::startup::Status::requested),
-                (text::ON, text::OFF),
-            )
-            .selector("start-at-login")
-            .held(if startup.busy || startup.status.is_none() {
-                Some(text::LOGIN_CHECKING)
-            } else {
-                unavailable
-            })
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.state.update(cx, |state, cx| {
-                    let enabled = !state
-                        .startup()
+                unavailable.unwrap_or(text::START_AT_LOGIN_HELP),
+                Toggle::new(
+                    "start-at-login",
+                    text::start_at_login(startup.profile.as_deref()),
+                    startup
                         .status
-                        .is_some_and(junto_client_core::startup::Status::requested);
-                    state.set_start_at_login(enabled, cx);
-                });
-            }))
-            .into_any_element(),
-            help(unavailable.unwrap_or(text::START_AT_LOGIN_HELP), theme).into_any_element(),
-            Toggle::new(
-                "keep-running-after-close",
+                        .is_some_and(junto_client_core::startup::Status::requested),
+                    (text::ON, text::OFF),
+                )
+                .selector("start-at-login")
+                .held(if startup.busy || startup.status.is_none() {
+                    Some(text::LOGIN_CHECKING)
+                } else {
+                    unavailable
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        let enabled = !state
+                            .startup()
+                            .status
+                            .is_some_and(junto_client_core::startup::Status::requested);
+                        state.set_start_at_login(enabled, cx);
+                    });
+                })),
+                theme,
+            ),
+            titled_switch(
                 text::KEEP_RUNNING_AFTER_CLOSE,
-                self.state.read(cx).settings().keep_running_after_close,
-                (text::ON, text::OFF),
-            )
-            .selector("keep-running-after-close")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.state.update(cx, |state, cx| {
-                    state.set_keep_running_after_close(
-                        !state.settings().keep_running_after_close,
-                        cx,
-                    );
-                });
-            }))
-            .into_any_element(),
-            help(text::KEEP_RUNNING_AFTER_CLOSE_HELP, theme).into_any_element(),
+                text::KEEP_RUNNING_AFTER_CLOSE_HELP,
+                Toggle::new(
+                    "keep-running-after-close",
+                    text::KEEP_RUNNING_AFTER_CLOSE,
+                    self.state.read(cx).settings().keep_running_after_close,
+                    (text::ON, text::OFF),
+                )
+                .selector("keep-running-after-close")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.set_keep_running_after_close(
+                            !state.settings().keep_running_after_close,
+                            cx,
+                        );
+                    });
+                })),
+                theme,
+            ),
             div()
                 .flex()
                 .items_center()
@@ -1499,4 +1505,40 @@ struct Setting {
     title: &'static str,
     sentence: &'static str,
     on: bool,
+}
+
+/// A switch with its title and its sentence, in the form of `Shell::switch_row`, for a switch
+/// whose title or state the caller builds.
+fn titled_switch(
+    title: impl Into<SharedString>,
+    sentence: impl Into<SharedString>,
+    switch: Toggle,
+    theme: &Theme,
+) -> AnyElement {
+    let colors = &theme.colors;
+    div()
+        .flex()
+        .items_start()
+        .gap(u(10.0))
+        .mt(u(12.0))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .typeface(theme.types.control, theme)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .ink(colors.ink)
+                        .child(title.into()),
+                )
+                .child(
+                    div()
+                        .typeface(theme.types.small, theme)
+                        .ink(colors.ink_2)
+                        .child(sentence.into()),
+                ),
+        )
+        .child(switch)
+        .into_any_element()
 }

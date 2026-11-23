@@ -991,21 +991,16 @@ impl Shell {
         };
         // A request to enter needs "connect" (ADR 0790).
         let connect = channel.allowed.connect;
+        if !connect && voice.entry.is_none() {
+            return None;
+        }
         let ask = |label: &'static str, disabled: bool, cx: &mut Context<Self>| {
             Button::new("ask-to-enter")
                 .label(label)
-                .tooltip(if connect {
-                    text::ASK_TO_ENTER_HELP
-                } else {
-                    text::not_permitted(WorkspacePermission::Connect)
-                })
+                .tooltip(text::ASK_TO_ENTER_HELP)
                 .accessible_label(text::ASK_TO_ENTER)
-                .disabled(disabled || !connect)
-                .selector(if connect {
-                    "ask-to-enter"
-                } else {
-                    "ask-to-enter-refused"
-                })
+                .disabled(disabled)
+                .selector("ask-to-enter")
                 .flex_1()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {
@@ -1026,11 +1021,15 @@ impl Shell {
         };
         let actions = div().flex().gap(u(6.0)).mt(u(7.0));
         let actions = match voice.entry {
-            None => actions.child(ask(text::ASK_TO_ENTER, false, cx)),
+            None => actions.when(connect, |actions| {
+                actions.child(ask(text::ASK_TO_ENTER, false, cx))
+            }),
             Some(EntryState::Asking) => actions.child(ask(text::ENTRY_ASKING, true, cx)),
             Some(EntryState::Waiting) => actions.child(withdraw(text::WITHDRAW_REQUEST, cx)),
             Some(EntryState::Denied | EntryState::Expired) => actions
-                .child(ask(text::ASK_AGAIN, false, cx))
+                .when(connect, |actions| {
+                    actions.child(ask(text::ASK_AGAIN, false, cx))
+                })
                 .child(withdraw(text::DISMISS, cx)),
         };
         Some(
@@ -1256,8 +1255,6 @@ impl Shell {
                 items.push(
                     MenuItem::new("menu-move", text::MOVE_TO)
                         .icon(Icon::ArrowLeftRight)
-                        .detail(text::PERMISSION_MOVE)
-                        .detail_icon(Icon::ShieldCheck)
                         .end_icon(Icon::ChevronRight)
                         .selector("menu-move")
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1324,7 +1321,6 @@ impl Shell {
                 items.push(
                     MenuItem::new("menu-allow-speak", text::ALLOW_TO_SPEAK)
                         .icon(Icon::Microphone)
-                        .detail(text::allow_help(&name))
                         .selector("menu-allow-speak")
                         .on_click(self.call_listener(cx, move |this, _, window, cx| {
                             this.close_layer(window, cx);
@@ -1348,8 +1344,6 @@ impl Shell {
                     } else {
                         Icon::MicrophoneOff
                     })
-                    .detail(text::PERMISSION_MUTE)
-                    .detail_icon(Icon::ShieldCheck)
                     .selector("menu-mute")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.state.update(cx, |state, cx| {
@@ -1366,12 +1360,9 @@ impl Shell {
                 items.push(
                     MenuItem::new("menu-lower-hand", text::LOWER_HAND_OF_PERSON)
                         .icon(Icon::Hand)
-                        .detail(if raised {
-                            text::LOWER_HAND_HELP
-                        } else {
-                            text::NO_RAISED_HAND
-                        })
-                        .disabled(!raised)
+                        .offer(&crate::ui::Offer::now(
+                            (!raised).then_some(text::NO_RAISED_HAND),
+                        ))
                         .selector("menu-lower-hand")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.state.update(cx, |state, cx| {
@@ -1397,8 +1388,6 @@ impl Shell {
                     } else {
                         Icon::PhonesOff
                     })
-                    .detail(text::PERMISSION_DEAFEN)
-                    .detail_icon(Icon::ShieldCheck)
                     .selector("menu-block-sound")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.state.update(cx, |state, cx| {
@@ -1413,8 +1402,6 @@ impl Shell {
                 items.push(
                     MenuItem::new("menu-disconnect", text::DISCONNECT)
                         .icon(Icon::X)
-                        .detail(text::PERMISSION_DISCONNECT)
-                        .detail_icon(Icon::ShieldCheck)
                         .selector("menu-disconnect")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.state
@@ -1447,7 +1434,7 @@ impl Shell {
             }
             let server_id = menu.server_id;
             items.push(
-                MenuItem::new("person-message", text::message_person(&name))
+                MenuItem::new("person-message", text::MESSAGE_PERSON)
                     .selector("person-message")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.close_layer(window, cx);
@@ -1458,19 +1445,6 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        let footer = div()
-            .flex_none()
-            .mt(u(4.0))
-            .pt(u(6.0))
-            .px(u(12.0))
-            .pb(u(7.0))
-            .border_t_1()
-            .border_color(Hsla::from(colors.rule_soft))
-            .bg(Hsla::from(colors.plaster))
-            .typeface(theme.types.small, &theme)
-            .line_height(u(17.0))
-            .ink(colors.ink_2)
-            .child(text::PERSON_MENU_KEYS);
         Menu::new("person-menu", name, self.layer_focus())
             .width(292.0)
             .selector("person-menu")
@@ -1479,7 +1453,6 @@ impl Shell {
             }))
             .header(header)
             .children(items)
-            .child(footer)
     }
 
     /// The notices about the rules of a call: a person who asks to enter the call of this
@@ -1560,11 +1533,11 @@ impl Shell {
         }
         if self.state.read(cx).afk_notice() {
             notices.push(wrap(
-                Notice::new("You were moved to AFK after being inactive.")
+                Notice::new(text::MOVED_TO_AFK)
                     .selector("afk-notice")
                     .action(
                         Button::new("afk-return")
-                            .label("Rejoin previous channel")
+                            .label(text::REJOIN_PREVIOUS_CHANNEL)
                             .selector("afk-return")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.state

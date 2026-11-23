@@ -59,7 +59,7 @@ impl Shell {
         )
         .register();
         RowAction::new(
-            text::COPY_TARGET_LINK,
+            text::COPY_FILE_LINK,
             cx.listener(move |this, _, _, cx| {
                 if let Some(link) = this.state.read(cx).file_link(server_id, id) {
                     this.copy_text(link, cx);
@@ -123,7 +123,7 @@ impl Shell {
                         .child(self.download_control(server_id, &file, 0, "linked-", &theme, cx))
                         .child(
                             Button::new("file-copy-link")
-                                .label(text::COPY_TARGET_LINK)
+                                .label(text::COPY_FILE_LINK)
                                 .selector("file-copy-link")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let link =

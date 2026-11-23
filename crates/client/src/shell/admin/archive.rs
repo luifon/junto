@@ -4,10 +4,9 @@
 use super::list::Row;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
-    Window, div,
+    Window, div, prelude::FluentBuilder,
 };
 use junto_client_core::model::AdminPart;
-use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 use junto_client_core::protocol::structure::ChannelKind;
 
@@ -327,21 +326,20 @@ impl Shell {
                             this.close_layer(window, cx);
                         }),
                     ))
-                    .child(row_action(
-                        ("archived-restore", number),
-                        text::admin::RESTORE,
-                        format!("archived-restore-{channel_id}"),
-                        (!page.may_manage)
-                            .then_some(text::MANAGE_NO_PERMISSION)
-                            .or(view
-                                .sending(AskKind::RestoreChannel(channel_id))
-                                .then_some(text::admin::SENDING)),
-                        cx.listener(move |this, _, _, cx| {
-                            this.state.update(cx, |state, cx| {
-                                state.restore_channel(server_id, channel_id, cx);
-                            });
-                        }),
-                    ))
+                    .when(page.may_manage, |line| {
+                        line.child(row_action(
+                            ("archived-restore", number),
+                            text::admin::RESTORE,
+                            format!("archived-restore-{channel_id}"),
+                            view.sending(AskKind::RestoreChannel(channel_id))
+                                .then_some(text::admin::SENDING),
+                            cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.restore_channel(server_id, channel_id, cx);
+                                });
+                            }),
+                        ))
+                    })
                     .child(row_action(
                         ("archived-settings", number),
                         text::admin::SETTINGS,
@@ -557,11 +555,9 @@ impl Shell {
         let (server_id, channel_id) = (view.server_id, settings.channel_id);
         // The list of an archived channel is read by itself: until it arrives nothing is
         // offered, and the reason is that read, not a missing permission.
-        let manage = if settings.permissions_read {
-            (!settings.may_manage).then_some(text::MANAGE_NO_PERMISSION)
-        } else {
-            Some(text::admin::READING)
-        };
+        let manage = (!settings.permissions_read).then_some(text::admin::READING);
+        // An action that the permissions of the channel do not allow is absent (ADR 0790).
+        let manages = !settings.permissions_read || settings.may_manage;
         let mut column = div().flex().flex_col().child(page_title(
             text::admin::channel_page_name(ChannelPage::Archive),
             text::admin::CHANNEL_ARCHIVE_HELP,
@@ -569,6 +565,7 @@ impl Shell {
         ));
         // Archive or restore.
         column = match page.archived {
+            _ if !manages => column,
             Some((archived_at, deletes_at)) => column
                 .child(
                     div().flex_none().mb(u(6.0)).child(
@@ -653,31 +650,28 @@ impl Shell {
             "channel-archive-refused",
         ));
         // The export.
-        let export_needs = page.export_needs.map(|permission| match permission {
-            WorkspacePermission::ExportChannel => text::admin::EXPORT_NEEDS,
-            other => text::not_permitted(other),
+        column = column.when(page.export_needs.is_none(), |column| {
+            column.child(
+                line(&theme)
+                    .child(line_text(
+                        text::admin::EXPORT,
+                        Some(text::admin::EXPORT_HELP.into()),
+                        &theme,
+                    ))
+                    .child(row_action(
+                        "channel-export",
+                        text::admin::EXPORT,
+                        "channel-export".to_owned(),
+                        view.sending(AskKind::RequestExport)
+                            .then_some(text::admin::SENDING),
+                        cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.export_channel(server_id, channel_id, cx);
+                            });
+                        }),
+                    )),
+            )
         });
-        column = column.child(
-            line(&theme)
-                .child(line_text(
-                    text::admin::EXPORT,
-                    detail_or(export_needs, text::admin::EXPORT_HELP),
-                    &theme,
-                ))
-                .child(row_action(
-                    "channel-export",
-                    text::admin::EXPORT,
-                    "channel-export".to_owned(),
-                    export_needs.or(view
-                        .sending(AskKind::RequestExport)
-                        .then_some(text::admin::SENDING)),
-                    cx.listener(move |this, _, _, cx| {
-                        this.state.update(cx, |state, cx| {
-                            state.export_channel(server_id, channel_id, cx);
-                        });
-                    }),
-                )),
-        );
         let mut result = crate::ui::notice_slot("channel-export-result-slot");
         if view.made.iter().any(|made| matches!(made, Made::Export(_))) {
             result = result.child(
@@ -702,8 +696,10 @@ impl Shell {
             view.refused(AskKind::RequestExport),
             "channel-export-refused",
         ));
-        // The deletion.
-        let owner_only = (page.permanent && !page.is_owner).then_some(text::admin::OWNER_DELETES);
+        // The deletion. Only the owner deletes a channel with permanent messages.
+        if !manages || (page.permanent && !page.is_owner) {
+            return column.into_any_element();
+        }
         let delete_line = match self.admin.mode {
             Some(Mode::DeleteChannel(id)) if id == channel_id => line(&theme).child(
                 self.render_row_question(
@@ -731,14 +727,14 @@ impl Shell {
             _ => line(&theme)
                 .child(line_text(
                     text::admin::DELETE_CHANNEL,
-                    detail_or(manage.or(owner_only), text::admin::DELETE_CHANNEL_HELP),
+                    detail_or(manage, text::admin::DELETE_CHANNEL_HELP),
                     &theme,
                 ))
                 .child(row_action(
                     "channel-delete",
                     text::admin::DELETE,
                     "channel-delete".to_owned(),
-                    manage.or(owner_only),
+                    manage,
                     cx.listener(move |this, _, window, cx| {
                         this.set_admin_mode(Some(Mode::DeleteChannel(channel_id)), "", window, cx);
                     }),

@@ -868,7 +868,9 @@ pub(crate) fn element<V: ListHost>(
                     step(this, &key, false, window, cx)
                 })
             })
-            .px(u(18.0))
+            .pl(u(18.0))
+            // A row with a menu keeps room at its right end for the menu button (ADR 0731).
+            .pr(u(if actions.is_empty() { 18.0 } else { 40.0 }))
             .pt(if index == 0 { u(14.0) } else { u(0.0) })
             .pb(if index + 1 == count { u(18.0) } else { u(0.0) })
             .child(content)
@@ -878,7 +880,15 @@ pub(crate) fn element<V: ListHost>(
                     .track_focus(&entry.end)
                     .size_0(),
             );
-        crate::ui::bind_action_menu(frame, ElementId::Name(key), actions, window, cx)
+        if actions.is_empty() {
+            return frame.into_any_element();
+        }
+        let row = crate::ui::RowMenu::overlay(entry.focus.is_focused(window)).top(if index == 0 {
+            20.0
+        } else {
+            6.0
+        });
+        crate::ui::bind_row_action_menu(frame, ElementId::Name(key), row, actions, window, cx)
             .into_any_element()
     });
 

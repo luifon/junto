@@ -164,7 +164,7 @@ fn the_answer_to_a_request_to_enter_a_locked_call_is_a_line_with_who_answered_an
         &[
             "Ada created this channel",
             "Call started by Ada",
-            "Ada locked the room",
+            "Ada locked the call",
             "Cara asked to join",
             "Ada did not let Cara in",
             "Cara asked to join",

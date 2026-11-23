@@ -132,3 +132,83 @@ fn the_controls_of_a_file_download_it_cancel_the_download_and_show_the_file(
         .read_with(&window.cx, |state, _| state.kept_shown().to_vec());
     assert_eq!(shown, [saved]);
 }
+
+/// A download that failed shows its reason as text, and "Try again" downloads the file
+/// again; it did only clear the failure.
+#[gpui::test]
+fn try_again_after_a_failed_download_downloads_the_file_again(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let place = PlaceId::Channel(window.selected_channel());
+    let attachment_id = world.run(async {
+        let source = UploadSource::Bytes {
+            name: "notes.txt".to_owned(),
+            bytes: std::sync::Arc::new(b"plan".to_vec()),
+        };
+        let attachment_id = admin
+            .handle
+            .transfers()
+            .upload(place, source)
+            .finished()
+            .await
+            .unwrap();
+        let message = SendMessage {
+            document: document("The notes"),
+            reply_to: None,
+            attachments: vec![attachment_id],
+        };
+        admin
+            .handle
+            .api()
+            .send_message(place, &message)
+            .await
+            .unwrap();
+        attachment_id
+    });
+    window.until_message("The notes");
+    // A file in place of the folder of the downloads: the file cannot be written.
+    let downloads = tempfile::tempdir().unwrap();
+    let blocked = downloads.path().join("not-a-folder");
+    std::fs::write(&blocked, b"").unwrap();
+    let target = blocked.clone();
+    window.in_shell(move |shell, _, cx| {
+        shell
+            .state()
+            .update(cx, |state, _| state.set_download_directory(target));
+    });
+    let stage = |window: &mut crate::harness::Window| {
+        window
+            .view()
+            .downloads
+            .iter()
+            .find(|((_, id), _)| *id == attachment_id)
+            .map(|(_, progress)| progress.stage.clone())
+    };
+    window.click(crate::harness::selector(format!(
+        "download:{attachment_id}"
+    )));
+    window.until("the download failed", |window| {
+        matches!(stage(window), Some(DownloadStage::Failed(_)))
+    });
+    let retry = crate::harness::selector(format!("retry-download:{attachment_id}"));
+    assert!(window.shows(retry));
+
+    let target = downloads.path().to_path_buf();
+    window.in_shell(move |shell, _, cx| {
+        shell
+            .state()
+            .update(cx, |state, _| state.set_download_directory(target));
+    });
+    window.click(retry);
+    let saved = downloads.path().join("notes.txt");
+    window.until(
+        "the file is saved at the second try",
+        |window| matches!(stage(window), Some(DownloadStage::Saved(path)) if path == saved),
+    );
+    assert_eq!(std::fs::read(&saved).unwrap(), b"plan");
+}

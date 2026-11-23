@@ -10,8 +10,6 @@ use crate::state::book::{CheckShown, Step};
 // The order of the server book, in the menu of a server.
 pub const MOVE_UP: &str = "Move up";
 pub const MOVE_DOWN: &str = "Move down";
-pub const MOVE_UP_HELP: &str = "One place up in the server book.";
-pub const MOVE_DOWN_HELP: &str = "One place down in the server book.";
 pub const FIRST_SERVER: &str = "It is the first server of the server book.";
 pub const LAST_SERVER: &str = "It is the last server of the server book.";
 pub const MOVE_SERVER_GONE: &str = "The server is no longer in the server book. It was not moved.";
@@ -23,13 +21,11 @@ pub const fn move_title(step: Step) -> &'static str {
     }
 }
 
-/// The second line of a move item: what the item does, or why it does nothing.
-pub const fn move_help(step: Step, at_end: bool) -> &'static str {
-    match (step, at_end) {
-        (Step::Up, false) => MOVE_UP_HELP,
-        (Step::Up, true) => FIRST_SERVER,
-        (Step::Down, false) => MOVE_DOWN_HELP,
-        (Step::Down, true) => LAST_SERVER,
+/// Why a move item of a server does nothing: the server is at the end.
+pub const fn move_end(step: Step) -> &'static str {
+    match step {
+        Step::Up => FIRST_SERVER,
+        Step::Down => LAST_SERVER,
     }
 }
 
@@ -43,13 +39,13 @@ pub fn too_many_groups(most: usize) -> String {
     format!("The server book holds {most} groups, the most. Dissolve one to make another.")
 }
 
-/// The second line of a move item of a server: what the item does, or why it does nothing.
-/// A server in a group moves among the servers of its group.
-pub const fn server_move_help(step: Step, at_end: bool, in_group: bool) -> &'static str {
-    match (step, at_end, in_group) {
-        (Step::Up, true, true) => FIRST_IN_GROUP,
-        (Step::Down, true, true) => LAST_IN_GROUP,
-        (step, at_end, _) => move_help(step, at_end),
+/// Why a move item of a server does nothing. A server in a group moves among the servers
+/// of its group.
+pub const fn server_move_end(step: Step, in_group: bool) -> &'static str {
+    match (step, in_group) {
+        (Step::Up, true) => FIRST_IN_GROUP,
+        (Step::Down, true) => LAST_IN_GROUP,
+        (step, false) => move_end(step),
     }
 }
 
@@ -57,47 +53,30 @@ pub const COLLAPSE_EVERYTHING: &str = "Collapse every server and group";
 pub const EXPAND_EVERYTHING: &str = "Expand every server and group";
 pub const COLLAPSE_WORKSPACES: &str = "Collapse workspaces";
 pub const EXPAND_WORKSPACES: &str = "Expand workspaces";
-pub const COLLAPSE_WORKSPACES_HELP: &str = "Show the server without its workspaces.";
-pub const EXPAND_WORKSPACES_HELP: &str = "Show the workspaces under the server.";
 pub const MOVE_TO_GROUP: &str = "Group…";
-pub const MOVE_TO_GROUP_HELP: &str = "Put the server into a group, or into a new group.";
 pub const GROUP_CHOICE: &str = "Group of the server";
 pub const NEW_GROUP: &str = "New group";
-pub const NEW_GROUP_HELP: &str = "A new group that holds this server.";
 pub const REMOVE_FROM_GROUP: &str = "Remove from the group";
-pub const REMOVE_FROM_GROUP_HELP: &str = "The server stands directly after the group.";
 pub const IN_THIS_GROUP: &str = "The server is in this group.";
 pub const MARK_SERVER_READ: &str = "Mark server as read";
-pub const MARK_SERVER_READ_HELP: &str =
-    "Every channel and direct conversation of the server, up to its latest message.";
 pub const MARK_GROUP_READ: &str = "Mark group as read";
-pub const MARK_GROUP_READ_HELP: &str = "Every server of the group, up to its latest message.";
 pub const MARK_WORKSPACE_READ: &str = "Mark workspace as read";
-pub const MARK_WORKSPACE_READ_HELP: &str =
-    "Every channel of the workspace, up to its latest message.";
-pub const NOTHING_UNREAD: &str = "Nothing is unread.";
 
 pub const GROUP_MENU: &str = "Menu of the group";
 pub const RENAME_GROUP: &str = "Rename…";
-pub const RENAME_GROUP_HELP: &str = "Give the group a name, or leave it without one.";
 pub const COLLAPSE_GROUP: &str = "Collapse group";
 pub const EXPAND_GROUP: &str = "Expand group";
 pub const DISSOLVE_GROUP: &str = "Dissolve group";
-pub const DISSOLVE_GROUP_HELP: &str = "The servers stay in their place, outside a group.";
 pub const COLOUR: &str = "Colour";
 pub const CHOSEN: &str = "Chosen";
-pub const GROUP_MOVE_UP_HELP: &str = "One place up in the server book.";
-pub const GROUP_MOVE_DOWN_HELP: &str = "One place down in the server book.";
 pub const FIRST_PART: &str = "It is the first entry of the server book.";
 pub const LAST_PART: &str = "It is the last entry of the server book.";
 
-/// The second line of a move item of a group.
-pub const fn group_move_help(step: Step, at_end: bool) -> &'static str {
-    match (step, at_end) {
-        (Step::Up, false) => GROUP_MOVE_UP_HELP,
-        (Step::Up, true) => FIRST_PART,
-        (Step::Down, false) => GROUP_MOVE_DOWN_HELP,
-        (Step::Down, true) => LAST_PART,
+/// Why a move item of a group does nothing.
+pub const fn group_move_end(step: Step) -> &'static str {
+    match step {
+        Step::Up => FIRST_PART,
+        Step::Down => LAST_PART,
     }
 }
 
@@ -107,18 +86,14 @@ pub const GROUP_NAME_HELP: &str =
     "At most 64 characters. Without a name the server book names the group by its servers.";
 
 pub const WORKSPACE_MENU: &str = "Menu of the workspace";
-pub const WORKSPACE_MOVE_UP_HELP: &str = "One place up among the workspaces of the server.";
-pub const WORKSPACE_MOVE_DOWN_HELP: &str = "One place down among the workspaces of the server.";
 pub const FIRST_WORKSPACE: &str = "It is the first workspace of the server.";
 pub const LAST_WORKSPACE: &str = "It is the last workspace of the server.";
 
-/// The second line of a move item of a workspace.
-pub const fn workspace_move_help(step: Step, at_end: bool) -> &'static str {
-    match (step, at_end) {
-        (Step::Up, false) => WORKSPACE_MOVE_UP_HELP,
-        (Step::Up, true) => FIRST_WORKSPACE,
-        (Step::Down, false) => WORKSPACE_MOVE_DOWN_HELP,
-        (Step::Down, true) => LAST_WORKSPACE,
+/// Why a move item of a workspace does nothing.
+pub const fn workspace_move_end(step: Step) -> &'static str {
+    match step {
+        Step::Up => FIRST_WORKSPACE,
+        Step::Down => LAST_WORKSPACE,
     }
 }
 
@@ -407,12 +382,10 @@ mod tests {
     }
 
     #[test]
-    fn a_move_item_says_what_it_does_or_why_it_does_nothing() {
+    fn a_move_item_at_the_end_says_why_it_does_nothing() {
         assert_eq!(move_title(Step::Up), "Move up");
         assert_eq!(move_title(Step::Down), "Move down");
-        assert_eq!(move_help(Step::Up, true), FIRST_SERVER);
-        assert_eq!(move_help(Step::Down, true), LAST_SERVER);
-        assert_eq!(move_help(Step::Up, false), MOVE_UP_HELP);
-        assert_eq!(move_help(Step::Down, false), MOVE_DOWN_HELP);
+        assert_eq!(move_end(Step::Up), FIRST_SERVER);
+        assert_eq!(move_end(Step::Down), LAST_SERVER);
     }
 }

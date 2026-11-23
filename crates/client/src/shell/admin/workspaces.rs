@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use super::list::Row;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, PathPromptOptions,
-    SharedString, StatefulInteractiveElement, Styled, Window, div,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 
@@ -153,7 +153,7 @@ impl Shell {
         let workspace_id: WorkspaceId = row.id;
         let name = row.name.clone();
         let content: AnyElement = match self.admin.mode {
-            Some(Mode::RenameWorkspace(id)) if id == workspace_id => self
+            Some(Mode::RenameWorkspace(id)) if id == workspace_id && page.may_manage => self
                 .render_form(
                     Form {
                         field: FormField::Name,
@@ -169,8 +169,10 @@ impl Shell {
                     cx,
                 )
                 .into_any_element(),
-            Some(Mode::RemoveWorkspaceLogo(id)) if id == workspace_id && row.has_logo => self
-                .render_row_question(
+            Some(Mode::RemoveWorkspaceLogo(id))
+                if id == workspace_id && row.has_logo && page.may_manage =>
+            {
+                self.render_row_question(
                     Question {
                         sentence: text::admin::remove_workspace_logo_question(&row.name).into(),
                         confirm: text::admin::REMOVE_LOGO,
@@ -187,8 +189,9 @@ impl Shell {
                         });
                     },
                 )
-                .into_any_element(),
-            Some(Mode::DeleteWorkspace(id)) if id == workspace_id => self
+                .into_any_element()
+            }
+            Some(Mode::DeleteWorkspace(id)) if id == workspace_id && page.may_manage => self
                 .render_row_question(
                     Question {
                         sentence: text::admin::delete_workspace_question(&row.name).into(),
@@ -208,10 +211,12 @@ impl Shell {
                 )
                 .into_any_element(),
             _ => {
-                let manage = (!page.may_manage).then_some(text::admin::MANAGE_WORKSPACE_NEEDS);
-                let delete = manage.or(row
+                // Without the permission the actions of a workspace are absent (ADR 0790).
+                let manages = page.may_manage;
+                let manage = None;
+                let delete = row
                     .is_default
-                    .then_some(text::admin::DEFAULT_WORKSPACE_HELP));
+                    .then_some(text::admin::DEFAULT_WORKSPACE_HELP);
                 div()
                     .flex()
                     .flex_1()
@@ -242,16 +247,18 @@ impl Shell {
                         }
                     })
                     .child(line_text(row.name.clone(), detail(row), theme))
-                    .child(row_action(
-                        ("workspace-logo", workspace_id.as_uuid().as_u128() as u64),
-                        text::admin::WORKSPACE_LOGO,
-                        format!("workspace-logo-choose-{workspace_id}"),
-                        manage,
-                        cx.listener(move |this, _, _, cx| {
-                            this.choose_workspace_logo(workspace_id, cx);
-                        }),
-                    ))
-                    .children(row.has_logo.then(|| {
+                    .when(manages, |line| {
+                        line.child(row_action(
+                            ("workspace-logo", workspace_id.as_uuid().as_u128() as u64),
+                            text::admin::WORKSPACE_LOGO,
+                            format!("workspace-logo-choose-{workspace_id}"),
+                            manage,
+                            cx.listener(move |this, _, _, cx| {
+                                this.choose_workspace_logo(workspace_id, cx);
+                            }),
+                        ))
+                    })
+                    .children((manages && row.has_logo).then(|| {
                         row_action(
                             (
                                 "workspace-logo-remove",
@@ -270,34 +277,38 @@ impl Shell {
                             }),
                         )
                     }))
-                    .child(row_action(
-                        ("workspace-rename", workspace_id.as_uuid().as_u128() as u64),
-                        text::admin::RENAME,
-                        format!("workspace-rename-{workspace_id}"),
-                        manage,
-                        cx.listener(move |this, _, window, cx| {
-                            this.set_admin_mode(
-                                Some(Mode::RenameWorkspace(workspace_id)),
-                                &name,
-                                window,
-                                cx,
-                            );
-                        }),
-                    ))
-                    .child(row_action(
-                        ("workspace-delete", workspace_id.as_uuid().as_u128() as u64),
-                        text::admin::DELETE,
-                        format!("workspace-delete-{workspace_id}"),
-                        delete,
-                        cx.listener(move |this, _, window, cx| {
-                            this.set_admin_mode(
-                                Some(Mode::DeleteWorkspace(workspace_id)),
-                                "",
-                                window,
-                                cx,
-                            );
-                        }),
-                    ))
+                    .when(manages, |line| {
+                        line.child(row_action(
+                            ("workspace-rename", workspace_id.as_uuid().as_u128() as u64),
+                            text::admin::RENAME,
+                            format!("workspace-rename-{workspace_id}"),
+                            manage,
+                            cx.listener(move |this, _, window, cx| {
+                                this.set_admin_mode(
+                                    Some(Mode::RenameWorkspace(workspace_id)),
+                                    &name,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        ))
+                    })
+                    .when(manages, |line| {
+                        line.child(row_action(
+                            ("workspace-delete", workspace_id.as_uuid().as_u128() as u64),
+                            text::admin::DELETE,
+                            format!("workspace-delete-{workspace_id}"),
+                            delete,
+                            cx.listener(move |this, _, window, cx| {
+                                this.set_admin_mode(
+                                    Some(Mode::DeleteWorkspace(workspace_id)),
+                                    "",
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        ))
+                    })
                     .into_any_element()
             }
         };
@@ -338,6 +349,18 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // A form whose permission went is put away: its action is no longer offered
+        // (ADR 0790).
+        let refused = match self.admin.mode {
+            Some(
+                Mode::RenameWorkspace(_) | Mode::RemoveWorkspaceLogo(_) | Mode::DeleteWorkspace(_),
+            ) => !page.may_manage,
+            Some(Mode::CreateWorkspace) => !page.may_create,
+            _ => false,
+        };
+        if refused {
+            self.admin.mode = None;
+        }
         let list = std::iter::once(Row::part("workspaces-header", true))
             .chain(
                 page.rows
@@ -378,58 +401,46 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let mut column = div().flex().flex_col();
-        column = column.child(
-            sentence(
-                if page.may_manage {
-                    text::admin::DEFAULT_WORKSPACE_HELP
-                } else {
-                    text::admin::MANAGE_WORKSPACE_NEEDS
-                },
-                &theme,
-            )
-            .mt(u(6.0)),
-        );
-        // A new workspace.
-        column = column.child(group_label(text::admin::NEW_WORKSPACE, &theme));
-        let new_workspace = match self.admin.mode {
-            Some(Mode::CreateWorkspace) => self.render_form(
-                Form {
-                    field: FormField::Name,
-                    label: text::admin::WORKSPACE_NAME,
-                    field_selector: "workspace-name",
-                    send: text::admin::CREATE,
-                    sending: view.sending(AskKind::CreateWorkspace),
-                    help: None,
-                    held: None,
-                    extra: Vec::new(),
-                },
-                &theme,
-                cx,
-            ),
-            _ => {
-                let held = (!page.may_create).then_some(text::admin::CREATE_WORKSPACE_NEEDS);
-                let button = Button::new("workspace-new")
-                    .icon(crate::assets::Icon::Plus)
-                    .label(text::admin::NEW_WORKSPACE)
-                    .selector("workspace-new")
-                    .disabled(held.is_some())
-                    .h(u(30.0))
-                    .px(u(12.0))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.set_admin_mode(Some(Mode::CreateWorkspace), "", window, cx);
-                    }));
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(div().flex().flex_none().child(button))
-                    .children(held.map(|reason| sentence(reason, &theme).mt(u(5.0))))
-            }
-        };
-        column = column.child(self.mode_row(&[Mode::CreateWorkspace], new_workspace));
-        column = column.children(refusal(
-            view.refused(AskKind::CreateWorkspace),
-            "workspace-create-refused",
-        ));
+        // A new workspace, for a person who may create one (ADR 0790).
+        if page.may_create {
+            column = column.child(group_label(text::admin::NEW_WORKSPACE, &theme));
+            let new_workspace = match self.admin.mode {
+                Some(Mode::CreateWorkspace) => self.render_form(
+                    Form {
+                        field: FormField::Name,
+                        label: text::admin::WORKSPACE_NAME,
+                        field_selector: "workspace-name",
+                        send: text::admin::CREATE,
+                        sending: view.sending(AskKind::CreateWorkspace),
+                        help: None,
+                        held: None,
+                        extra: Vec::new(),
+                    },
+                    &theme,
+                    cx,
+                ),
+                _ => {
+                    let button = Button::new("workspace-new")
+                        .icon(crate::assets::Icon::Plus)
+                        .label(text::admin::NEW_WORKSPACE)
+                        .selector("workspace-new")
+                        .h(u(30.0))
+                        .px(u(12.0))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_admin_mode(Some(Mode::CreateWorkspace), "", window, cx);
+                        }));
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(div().flex().flex_none().child(button))
+                }
+            };
+            column = column.child(self.mode_row(&[Mode::CreateWorkspace], new_workspace));
+            column = column.children(refusal(
+                view.refused(AskKind::CreateWorkspace),
+                "workspace-create-refused",
+            ));
+        }
         // A further workspace with an invite code.
         column = column.child(group_label(text::admin::ENTER_CODE, &theme));
         let enter_code = match self.admin.mode {

@@ -61,7 +61,7 @@ fn native_menus_include_editing_settings_and_standard_window_commands(cx: &mut T
         "Minimize",
         "Zoom",
         "Bring All to Front",
-        "Keyboard Shortcuts",
+        "Keyboard shortcuts",
     ] {
         let _ = action(&mut window, name);
     }
@@ -106,7 +106,7 @@ fn application_menu_settings_restore_the_closed_main_window(cx: &mut TestAppCont
     assert!(restored.shows("settings-dialog"));
     choose(&mut restored, "About Junto");
     assert!(restored.shows("version-section"));
-    choose(&mut restored, "Keyboard Shortcuts");
+    choose(&mut restored, "Keyboard shortcuts");
     assert!(restored.shows("reset-keybinds"));
 }
 

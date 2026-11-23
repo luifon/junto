@@ -26,7 +26,7 @@ pub const REMOVE: &str = "Remove";
 pub const BAN: &str = "Ban";
 pub const UNBAN: &str = "Unban";
 pub const RECOVER: &str = "Recover";
-pub const RECOVER_KEY: &str = "Key of the new device";
+pub const RECOVER_KEY: &str = "Device code";
 pub const RECOVER_KEY_PLACEHOLDER: &str = "The key that the new device shows";
 pub const RECOVER_DEVICE: &str = "Name of the new device";
 pub const RECOVER_DEVICE_PLACEHOLDER: &str = "Name of the device (optional)";
@@ -41,9 +41,6 @@ pub const RECOVER_OWN: &str = "Your own account gets a new device by a link on t
      “Devices” of your account.";
 pub const RECOVER_NOT_ACTIVE: &str = "Only an active account is recovered.";
 pub const RECOVERY_SENT: &str = "Wait until the server has answered the recovery.";
-pub const RECOVERY_HELP: &str = "The server owner recovers an account whose person has lost \
-     every device: the person adds the server on a new device, chooses to link the device, \
-     and gives the owner the key that it shows.";
 
 pub const fn recovery_fault(fault: RecoveryFault) -> &'static str {
     match fault {
@@ -69,10 +66,6 @@ pub fn recovered(at: OffsetDateTime, cycle: junto_client_core::clock::HourCycle)
         crate::text::account::utc(at, cycle)
     )
 }
-pub const REMOVAL_HELP: &str = "A removed account loses its devices, its sessions, its memberships and its roles. The \
-     person can join again with an invite code and gets a new account.";
-pub const BAN_HELP: &str = "The keys of a banned account cannot log in or join again. An unban restores the \
-     account with its memberships and roles.";
 
 /// The filter that shows the banned accounts, with their number.
 pub fn filter_banned(count: usize) -> String {
@@ -195,8 +188,6 @@ pub const fn no_removal(reason: NoRemoval) -> &'static str {
 /// The sentence in the row of a member that role order protects (ADR 0309).
 pub const MEMBER_OUTRANKED: &str = "This member stands at or above your highest role in this workspace. You cannot \
      remove it from the workspace.";
-pub const REMOVE_MEMBER_NEEDS: &str =
-    "Only an administrator can remove a member from this workspace.";
 pub const NO_MEMBERS: &str = "This workspace has no member.";
 pub const MEMBERS_NOT_READ: &str = "The members could not be read.";
 pub const NOT_MEMBERS: &str = "Accounts that are not members";
@@ -205,8 +196,6 @@ pub const ADD_HELP: &str = "An administrator can add an active account of the se
      account gets no role.";
 pub const ALL_ARE_MEMBERS: &str =
     "Every active account of the server is a member of this workspace.";
-pub const ADD_NEEDS: &str = "Only an administrator can add an account to this workspace. Other accounts enter it \
-     with an invite code.";
 
 pub fn members_help(workspace: &str) -> String {
     format!("The members of the workspace “{workspace}” with their roles in it.")

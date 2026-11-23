@@ -134,6 +134,7 @@ mod workspace_invites;
 mod updates;
 
 mod menus;
+mod own_press;
 
 mod zoom;
 

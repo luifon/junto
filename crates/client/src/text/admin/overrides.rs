@@ -209,7 +209,7 @@ pub const fn name(permission: WorkspacePermission) -> &'static str {
         WorkspacePermission::MuteMembers => "Mute members",
         WorkspacePermission::DeafenMembers => "Deafen members",
         WorkspacePermission::DisconnectMembers => "Disconnect members",
-        WorkspacePermission::LockRoom => "Lock room",
+        WorkspacePermission::LockRoom => "Lock call",
         WorkspacePermission::RunMeetingMode => "Run meeting mode",
         WorkspacePermission::ViewAuditEntries => "View audit entries",
         WorkspacePermission::AdmitToFullCall => "Admit to full call",
@@ -367,7 +367,7 @@ pub fn member_help(workspace: &str) -> String {
 }
 pub const MEMBER_CHANNELS: &str = "The server also checks each channel: a choice that gives the member a permission in a \
      channel where you do not hold it is refused.";
-pub const ACCESS: &str = "What this person can use";
+pub const ACCESS: &str = "Access by channel";
 pub fn access_help(workspace: &str) -> String {
     format!(
         "The permissions that this member holds in each channel of the workspace “{workspace}” \
@@ -444,10 +444,13 @@ mod tests {
     fn every_permission_has_a_name_and_a_help_text_of_its_own() {
         let all = WorkspacePermission::ALL;
         for (index, permission) in all.iter().copied().enumerate() {
-            assert_eq!(
-                name(permission).to_lowercase(),
-                permission.name().replace('_', " ")
-            );
+            // The call of a voice channel is a "call" in the window, also in the name of
+            // its lock (ADR 0703).
+            let expected = match permission {
+                WorkspacePermission::LockRoom => "lock call".to_owned(),
+                other => other.name().replace('_', " "),
+            };
+            assert_eq!(name(permission).to_lowercase(), expected);
             assert!(help(permission).ends_with('.'));
             for other in all[..index].iter().copied() {
                 assert_ne!(help(permission), help(other));

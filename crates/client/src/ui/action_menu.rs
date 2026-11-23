@@ -19,6 +19,7 @@ pub struct RowAction {
     pub(crate) icon: Option<Icon>,
     pub(crate) disabled: bool,
     pub(crate) detail: Option<SharedString>,
+    pub(crate) shortcut: Option<junto_client_core::keybinds::KeyAction>,
     pub(crate) handler: Option<Handler>,
 }
 
@@ -32,6 +33,7 @@ impl RowAction {
             icon: None,
             disabled: false,
             detail: None,
+            shortcut: None,
             handler: Some(Rc::new(handler)),
         }
     }
@@ -46,6 +48,7 @@ impl RowAction {
             && self.icon == other.icon
             && self.disabled == other.disabled
             && self.detail == other.detail
+            && self.shortcut == other.shortcut
     }
 }
 
@@ -91,7 +94,101 @@ pub fn bind_action_menu(
     window: &mut Window,
     cx: &mut App,
 ) -> Stateful<Div> {
-    bind_menu(frame, id.into(), actions, false, window, cx)
+    bind_menu(frame, id.into(), actions, false, None, window, cx)
+}
+
+/// The focus handle of a row of a list that has a menu button, kept under the row's
+/// identifier, so that the row can tell whether it holds the keyboard focus.
+pub fn row_focus(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> FocusHandle {
+    window
+        .use_keyed_state((id.into(), "row-focus"), cx, |_, cx| {
+            cx.focus_handle().tab_stop(true)
+        })
+        .read(cx)
+        .clone()
+}
+
+/// Where the menu button of a row lies (ADR 0731).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RowMenuPlace {
+    /// Over the top right of the row, on the ground of the hovered row.
+    Overlay,
+    /// After the other children of the row, in its flow.
+    End,
+}
+
+/// The menu button that a row with a menu shows: it opens the popup that the binding owns,
+/// so it is created by the binding.
+#[derive(Clone)]
+pub struct RowMenu {
+    pub place: RowMenuPlace,
+    /// The row holds the keyboard focus.
+    pub focused: bool,
+    /// The row is on the basalt of the server book.
+    pub dark: bool,
+    /// The name of the button for the tests; `menu-button:<identifier>` by default.
+    pub selector: Option<SharedString>,
+    /// The distance of an overlaid button from the top of the row, in design pixels.
+    pub top: f32,
+}
+
+impl RowMenu {
+    pub fn overlay(focused: bool) -> Self {
+        Self {
+            place: RowMenuPlace::Overlay,
+            focused,
+            dark: false,
+            selector: None,
+            top: 6.0,
+        }
+    }
+
+    pub fn end(focused: bool) -> Self {
+        Self {
+            place: RowMenuPlace::End,
+            ..Self::overlay(focused)
+        }
+    }
+
+    pub fn dark(mut self) -> Self {
+        self.dark = true;
+        self
+    }
+
+    pub fn selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.selector = Some(selector.into());
+        self
+    }
+
+    pub fn top(mut self, top: f32) -> Self {
+        self.top = top;
+        self
+    }
+}
+
+/// The same for a row of a list: the row also shows the menu button (`RowMenu`), while the
+/// pointer is over the row, while the row holds the keyboard focus and while the menu is
+/// open.
+pub fn bind_row_action_menu(
+    frame: Stateful<Div>,
+    id: impl Into<ElementId>,
+    row: RowMenu,
+    actions: Vec<RowAction>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Stateful<Div> {
+    bind_menu(frame, id.into(), actions, false, Some(row), window, cx)
+}
+
+pub fn bind_lazy_row_action_menu<T: 'static>(
+    frame: Stateful<Div>,
+    id: impl Into<ElementId>,
+    row: Option<RowMenu>,
+    window: &mut Window,
+    cx: &mut Context<T>,
+    make: impl FnOnce(&mut Window, &mut Context<T>) -> Vec<RowAction>,
+) -> Stateful<Div> {
+    lazy_menu(frame, id.into(), row, window, cx, make)
 }
 
 pub fn bind_lazy_action_menu<T: 'static>(
@@ -101,10 +198,58 @@ pub fn bind_lazy_action_menu<T: 'static>(
     cx: &mut Context<T>,
     make: impl FnOnce(&mut Window, &mut Context<T>) -> Vec<RowAction>,
 ) -> Stateful<Div> {
-    let id = id.into();
+    lazy_menu(frame, id.into(), None, window, cx, make)
+}
+
+fn lazy_menu<T: 'static>(
+    frame: Stateful<Div>,
+    id: ElementId,
+    row: Option<RowMenu>,
+    window: &mut Window,
+    cx: &mut Context<T>,
+    make: impl FnOnce(&mut Window, &mut Context<T>) -> Vec<RowAction>,
+) -> Stateful<Div> {
     let shown = popup_state(&id, window, cx).read(cx).shown;
     let actions = if shown { make(window, cx) } else { Vec::new() };
-    bind_menu(frame, id, actions, true, window, cx)
+    bind_menu(frame, id, actions, true, row, window, cx)
+}
+
+fn with_row_button(
+    frame: Stateful<Div>,
+    id: &ElementId,
+    row: RowMenu,
+    popup: &Entity<Popup>,
+    cx: &App,
+) -> Stateful<Div> {
+    let colors = crate::theme::theme(cx).colors;
+    let opener = popup.clone();
+    let button = super::MenuButton::new("row-menu")
+        .selector(
+            row.selector
+                .unwrap_or_else(|| format!("menu-button:{id}").into()),
+        )
+        .shown(row.focused || popup.read(cx).shown)
+        .when(row.dark, super::MenuButton::dark)
+        .on_open(move |window, cx| opener.update(cx, |popup, cx| popup.open(window, cx)));
+    match row.place {
+        // The button is taller than the line of a header: in a box without height it adds
+        // nothing to the height of the row, so the rows under it do not move.
+        RowMenuPlace::End => frame.child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .h(gpui::px(0.0))
+                .child(button),
+        ),
+        RowMenuPlace::Overlay => frame.relative().child(
+            div()
+                .absolute()
+                .top(crate::theme::u(row.top))
+                .right(crate::theme::u(6.0))
+                .child(button.ground(colors.limestone_hover)),
+        ),
+    }
 }
 
 fn popup_state(id: &ElementId, window: &mut Window, cx: &mut App) -> Entity<Popup> {
@@ -124,10 +269,15 @@ fn bind_menu(
     id: ElementId,
     actions: Vec<RowAction>,
     lazy: bool,
+    row: Option<RowMenu>,
     window: &mut Window,
     cx: &mut App,
 ) -> Stateful<Div> {
     let popup = popup_state(&id, window, cx);
+    let frame = match row {
+        Some(row) => with_row_button(frame, &id, row, &popup, cx),
+        None => frame,
+    };
     let has_actions = lazy || !actions.is_empty();
     let bounds = popup.update(cx, |popup, cx| {
         let changed = popup.actions.len() != actions.len()
@@ -146,23 +296,10 @@ fn bind_menu(
     });
     let by_open = popup.clone();
     frame
+        .group(super::MENU_ROW)
         .when(has_actions, |frame| {
             frame.on_context_menu(move |window, cx| {
-                by_open.update(cx, |popup, cx| {
-                    if !popup.shown {
-                        popup.return_focus = window.focused(cx).map(|focus| focus.downgrade());
-                    }
-                    let bounds = popup.bounds.get();
-                    popup.position = if window.last_input_was_keyboard() {
-                        gpui::point(bounds.left(), bounds.bottom())
-                    } else {
-                        window.mouse_position()
-                    };
-                    popup.placement = Default::default();
-                    popup.shown = true;
-                    popup.focus.focus(window, cx);
-                    cx.notify();
-                });
+                by_open.update(cx, |popup, cx| popup.open(window, cx));
             })
         })
         .child(
@@ -184,6 +321,22 @@ struct Popup {
 }
 
 impl Popup {
+    fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.shown {
+            self.return_focus = window.focused(cx).map(|focus| focus.downgrade());
+        }
+        let bounds = self.bounds.get();
+        self.position = if window.last_input_was_keyboard() {
+            gpui::point(bounds.left(), bounds.bottom())
+        } else {
+            window.mouse_position()
+        };
+        self.placement = Default::default();
+        self.shown = true;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.shown = false;
         if let Some(focus) = self.return_focus.take().and_then(|focus| focus.upgrade()) {
@@ -207,6 +360,7 @@ impl Render for Popup {
                     .disabled(action.disabled)
                     .when_some(action.icon, |item, icon| item.icon(icon))
                     .when_some(action.detail.clone(), |item, detail| item.detail(detail))
+                    .when_some(action.shortcut, |item, keys| item.shortcut(keys))
                     .on_click(cx.listener(move |this, event, window, cx| {
                         let action = this.actions.get(index).cloned();
                         if !this.shown {

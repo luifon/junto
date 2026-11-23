@@ -547,14 +547,7 @@ impl Shell {
         } else {
             shown = shown.child(heading.clone());
         }
-        let caption = crate::selectable::SelectableText::value(
-            shown,
-            if available {
-                link.clone().unwrap_or(heading)
-            } else {
-                heading
-            },
-        );
+        let caption = shown;
         let open = Button::new(("forward-origin", id.as_uuid().as_u128() as u64))
             .kind(ButtonKind::Ghost)
             .label(text::VIEW_ORIGINAL)

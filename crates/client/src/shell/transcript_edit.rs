@@ -10,7 +10,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div,
     prelude::FluentBuilder,
 };
-use gpui_base::input::InputState;
+use gpui_base::input::{InputEvent, Textarea, TextareaState};
 use junto_client_core::model::OpenRecording;
 use junto_client_core::protocol::ids::{RecordingId, ServerId};
 
@@ -21,7 +21,7 @@ use crate::state::transcript_work::{ChangeState, TranscriptChange};
 use crate::text;
 use crate::text::transcripts as txt;
 use crate::theme::{Theme, u};
-use crate::ui::{Button, ButtonKind, Field, FieldEvent, FormSpace, Notice, StyleExt, icon};
+use crate::ui::{Button, ButtonKind, FormSpace, InputMenu, Notice, StyleExt, icon};
 
 /// The form of a change: the recording and what it changes.
 pub(crate) type FormKey = (RecordingId, TranscriptChange);
@@ -29,7 +29,8 @@ pub(crate) type FormKey = (RecordingId, TranscriptChange);
 /// What the side panel of a transcript holds of the window itself.
 pub(crate) struct TranscriptEdit {
     /// The text of the open form: a correction or a name.
-    pub(crate) field: Entity<InputState>,
+    /// A text area that wraps a long line (up to 2,000 characters); Enter saves.
+    pub(crate) field: Entity<TextareaState>,
     /// The server and the change whose form is open.
     pub(crate) open: Option<(ServerId, FormKey)>,
     /// Why the text of the field was not sent.
@@ -65,17 +66,24 @@ pub enum Incoming {
 
 impl TranscriptEdit {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> (Self, Subscription) {
-        let field = Field::state("", window, cx);
-        let subscription = Field::observe(
+        let field = gpui::AppContext::new(cx, |cx| {
+            TextareaState::new(window, cx)
+                .context_menu(false)
+                .submit_on_enter(true)
+                .auto_grow(1, 6)
+        });
+        let subscription = cx.subscribe_in(
             &field,
             window,
-            cx,
-            |this: &mut Shell, event, window, cx| match event {
-                FieldEvent::Changed => {
+            |this: &mut Shell, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
                     this.transcript_edit.invalid = None;
                     cx.notify();
                 }
-                FieldEvent::Submitted => this.submit_transcript_form(window, cx),
+                InputEvent::PressEnter { shift: false, .. } => {
+                    this.submit_transcript_form(window, cx)
+                }
+                _ => {}
             },
         );
         let edit = Self {
@@ -117,8 +125,10 @@ impl Shell {
         edit.space.release();
         let shown = shown.unwrap_or_default().to_owned();
         let field = edit.field.clone();
-        field.update(cx, |field, cx| field.set_value(shown, window, cx));
-        self.focus_field(&field, window, cx);
+        field.update(cx, |field, cx| {
+            field.set_value(shown, window, cx);
+            field.focus(window, cx);
+        });
         self.state.update(cx, |state, cx| {
             state.dismiss_transcript_ask(server_id, recording_id, cx);
         });
@@ -152,7 +162,14 @@ impl Shell {
         if self.transcript_edit.sent {
             return;
         }
-        let typed = self.transcript_edit.field.read(cx).value().to_string();
+        // A line of a transcript is one paragraph: a line break that Shift+Enter typed is a
+        // space.
+        let typed = self
+            .transcript_edit
+            .field
+            .read(cx)
+            .value()
+            .replace('\n', " ");
         let read = self.transcript_edit.read.clone();
         let sent = self.state.update(cx, |state, cx| {
             state.change_transcript(server_id, recording_id, what, &typed, read, cx)
@@ -331,7 +348,22 @@ impl Shell {
             .min_w_0()
             .gap(u(6.0))
             .pt(u(4.0))
-            .child(Field::new(&field, label).selector("transcript-form-field"))
+            .child(
+                div()
+                    .id("transcript-form-field")
+                    .debug_selector(|| "transcript-form-field".to_owned())
+                    .role(gpui::Role::TextInput)
+                    .aria_label(label)
+                    .min_w_0()
+                    .p(u(8.0))
+                    .border_1()
+                    .border_color(Hsla::from(theme.colors.rule))
+                    .rounded(u(theme.metrics.radius))
+                    .bg(Hsla::from(theme.colors.travertine_hi))
+                    .child(crate::selectable::SelectableText::unobserved(
+                        InputMenu::new(&field, Textarea::new(&field)),
+                    )),
+            )
             .child(
                 div()
                     .flex()

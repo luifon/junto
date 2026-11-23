@@ -251,9 +251,6 @@ fn copy_target_links_from_channel_direct_and_notice_menus(cx: &mut TestAppContex
             .is_some_and(|lists| lists.directs.iter().any(|row| row.id == conversation.id))
     });
     window.right_click_named(format!("channel-row:{selected}"));
-    let action = window.cx.debug_bounds("channel-copy-link").unwrap();
-    window.move_pointer(action.center());
-    assert!(!window.shows("copy-text-value"));
     window.click("channel-copy-link");
     assert_target_link(&mut window, "channel", selected, &origin);
     window.right_click_named(format!("direct-row:{}", conversation.id));
@@ -713,7 +710,7 @@ fn a_member_row_copies_identity_and_opens_its_existing_direct_action(cx: &mut Te
     );
     assert!(window.shows("copied-confirmation"));
     window.right_click_named(format!("member-row:{account}"));
-    window.click_named("context-action:Write a direct message to Ada".to_owned());
+    window.click_named("context-action:Message".to_owned());
     window.until("the selected member's conversation is shown", |window| {
         window.view().lists().is_some_and(|lists| {
             lists
@@ -1456,7 +1453,7 @@ fn a_reply_preview_copies_its_target_and_gives_its_author_a_separate_menu(cx: &m
     );
     assert!(!window.shows("message-menu"));
     window.right_click_named(format!("reply-preview:{}", answer.id));
-    window.click("context-action:Copy link");
+    window.click("context-action:Copy link to message");
     let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
     assert!(copied.contains(&root.to_string()) && !copied.contains(&answer.id.to_string()));
     window.right_click_named(format!("reply-preview:{}", answer.id));
@@ -1687,7 +1684,7 @@ fn account_member_and_direct_menus_expose_the_existing_direct_call_flow(cx: &mut
         "context-action:{}",
         junto_client::text::DIRECT_CALL
     )));
-    window.click_named("context-action:Write a direct message to Ada".to_owned());
+    window.click_named("context-action:Message".to_owned());
     window.until("the direct conversation is open", |window| {
         window
             .view()

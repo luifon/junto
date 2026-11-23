@@ -115,9 +115,9 @@ impl Shell {
             MenuItem::new(
                 "voice-status-edit",
                 if channel.voice_status.is_empty() {
-                    "Set voice status"
+                    text::voice_status::SET
                 } else {
-                    "Edit voice status"
+                    text::voice_status::EDIT
                 },
             )
             .selector("voice-status-edit")
@@ -149,7 +149,7 @@ impl Shell {
             .and_then(|server| server.owner());
         let (row, actions) = crate::ui::collect_actions(|| {
             RowAction::new(
-                "Copy status",
+                text::voice_status::COPY,
                 cx.listener(move |this, _, _, cx| {
                     if this
                         .state
@@ -177,7 +177,7 @@ impl Shell {
             .register();
             if let Some(source) = source {
                 RowAction::new(
-                    "Edit voice status",
+                    text::voice_status::EDIT,
                     cx.listener(move |this, _, window, cx| {
                         this.edit_voice_status(source, window, cx)
                     }),
@@ -226,7 +226,7 @@ impl Shell {
             return;
         }
         if value.chars().count() > 500 || value.chars().any(char::is_control) {
-            editor.error = Some("Use at most 500 characters on one line.".to_owned());
+            editor.error = Some(text::voice_status::TOO_LONG.to_owned());
             cx.notify();
             return;
         }
@@ -254,8 +254,7 @@ impl Shell {
                     Err(_) => {
                         if let Layer::VoiceStatus(editor) = &mut this.layer {
                             editor.running = false;
-                            editor.error =
-                                Some("The voice status could not be saved. Try again.".to_owned());
+                            editor.error = Some(text::voice_status::NOT_SAVED.to_owned());
                         }
                         cx.notify();
                     }
@@ -277,12 +276,15 @@ impl Shell {
             return div().into_any_element();
         };
         let running = editor.running;
-        Dialog::new("Voice channel status", self.layer_focus())
+        Dialog::new(text::voice_status::TITLE, self.layer_focus())
             .selector("voice-status-dialog")
             .on_close(Self::handler(cx, |this, window, cx| {
                 this.close_layer(window, cx)
             }))
-            .child(Field::new(&self.voice_status_field, "Status").selector("voice-status-input"))
+            .child(
+                Field::new(&self.voice_status_field, text::voice_status::FIELD)
+                    .selector("voice-status-input"),
+            )
             .children(editor.error.clone().map(|error| {
                 div()
                     .debug_selector(|| "voice-status-error".to_owned())
@@ -290,7 +292,7 @@ impl Shell {
             }))
             .child(dialog_footer([
                 Button::new("voice-status-clear")
-                    .label("Clear status")
+                    .label(text::voice_status::CLEAR)
                     .selector("voice-status-clear")
                     .disabled(running)
                     .on_click(

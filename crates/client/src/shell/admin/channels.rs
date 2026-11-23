@@ -863,20 +863,23 @@ impl Shell {
                             cx,
                         ),
                     ))
-                    .child(row_action(
-                        ("channel-move", number),
-                        text::admin::MOVE_TO,
-                        format!("channel-move-{channel_id}"),
-                        (!row.may_manage).then_some(text::admin::CHANNEL_MANAGE_NEEDS),
-                        cx.listener(move |this, _, window, cx| {
-                            this.set_admin_mode(
-                                Some(Mode::MoveChannel(channel_id)),
-                                "",
-                                window,
-                                cx,
-                            );
-                        }),
-                    ))
+                    // Without "manage channel" in the channel the move is absent (ADR 0790).
+                    .when(row.may_manage, |line| {
+                        line.child(row_action(
+                            ("channel-move", number),
+                            text::admin::MOVE_TO,
+                            format!("channel-move-{channel_id}"),
+                            None,
+                            cx.listener(move |this, _, window, cx| {
+                                this.set_admin_mode(
+                                    Some(Mode::MoveChannel(channel_id)),
+                                    "",
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        ))
+                    })
                     .child(row_action(
                         ("channel-settings", number),
                         text::admin::SETTINGS,
@@ -1075,10 +1078,6 @@ impl Shell {
                             &theme,
                         ))
                         .child(this.render_afk_settings(&view, &page, cx))
-                        .children(
-                            (!page.may_manage)
-                                .then(|| sentence(text::MANAGE_NO_PERMISSION, &theme)),
-                        )
                         .into_any_element(),
                     Line::Category(index) => {
                         let group = &page.groups[index];

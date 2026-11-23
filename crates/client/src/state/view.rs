@@ -1668,8 +1668,6 @@ pub enum SoundWarning {
         by: Option<String>,
     },
     OutputFailed,
-    /// The person does not hold "speak" in the voice channel of the call (ADR 0790).
-    SpeakNotPermitted,
     /// The person chose voice activation, and does not hold "use voice activity" in the
     /// voice channel of the call: the microphone sends only while the key is held.
     PushToTalkRequired,
@@ -4150,7 +4148,9 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
             by: name(block.by),
         })
     } else if withheld.microphone {
-        Some(SoundWarning::SpeakNotPermitted)
+        // Without "speak" the microphone of the profile strip is drawn held, with its
+        // tooltip; no sentence states the permission (ADR 0790).
+        None
     } else {
         match active.map(|call| (&call.microphone, &call.output, &call.sound_block)) {
             Some((MicrophoneState::NoPermission, _, _)) => Some(SoundWarning::NoMicrophoneAccess),

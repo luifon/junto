@@ -77,8 +77,8 @@ fn the_own_card_shows_roles_and_has_no_self_message_or_call(cx: &mut TestAppCont
         ready(window, own) && window.shows_named(format!("profile-role:{}", role.id))
     });
     assert!(!profile(&mut window).unwrap().can_contact());
-    window.click("profile-message");
-    window.click("profile-call");
+    // The own card offers no message and no call.
+    assert!(!window.shows("profile-message") && !window.shows("profile-call"));
     assert!(window.shows("profile-card"));
     assert!(window.view().call.is_none());
     window.press("escape");

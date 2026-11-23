@@ -305,11 +305,17 @@ impl Shell {
         group: &GroupRow,
         view: &ShellView,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
         let (id, collapsed) = (group.id, group.collapsed);
         let ring = focus_ring_inside(colors.ochre, theme.metrics.focus_ring);
+        let focus = crate::ui::row_focus(
+            SharedString::from(format!("group-focus:{}", id.as_uuid())),
+            window,
+            cx,
+        );
         let label: SharedString = group_label(group).into();
         let name: SharedString = group.shown_name.clone().into();
         let menu_open = matches!(self.layer, Layer::GroupMenu(open) if open == id);
@@ -326,8 +332,7 @@ impl Shell {
             .pr(u(8.0))
             .pl(u(10.0))
             .cursor_pointer()
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
             .tooltip(tooltip(label))
             .when(collapsed && group.selected, |head| {
                 head.bg(Hsla::from(colors.basalt_3))
@@ -412,7 +417,17 @@ impl Shell {
                     .debug_selector(move || format!("group-unread-{index}"))
                     .child(mark)
                     .into_any_element()
-            }));
+            }))
+            .group(crate::ui::MENU_ROW)
+            .child(
+                crate::ui::MenuButton::new("group-more")
+                    .selector(format!("menu-button:group-{index}"))
+                    .dark()
+                    .shown(menu_open || focus.is_focused(window))
+                    .on_open(Self::handler(cx, move |this, window, cx| {
+                        this.open_group_menu(id, window, cx);
+                    })),
+            );
         let head = self.drop_target(head, DropTarget::Group(id), theme, cx);
         let menu = menu_open.then(|| self.render_group_menu(group, view, cx));
         div()
@@ -584,7 +599,6 @@ impl Shell {
         let mut items: Vec<AnyElement> = vec![
             MenuItem::new("rename-group", txt::RENAME_GROUP)
                 .icon(Icon::Edit)
-                .detail(txt::RENAME_GROUP_HELP)
                 .selector("rename-group")
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_rename_group(&renamed, window, cx);
@@ -623,7 +637,7 @@ impl Shell {
         ] {
             items.push(
                 MenuItem::new(item, txt::move_title(step))
-                    .detail(txt::group_move_help(step, at_end))
+                    .when(at_end, |item| item.detail(txt::group_move_end(step)))
                     .disabled(at_end)
                     .selector(selector)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -634,22 +648,19 @@ impl Shell {
             );
         }
         let unread = group.unread.any();
-        items.push(
-            MenuItem::new("mark-group-read", txt::MARK_GROUP_READ)
-                .icon(Icon::CheckDouble)
-                .detail(if unread {
-                    txt::MARK_GROUP_READ_HELP
-                } else {
-                    txt::NOTHING_UNREAD
-                })
-                .disabled(!unread)
-                .selector("mark-group-read")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.state.update(cx, |state, _| state.mark_group_read(id));
-                    this.close_layer(window, cx);
-                }))
-                .into_any_element(),
-        );
+        // Shown only while something is unread.
+        if unread {
+            items.push(
+                MenuItem::new("mark-group-read", txt::MARK_GROUP_READ)
+                    .icon(Icon::CheckDouble)
+                    .selector("mark-group-read")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.state.update(cx, |state, _| state.mark_group_read(id));
+                        this.close_layer(window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         items.push(menu_separator(cx).into_any_element());
         items.push(crate::ui::menu_label(txt::COLOUR, false, cx).into_any_element());
         for (number, colour) in GroupColour::ALL.into_iter().enumerate() {
@@ -677,7 +688,6 @@ impl Shell {
         items.push(
             MenuItem::new("dissolve-group", txt::DISSOLVE_GROUP)
                 .icon(Icon::Trash)
-                .detail(txt::DISSOLVE_GROUP_HELP)
                 .selector("dissolve-group")
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.state.update(cx, |state, cx| {
@@ -710,7 +720,7 @@ impl Shell {
         ] {
             items.push(
                 MenuItem::new(item, txt::move_title(step))
-                    .detail(txt::workspace_move_help(step, at_end))
+                    .when(at_end, |item| item.detail(txt::workspace_move_end(step)))
                     .disabled(at_end)
                     .selector(item)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -721,24 +731,21 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        items.push(
-            MenuItem::new("mark-workspace-read", txt::MARK_WORKSPACE_READ)
-                .icon(Icon::CheckDouble)
-                .detail(if unread {
-                    txt::MARK_WORKSPACE_READ_HELP
-                } else {
-                    txt::NOTHING_UNREAD
-                })
-                .disabled(!unread)
-                .selector("mark-workspace-read")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.state.update(cx, |state, _| {
-                        state.mark_server_read(server_id, Some(workspace_id));
-                    });
-                    this.close_layer(window, cx);
-                }))
-                .into_any_element(),
-        );
+        // Shown only while something is unread.
+        if unread {
+            items.push(
+                MenuItem::new("mark-workspace-read", txt::MARK_WORKSPACE_READ)
+                    .icon(Icon::CheckDouble)
+                    .selector("mark-workspace-read")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.state.update(cx, |state, _| {
+                            state.mark_server_read(server_id, Some(workspace_id));
+                        });
+                        this.close_layer(window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         items.push(self.render_arrange_error(cx));
         self.book_menu(
             "workspace-menu",
@@ -765,7 +772,6 @@ impl Shell {
         let mut items: Vec<AnyElement> = vec![
             MenuItem::new("new-group", txt::NEW_GROUP)
                 .icon(Icon::Plus)
-                .detail(txt::NEW_GROUP_HELP)
                 .selector("new-group")
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.state.update(cx, |state, cx| {
@@ -819,7 +825,6 @@ impl Shell {
             items.push(
                 MenuItem::new("remove-from-group", txt::REMOVE_FROM_GROUP)
                     .icon(Icon::Leave)
-                    .detail(txt::REMOVE_FROM_GROUP_HELP)
                     .selector("remove-from-group")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.state.update(cx, |state, cx| {

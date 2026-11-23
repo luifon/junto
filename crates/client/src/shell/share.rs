@@ -670,6 +670,7 @@ impl Shell {
             .collect();
         let another = MenuItem::new("share-another", text::SHARE_ANOTHER)
             .icon(Icon::Screen)
+            .shortcut(junto_client_core::keybinds::KeyAction::ShareScreen)
             .disabled(full)
             .selector("share-another")
             .on_click(cx.listener(|this, _, window, cx| {
@@ -2089,10 +2090,13 @@ impl Shell {
                 .ink(colors.bone)
                 .whitespace_nowrap()
                 .child(super::people::avatar(&faces, share.account_id, 18.0).radius(2.0))
+                // The title of the share takes the room of its words before the sentence about
+                // its sound: with a basis of zero it got only what the sound left, and "You are
+                // watching Your screen" was cut to "You are watching You".
                 .child(
                     div()
                         .min_w_0()
-                        .flex_1()
+                        .flex_auto()
                         .truncate()
                         .child(super::people::person_element(
                             &faces,

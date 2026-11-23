@@ -838,6 +838,7 @@ impl AppState {
             junto_client_core::keybinds::Keybinds::default()
         });
         crate::menus::sync_shortcuts(&keybinds, cx);
+        crate::ui::set_bound_keys(&keybinds, cx);
         let (voice, voice_failed) = match client.voice().load() {
             Ok(voice) => (voice, None),
             Err(error) => {

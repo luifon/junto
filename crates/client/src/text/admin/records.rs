@@ -42,7 +42,6 @@ pub const TOKEN_EXPIRY: &str = "Expires after";
 pub const TOKEN_EXPIRY_HELP: &str = "A token works for at most 366 days.";
 pub const TOKEN_ONCE: &str = "This is the new access token. It is not shown again. Copy it now and keep it where no \
      other person reads it.";
-pub const TOKEN_NEEDS: &str = "Only an administrator creates an access token.";
 pub const TOKEN_BEING_MADE: &str = "Wait until the new access token is made.";
 /// The name of the element that shows a new access token, for the accessibility tree.
 /// The token itself is the text of the element and never its name.
@@ -339,7 +338,7 @@ pub const THE_SERVER: &str = "The server";
 pub const NO_ENTRIES: &str = "This log has no entry.";
 pub const NO_ENTRIES_FILTERED: &str = "No entry of this log passes the filters.";
 pub const LOAD_OLDER: &str = "Load older";
-pub const READ_AGAIN: &str = "Read again";
+pub const READ_AGAIN: &str = "Try again";
 pub const AUDIT_BOUND: &str = "The page holds 2,000 entries at most. \"Continue\" shows the next \
      entries of the list in their place, and \"Read again\" returns to the newest ones.";
 pub const CONTINUE: &str = "Continue";

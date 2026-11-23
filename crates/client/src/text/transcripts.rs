@@ -66,7 +66,6 @@ pub const REQUEST: &str = "Transcribe";
 pub const REQUEST_AGAIN: &str = "Transcribe again";
 pub const REQUEST_HELP: &str = "Ask the server to write the transcript of this recording";
 pub const REQUESTING: &str = "Asking…";
-pub const REQUEST_NEEDS: &str = "You do not hold “manage recordings” in this workspace.";
 
 // The parts of a recording.
 pub const PARTS: &str = "Parts";

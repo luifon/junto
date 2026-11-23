@@ -1154,7 +1154,6 @@ impl Shell {
             .chain(rows.iter().map(|row| {
                 Row::item(format!("account-{}", row.id), true, row.name.clone()).account(row.id)
             }))
-            .chain(std::iter::once(Row::part("people-footer", false)))
             .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
@@ -1174,13 +1173,7 @@ impl Shell {
                         cx,
                     );
                 }
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(sentence(txt::REMOVAL_HELP, &theme).mt(u(12.0)))
-                    .child(sentence(txt::BAN_HELP, &theme).mt(u(4.0)))
-                    .child(sentence(txt::RECOVERY_HELP, &theme).mt(u(4.0)))
-                    .into_any_element()
+                div().into_any_element()
             },
             window,
             cx,
@@ -1593,11 +1586,7 @@ impl Shell {
         let server_id = view.server_id;
         let mut column = div().flex().flex_col();
         match (&page.addable, &page.members) {
-            (None, _) => {
-                column = column
-                    .child(sentence(txt::ADD_NEEDS, &theme).mt(u(12.0)))
-                    .child(sentence(txt::REMOVE_MEMBER_NEEDS, &theme).mt(u(4.0)));
-            }
+            (None, _) => {}
             // The accounts that can be added are known when the members are.
             (Some(_), MemberList::Loading | MemberList::Failed) => {}
             (Some(addable), MemberList::Loaded(_)) => {

@@ -42,10 +42,43 @@ Theme, scaling and language:
 
 - There are two themes: the light theme of the design (stone) and a dark theme with the colours of design 2 (broadcast) on the same layout, fonts and measures. All colours, fonts and spacing are in one theme file. The person chooses Light, Dark or System in the section "Interface" of the settings; System follows the light or dark appearance of the system and changes with it. A new installation, and the settings file of a client without themes, have Light, so an installation keeps its look until the person chooses.
 - Text has a contrast of at least 4.5 to 1 with its ground in both themes (WCAG AA). A unit test of the theme holds it for the pairs of text and ground colours that the screens use.
-- The settings of the application are a layer of the size of the administration (ADR 0761): a list of sections at the left (Profile, Picture, Interface, Voice and video, Call, Keybinds, Quiet times, Notifications, Sounds, Devices, Permissions, About) and one section at the right, as Discord, Slack and Teams show their settings. The settings open at Profile. "About" holds the data directory and the version of the build with its update check (ADR 0704); the update notice opens the settings at About.
+- The settings of the application are a layer of the size of the administration (ADR 0761): a list of sections at the left (Profile, Picture, Interface, Voice and video, Call, Keyboard shortcuts, Quiet times, Notifications, Sounds, Linked devices, Permissions, About) and one section at the right, as Discord, Slack and Teams show their settings. The settings open at Profile. "About" holds the data directory and the version of the build with its update check (ADR 0704); the update notice opens the settings at About.
 - The interface scales from 90% to 150%. The scale changes the rem size of the window, and text and controls of the component library follow it.
 - The client gives its own sizes in rems. A size that is given in pixels does not scale: a dialog with a width in pixels kept that width at 150% while its text grew.
 - The interface language is English. All interface text is in one catalog.
+- One word for each action, in bars, menus, the tray, the key bindings and tooltips. The glossary below is part of the catalog: a new text of an action takes its word.
+
+Glossary:
+
+| Thing or action | Word |
+|---|---|
+| Write to a person | "Message"; the row that starts a conversation is "New message" |
+| Call a person | "Call"; the state of a direct call names the state ("Calling…") |
+| The settings of the application | "Settings" ("Settings…" in the application menu, as the system names it) |
+| Key bindings | "Keyboard shortcuts" |
+| Quit | "Quit Junto" |
+| Installations of the account | "Linked devices"; "device" is the hardware (microphone, camera, speakers) |
+| Check of the hardware before a call | "Test microphone and camera" |
+| The value compared when a device is linked | "Device code" |
+| Leave a call | "Leave call" |
+| Join a call | "Join call"; a ringing direct call is "Accept" |
+| Invite to a call | "Invite"; "Cancel invitation" |
+| The call of a voice channel | "call" everywhere, also for its rules ("Lock call", "the call is locked") |
+| Hand | "Lower hand", "Allow to speak" |
+| Moderation | the item words only, without a permission line |
+| Open the referenced message | "Go to message" |
+| Copy a link | "Copy link to message", "Copy link to file", "Copy link address" |
+| Copy a file name | "Copy file name" |
+| Try again | "Try again"; "Check again" only where the person waits for someone (an approval, a link) |
+| The newest messages | "Go to newest messages" |
+| Share | "Share", "Stop sharing", "Stop all shares" |
+| Record | "Record", "Stop recording" |
+| Channel settings | "Channel settings" |
+| Archive pages | "Archive" |
+| Change a value | "Rename" for a name, "Edit" for a text (topic, voice status), "Change" for another value (picture, keys, level) |
+| Voice status | "Voice status" |
+
+Reason: one action under several names ("Direct call" and "Call"; "Leave", "Leave call" and "Leave the call"; "Devices" for both installations and microphones) made a person look for two actions where there was one.
 
 Drag and drop:
 

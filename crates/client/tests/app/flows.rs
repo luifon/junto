@@ -194,6 +194,11 @@ fn a_request_for_access_waits_and_opens_when_an_administrator_approves_it(cx: &m
     window.click("close-join");
     assert!(!window.shows("join-dialog"));
     assert!(window.shows("waiting-for-approval"));
+    // The person waits for someone: "Check again" (ADR 0703).
+    assert_eq!(
+        window.control_label("check-server").as_deref(),
+        Some(junto_client::text::CHECK_AGAIN)
+    );
 
     // The wait is in the server book on the disk: a second start shows it again.
     window.close();

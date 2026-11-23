@@ -87,7 +87,8 @@ saved value, so an upgrade keeps the earlier listening level. Microphone volumes
 
 The header, share tiles and share context menus expose mute, and the Members panel shows
 each received share and its mute. The context menu exposes that share's volume even when
-another share is watched. The Settings volume acts on the watched share. Both windows use
+another share is watched. The line of the watched share has the volume of that share; the
+settings have no share volume. Both windows use
 the same controls and media state, and their buttons and volume controls accept keyboard input.
 These are local preferences and require no server change.
 
