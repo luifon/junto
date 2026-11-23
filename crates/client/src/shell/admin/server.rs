@@ -265,36 +265,36 @@ impl Shell {
             .value()
             .trim()
             .to_lowercase();
-        let choices: Vec<AnyElement> = open
-            .then(|| {
-                std::iter::once(("auto", text::transcripts::DETECT))
-                    .chain(text::transcripts::LANGUAGES.iter().copied())
-                    .filter(|(_, name)| wanted.is_empty() || name.to_lowercase().contains(&wanted))
-                    .map(|(code, name)| {
-                        let chosen = current.as_deref() == Some(code);
-                        crate::ui::MenuItem::new(
-                            SharedString::from(format!("server-language:{code}")),
-                            name,
-                        )
-                        .selector(format!("server-language:{code}"))
-                        .map(|item| {
-                            if chosen {
-                                item.end_icon(crate::assets::Icon::Check)
-                            } else {
-                                item
-                            }
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.admin_language_open = false;
-                            this.state.update(cx, |state, cx| {
-                                state.set_recording_language(server_id, code.to_owned(), cx)
-                            });
-                        }))
-                        .into_any_element()
+        let choices: Vec<AnyElement> = if open {
+            std::iter::once(("auto", text::transcripts::DETECT))
+                .chain(text::transcripts::LANGUAGES.iter().copied())
+                .filter(|(_, name)| wanted.is_empty() || name.to_lowercase().contains(&wanted))
+                .map(|(code, name)| {
+                    let chosen = current.as_deref() == Some(code);
+                    crate::ui::MenuItem::new(
+                        SharedString::from(format!("server-language:{code}")),
+                        name,
+                    )
+                    .selector(format!("server-language:{code}"))
+                    .map(|item| {
+                        if chosen {
+                            item.end_icon(crate::assets::Icon::Check)
+                        } else {
+                            item
+                        }
                     })
-                    .collect()
-            })
-            .unwrap_or_default();
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.admin_language_open = false;
+                        this.state.update(cx, |state, cx| {
+                            state.set_recording_language(server_id, code.to_owned(), cx)
+                        });
+                    }))
+                    .into_any_element()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         div()
             .flex()
             .flex_col()

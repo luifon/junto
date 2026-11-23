@@ -374,6 +374,17 @@ pub fn named_name_range(name: &str) -> std::ops::Range<usize> {
     start..start + name.len()
 }
 
+pub const RECORD_IN_ANOTHER_LANGUAGE: &str = "Record in another language";
+
+/// The name of the spoken language of recordings by its code, "Detect the language of each
+/// sentence" for `auto`, or the code when this build does not know it.
+pub fn recording_language_name(code: &str) -> String {
+    if code == "auto" {
+        return DETECT.to_owned();
+    }
+    language_name(code).map_or_else(|| code.to_owned(), str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,15 +407,4 @@ mod tests {
         assert_eq!(language_name("pt"), Some("Portuguese"));
         assert_eq!(language_name("xx"), None);
     }
-}
-
-pub const RECORD_IN_ANOTHER_LANGUAGE: &str = "Record in another language";
-
-/// The name of the spoken language of recordings by its code, "Detect the language of each
-/// sentence" for `auto`, or the code when this build does not know it.
-pub fn recording_language_name(code: &str) -> String {
-    if code == "auto" {
-        return DETECT.to_owned();
-    }
-    language_name(code).map_or_else(|| code.to_owned(), str::to_owned)
 }
