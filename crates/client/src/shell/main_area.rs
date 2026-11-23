@@ -528,12 +528,10 @@ impl Shell {
             }
             // The buttons that open the panel of the call: over the stage of a narrow
             // window, and in a wide window while the person closed it.
+            // The activity is in the toolbar row of that panel only, never in the header of
+            // the call (ADR 0742).
             if narrow || !self.call_panel_shown(false, cx) {
                 after.extend(self.render_call_panel_buttons(cx));
-                // The activity opens in the panel of the call (ADR 0742).
-                if let Some(lists) = view.lists() {
-                    after.push(self.render_activity_button(lists, true, cx));
-                }
             }
             // The settings of the application at "Voice and video", in every width.
             after.push(self.render_call_settings_button(cx));
