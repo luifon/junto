@@ -300,16 +300,6 @@ async fn hidden_and_absent_places_and_subjects_answer_not_found() {
         )
         .await
         .error(ErrorCode::NotFound);
-    for (workspace, account) in [
-        (place.workspace, AccountId::generate()),
-        (other, manager.account_id),
-    ] {
-        place
-            .server
-            .get(&place.owner, &member_permissions(workspace, account))
-            .await
-            .error(ErrorCode::NotFound);
-    }
     let foreign = place.server.everyone_role(&place.owner, other).await.id;
     place
         .server
@@ -536,15 +526,6 @@ async fn a_rule_that_changes_nothing_writes_nothing_and_keeps_the_channel_synced
             .await
             .ok::<Value>(StatusCode::OK);
     }
-    place
-        .server
-        .patch(
-            &place.owner,
-            &member_permissions(place.workspace, reader.account_id),
-            &json!({"permission": "add_reactions", "state": "inherit"}),
-        )
-        .await
-        .ok::<Value>(StatusCode::OK);
     place
         .server
         .patch(
@@ -1046,137 +1027,6 @@ async fn deleting_a_category_tells_its_managers_that_its_channels_detached() {
 }
 
 #[tokio::test]
-async fn workspace_person_permissions_follow_rank_and_the_ceiling_in_every_channel() {
-    let place = place().await;
-    let manager = place.server.join(&place.owner, "Manager").await;
-    let reader = place.server.join(&place.owner, "Reader").await;
-    let bystander = place.server.join(&place.owner, "Bystander").await;
-    let managers = place
-        .server
-        .grant_workspace(
-            &place.owner,
-            &manager,
-            place.workspace,
-            &[W::ManageRoles, W::ManageMessages],
-        )
-        .await;
-    let path = member_permissions(place.workspace, reader.account_id);
-    place
-        .server
-        .get(&bystander, &path)
-        .await
-        .error(ErrorCode::Forbidden);
-    place
-        .server
-        .put(
-            &manager,
-            &member_permissions(place.workspace, place.owner.account_id),
-            &json!({"allow": [], "deny": ["add_reactions"]}),
-        )
-        .await
-        .error(ErrorCode::Forbidden);
-    place
-        .server
-        .put(
-            &manager,
-            &member_permissions(place.workspace, manager.account_id),
-            &json!({"allow": [], "deny": ["add_reactions"]}),
-        )
-        .await
-        .error(ErrorCode::Forbidden);
-    place
-        .server
-        .put(
-            &manager,
-            &path,
-            &json!({"allow": ["manage_channel"], "deny": []}),
-        )
-        .await
-        .error(ErrorCode::ExceedsOwnPermissions);
-    // The manager is denied manage messages in one channel, where the change would add it.
-    let channel = text_channel(&place, "Notes", None).await;
-    place
-        .server
-        .put(
-            &place.owner,
-            &channel_role(&channel, managers),
-            &json!({"allow": [], "deny": ["manage_messages"]}),
-        )
-        .await
-        .ok::<Value>(StatusCode::OK);
-    place
-        .server
-        .patch(
-            &manager,
-            &path,
-            &json!({"permission": "manage_messages", "state": "allow"}),
-        )
-        .await
-        .error(ErrorCode::ExceedsOwnPermissions);
-    // Where the reader does not gain it, the channel does not count.
-    place
-        .server
-        .put(
-            &place.owner,
-            &channel_person(&channel, reader.account_id),
-            &json!({"allow": [], "deny": ["manage_messages"]}),
-        )
-        .await
-        .ok::<Value>(StatusCode::OK);
-    let mut managing = place.server.subscribed(&manager, Level::Full).await;
-    let mut reading = place.server.subscribed(&reader, Level::Full).await;
-    let mut watching = place.server.subscribed(&bystander, Level::Full).await;
-    let set: Value = place
-        .server
-        .patch(
-            &manager,
-            &path,
-            &json!({"permission": "manage_messages", "state": "allow"}),
-        )
-        .await
-        .ok(StatusCode::OK);
-    assert_eq!(names(&set, "allow"), ["manage_messages"]);
-    let held: Value = place.server.get(&manager, &path).await.ok(StatusCode::OK);
-    assert_eq!(held, set);
-    let managed = place.server.traffic(&manager, &mut managing).await;
-    assert!(
-        has_event(&managed, "workspace_person_permissions_set"),
-        "{managed:?}"
-    );
-    let read = place.server.traffic(&reader, &mut reading).await;
-    assert!(has_event(&read, "permissions_changed"), "{read:?}");
-    assert!(
-        !has_event(&read, "workspace_person_permissions_set"),
-        "{read:?}"
-    );
-    let watched = place.server.traffic(&bystander, &mut watching).await;
-    assert!(!has_event(&watched, "permissions_changed"), "{watched:?}");
-    assert_eq!(
-        audit_count(&place.server, "workspace_person_permissions_set").await,
-        1
-    );
-    // The person deny of the workspace takes what a role gives.
-    place
-        .server
-        .put(
-            &manager,
-            &path,
-            &json!({"allow": [], "deny": ["send_messages"]}),
-        )
-        .await
-        .ok::<Value>(StatusCode::OK);
-    let permissions: Value = place
-        .server
-        .get(
-            &reader,
-            &format!("/api/v1/channels/{}/permissions", channel.id),
-        )
-        .await
-        .ok(StatusCode::OK);
-    assert!(!names(&permissions, "permissions").contains(&"send_messages".to_owned()));
-}
-
-#[tokio::test]
 async fn server_person_permissions_follow_the_administrator_and_owner_limits() {
     let place = place().await;
     let higher = place.server.join(&place.owner, "Higher").await;
@@ -1414,72 +1264,35 @@ async fn a_place_holds_a_bounded_number_of_person_rules() {
     }
 }
 
-/// A workspace person grant that would give the member a permission in a channel that the
-/// caller cannot see is refused with the answer of a visible channel where the caller lacks
-/// the permission. The refusal is kept over hiding the channel: a caller who cannot see a
-/// channel holds nothing in it (ADR 0304, ADR 0306).
+/// A workspace has no permission rule for one member any more (ADR 0301): the three routes
+/// of such a rule answer every request with `retired` and the change, with or without a
+/// session, and change nothing (ADR 0201).
 #[tokio::test]
-async fn a_person_grant_refused_by_a_hidden_channel_answers_as_for_a_visible_one() {
+async fn the_routes_of_the_permissions_of_one_member_are_retired() {
     let place = place().await;
-    let manager = place.server.join(&place.owner, "Manager").await;
-    let member = place.server.join(&place.owner, "Member").await;
-    place
+    let reader = place.server.join(&place.owner, "Reader").await;
+    let path = member_permissions(place.workspace, reader.account_id);
+    let events = event_count(&place.server).await;
+    let get = place.server.get(&place.owner, &path).await;
+    let put = place
         .server
-        .grant_workspace(
+        .put(
             &place.owner,
-            &manager,
-            place.workspace,
-            &[W::ManageRoles, W::MentionEveryone],
+            &path,
+            &json!({"allow": ["mention_everyone"], "deny": []}),
         )
         .await;
-    let hidden = text_channel(&place, "Hidden", None).await;
-    let visible = text_channel(&place, "Visible", None).await;
-    let set = |path: String, rule: Value| {
-        let server = &place.server;
-        let owner = &place.owner;
-        async move {
-            server
-                .put(owner, &path, &rule)
-                .await
-                .ok::<Value>(StatusCode::OK);
-        }
-    };
-    set(
-        channel_role(&hidden, place.everyone),
-        json!({"allow": [], "deny": ["view_channel"]}),
-    )
-    .await;
-    set(
-        channel_person(&hidden, member.account_id),
-        json!({"allow": ["view_channel"], "deny": []}),
-    )
-    .await;
-    let grant = json!({"permission": "mention_everyone", "state": "allow"});
-    let path = member_permissions(place.workspace, member.account_id);
-    let by_hidden = place.server.patch(&manager, &path, &grant).await;
-    by_hidden.error(ErrorCode::ExceedsOwnPermissions);
-
-    set(
-        channel_person(&hidden, member.account_id),
-        json!({"allow": [], "deny": []}),
-    )
-    .await;
-    set(
-        channel_person(&visible, manager.account_id),
-        json!({"allow": [], "deny": ["mention_everyone"]}),
-    )
-    .await;
-    let by_visible = place.server.patch(&manager, &path, &grant).await;
-    assert_eq!(by_hidden.observable(), by_visible.observable());
-
-    set(
-        channel_person(&visible, manager.account_id),
-        json!({"allow": [], "deny": []}),
-    )
-    .await;
-    place
+    let patch = place
         .server
-        .patch(&manager, &path, &grant)
-        .await
-        .ok::<Value>(StatusCode::OK);
+        .patch(
+            &place.owner,
+            &path,
+            &json!({"permission": "mention_everyone", "state": "allow"}),
+        )
+        .await;
+    for reply in [get, put, patch] {
+        reply.error(ErrorCode::Retired);
+        assert!(reply.text().contains("0.3.0"), "{}", reply.text());
+    }
+    assert_eq!(event_count(&place.server).await, events);
 }

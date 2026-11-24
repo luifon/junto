@@ -7,7 +7,6 @@ use gpui::{
     Role, SharedString, StatefulInteractiveElement, Styled, StyledText, Window, deferred, div,
     prelude::FluentBuilder, px,
 };
-use junto_client_core::protocol::WorkspacePermission;
 use std::rc::Rc;
 
 use junto_client_core::protocol::ids::{AccountId, ServerId};
@@ -73,6 +72,14 @@ impl Shell {
                 }
                 let thread = shown.and_then(|shown| shown.thread.as_ref());
                 let pins = shown.and_then(|shown| shown.pins.as_ref());
+                // The followed threads of the workspace lie under a thread and the pinned
+                // messages, and over the notices and a search (ADR 0741).
+                if thread.is_none()
+                    && pins.is_none()
+                    && let Some(followed) = shown.and_then(|shown| shown.followed.as_ref())
+                {
+                    return Some((Panel::Notices, this.render_followed_panel(followed, cx)));
+                }
                 let search = shown
                     .and_then(|shown| shown.search.as_ref())
                     .or(lists.search.as_ref());
@@ -93,8 +100,12 @@ impl Shell {
                     (None, None, None, Some(search)) => {
                         Some((Panel::Search, this.render_search_panel(search, window, cx)))
                     }
-                    _ => members_open
-                        .then(|| (Panel::Members, this.render_members(lists, &theme, cx))),
+                    _ => members_open.then(|| {
+                        (
+                            Panel::Members,
+                            this.render_members(lists, &theme, window, cx),
+                        )
+                    }),
                 }
             };
 
@@ -179,6 +190,7 @@ impl Shell {
         let pins_open = workspace.is_some_and(|workspace| workspace.pins.is_some());
         let notices_open = lists.is_some_and(|lists| lists.notices.is_some());
         let transcript_open = workspace.is_some_and(|workspace| workspace.transcript.is_some());
+        let followed_open = workspace.is_some_and(|workspace| workspace.followed.is_some());
         let search_open = workspace.is_some_and(|workspace| workspace.search.is_some())
             || lists.is_some_and(|lists| lists.search.is_some());
         let split = div()
@@ -247,6 +259,9 @@ impl Shell {
                             } else if transcript_open {
                                 this.state
                                     .update(cx, |state, cx| state.close_transcript(cx));
+                            } else if followed_open {
+                                this.state
+                                    .update(cx, |state, cx| state.close_followed_threads(cx));
                             } else if notices_open {
                                 this.state.update(cx, |state, cx| state.close_notices(cx));
                             } else {
@@ -441,11 +456,6 @@ impl Shell {
         let pins_open = view
             .workspace()
             .is_some_and(|workspace| workspace.pins.is_some());
-        let unread = match (conversation, channel) {
-            (Some(conversation), _) => conversation.unread.unread(),
-            (None, Some(channel)) => channel.unread.unread(),
-            (None, None) => false,
-        };
         let permanent = channel.is_some_and(|channel| channel.permanent) && call.is_none();
         let voice = channel.and_then(|channel| channel.voice.as_ref());
         // What follows the title: for a voice channel that this device is not in, the
@@ -518,11 +528,11 @@ impl Shell {
             }
             // The buttons that open the panel of the call: over the stage of a narrow
             // window, and in a wide window while the person closed it.
+            // The activity is in the toolbar row of that panel only, never in the header of
+            // the call (ADR 0742).
             if narrow || !self.call_panel_shown(false, cx) {
                 after.extend(self.render_call_panel_buttons(cx));
             }
-            // The settings of the application at "Voice and video", in every width.
-            after.push(self.render_call_settings_button(cx));
         } else {
             if permanent {
                 after.push(Self::render_permanent_marker(theme));
@@ -635,126 +645,106 @@ impl Shell {
                     .and_then(|lists| lists.feed.as_ref())
                     .map(|feed| (feed.server_id, feed.place)),
                 |header, (server_id, place)| {
+                    // The files are read from the history (ADR 0790).
                     let refused = channel.is_some_and(|channel| !channel.allowed.read_history);
-                    header.child(
-                        Button::new("place-files")
-                            .icon(Icon::FolderOpen)
-                            .tooltip("Files")
-                            .accessible_label("Files")
-                            .selector("place-files")
-                            .disabled(refused)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.show_place_files(server_id, place, window, cx)
-                            })),
-                    )
+                    header.when(!refused, |header| {
+                        header.child(
+                            Button::new("place-files")
+                                .icon(Icon::FolderOpen)
+                                .tooltip(text::FILES)
+                                .selector("place-files")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.show_place_files(server_id, place, window, cx)
+                                })),
+                        )
+                    })
                 },
             )
-            .when(call.is_none() && unread, |header| {
-                header.child(
-                    Button::new("mark-as-read")
-                        .icon(Icon::CheckDouble)
-                        .when(!compact, |button| button.label(text::MARK_AS_READ))
-                        .accessible_label(text::MARK_AS_READ)
-                        .tooltip(text::MARK_AS_READ_HELP)
-                        .selector("mark-as-read")
-                        .on_click(cx.listener(|this, _, _, cx| this.mark_shown_as_read(cx))),
-                )
-            })
             .when_some(
                 server_id
                     .zip(channel.map(|channel| channel.id))
                     .filter(|_| call.is_none()),
                 |header, (server_id, channel_id)| {
                     // The pinned messages are read from the history (ADR 0790).
-                    let refused = channel
-                        .filter(|channel| !channel.allowed.read_history)
-                        .map(|_| text::not_permitted(WorkspacePermission::ReadMessageHistory));
-                    header.child(
-                        Button::new("pins")
-                            .icon(Icon::Pin)
-                            .when(!compact, |button| button.label(text::PINS))
-                            .tooltip(match refused {
-                                Some(reason) => reason,
-                                None if pins_open => text::CLOSE_PINS,
-                                None => text::SHOW_PINS,
-                            })
-                            .accessible_label(text::PINS)
-                            .disabled(refused.is_some())
-                            .selector(if refused.is_some() {
-                                "pins-button-refused"
-                            } else {
-                                "pins-button"
-                            })
-                            .when(pins_open, |button| {
-                                button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if pins_open {
-                                    this.state.update(cx, |state, cx| state.close_pins(cx));
+                    let refused = channel.is_some_and(|channel| !channel.allowed.read_history);
+                    header.when(!refused, |header| {
+                        header.child(
+                            Button::new("pins")
+                                .icon(Icon::Pin)
+                                .tooltip(if pins_open {
+                                    text::CLOSE_PINS
                                 } else {
-                                    this.open_pins(server_id, channel_id, cx);
-                                }
-                            })),
-                    )
+                                    text::SHOW_PINS
+                                })
+                                .accessible_label(text::PINS)
+                                .selector("pins-button")
+                                .when(pins_open, |button| {
+                                    button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if pins_open {
+                                        this.state.update(cx, |state, cx| state.close_pins(cx));
+                                    } else {
+                                        this.open_pins(server_id, channel_id, cx);
+                                    }
+                                })),
+                        )
+                    })
+                },
+            )
+            .when_some(
+                conversation.zip(server_id).filter(|_| call.is_none()),
+                |header, (conversation, server_id)| {
+                    header.children(self.render_conversation_buttons(
+                        view,
+                        server_id,
+                        conversation,
+                        members_open,
+                        cx,
+                    ))
                 },
             )
             .when(
-                channel.is_some() && conversation.is_none() && call.is_none(),
+                view.lists().is_some() && conversation.is_none() && call.is_none(),
                 |header| {
                     header.child(
-                        Button::new("channel-settings")
-                            .icon(Icon::Gear)
-                            .tooltip(text::admin::CHANNEL_SETTINGS)
-                            .accessible_label(text::admin::CHANNEL_SETTINGS)
-                            .selector("channel-settings")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_shown_channel_settings(window, cx);
+                        Button::new("members")
+                            .icon(Icon::People)
+                            .tooltip(if members_open {
+                                text::CLOSE_MEMBERS
+                            } else {
+                                text::SHOW_MEMBERS
+                            })
+                            .accessible_label(text::MEMBERS)
+                            .selector("members-button")
+                            .when(members_open, |button| {
+                                button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.members_open = !this.members_open;
+                                if this.members_open {
+                                    // The side panel shows one thing.
+                                    this.state.update(cx, |state, cx| {
+                                        state.close_thread(cx);
+                                        state.close_pins(cx);
+                                        state.close_notices(cx);
+                                        state.hide_search(cx);
+                                        state.close_transcript(cx);
+                                        state.close_followed_threads(cx);
+                                        // A member is not told of every rule that lets
+                                        // another person see the channel: the list is read
+                                        // again each time it opens (ADR 0790).
+                                        state.channel_viewers_shown(cx);
+                                    });
+                                }
+                                cx.notify();
                             })),
                     )
                 },
             )
-            .when(conversation.is_some() && call.is_none(), |header| {
-                header.child(
-                    Button::new("export-conversation")
-                        .icon(Icon::Download)
-                        .tooltip(text::admin::EXPORT_CONVERSATION)
-                        .accessible_label(text::admin::EXPORT_CONVERSATION)
-                        .selector("export-conversation")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.export_shown_conversation(window, cx);
-                        })),
-                )
-            })
-            .when(view.lists().is_some() && call.is_none(), |header| {
-                header.child(
-                    Button::new("members")
-                        .icon(Icon::People)
-                        .when(!compact, |button| button.label(text::MEMBERS))
-                        .tooltip(if members_open {
-                            text::CLOSE_MEMBERS
-                        } else {
-                            text::SHOW_MEMBERS
-                        })
-                        .accessible_label(text::MEMBERS)
-                        .selector("members-button")
-                        .when(members_open, |button| {
-                            button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.members_open = !this.members_open;
-                            if this.members_open {
-                                // The side panel shows one thing.
-                                this.state.update(cx, |state, cx| {
-                                    state.close_thread(cx);
-                                    state.close_pins(cx);
-                                    state.close_notices(cx);
-                                    state.hide_search(cx);
-                                    state.close_transcript(cx);
-                                });
-                            }
-                            cx.notify();
-                        })),
-                )
+            // The activity of the server, beside the search of the server (ADR 0742).
+            .when_some(view.lists().filter(|_| call.is_none()), |header, lists| {
+                header.child(self.render_activity_button(lists, false, cx))
             })
             .when(view.lists().is_some() && call.is_none(), |header| {
                 header.child(self.render_search_field(compact, cx))
@@ -813,7 +803,8 @@ impl Shell {
         let labelled = |button: Button, label: &'static str| {
             if compact { button } else { button.label(label) }
         };
-        // "Record" opens the languages of the speech; a choice starts the recording
+        // "Record" starts at once in the spoken language that the server sets for its
+        // recordings; the arrow beside it opens the languages for this recording
         // (ADR 0616).
         let offers_record = control.may_record
             && matches!(
@@ -830,6 +821,7 @@ impl Shell {
                 .relative()
                 .flex()
                 .flex_none()
+                .gap(px(1.0))
                 .child(
                     labelled(Button::new("start-recording"), text::RECORD)
                         .icon(Icon::Record)
@@ -838,6 +830,26 @@ impl Shell {
                         .accessible_label(title)
                         .disabled(control.busy)
                         .selector("start-recording")
+                        .on_click(self.call_listener(cx, |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.start_recording(
+                                    Some(
+                                        junto_client_core::protocol::recording::DEFAULT_LANGUAGE
+                                            .to_owned(),
+                                    ),
+                                    cx,
+                                )
+                            });
+                        })),
+                )
+                .child(
+                    Button::new("record-language")
+                        .icon(Icon::ChevronDown)
+                        .tooltip(text::transcripts::RECORD_IN_ANOTHER_LANGUAGE)
+                        .accessible_label(text::transcripts::RECORD_IN_ANOTHER_LANGUAGE)
+                        .disabled(control.busy)
+                        .selector("record-language")
+                        .px(u(6.0))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_record_languages(window, cx);
                         })),
@@ -845,31 +857,16 @@ impl Shell {
                 .children(languages)
                 .into_any_element()
         };
-        let why = |sentence: &'static str| {
-            div()
-                .id("no-record-permission")
-                .debug_selector(|| "no-record-permission".to_owned())
-                .min_w_0()
-                .truncate()
-                .typeface(theme.types.small, theme)
-                .text_size(u(13.0))
-                .ink(if self.detached {
-                    colors.bone_2
-                } else {
-                    colors.ink_2
-                })
-                .child(sentence)
-                .into_any_element()
-        };
+        // The record control is the same for every person in the call: disabled without
+        // "record calls", without a sentence about the permission (ADR 0790).
         let forbidden = || {
             vec![
                 labelled(Button::new("start-recording"), text::RECORD)
                     .icon(Icon::Record)
-                    .tooltip(text::NO_RECORD_PERMISSION)
-                    .disabled(true)
+                    .tooltip(text::START_RECORDING)
+                    .offer(&crate::ui::Offer::same_for_everyone(false))
                     .selector("start-recording")
                     .into_any_element(),
-                why(text::NO_RECORD_PERMISSION),
             ]
         };
         match &control.state {
@@ -883,24 +880,24 @@ impl Shell {
                     compact,
                     theme,
                 )];
-                if control.may_record {
-                    shown.push(
-                        labelled(
-                            Button::new("cancel-recording"),
-                            text::transcripts::CANCEL_RECORDING,
-                        )
-                        .icon(Icon::Stop)
-                        .icon_colour(colors.cinnabar)
-                        .tooltip(text::transcripts::CANCEL_RECORDING_HELP)
-                        .accessible_label(text::transcripts::CANCEL_RECORDING_HELP)
-                        .disabled(control.busy)
-                        .selector("cancel-recording")
-                        .on_click(self.call_listener(cx, |this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.stop_recording(cx));
-                        }))
-                        .into_any_element(),
-                    );
-                }
+                // The control looks the same for everyone in the call and acts for a
+                // person with "record calls" (ADR 0735).
+                shown.push(
+                    labelled(
+                        Button::new("cancel-recording"),
+                        text::transcripts::CANCEL_RECORDING,
+                    )
+                    .icon(Icon::Stop)
+                    .icon_colour(colors.cinnabar)
+                    .tooltip(text::transcripts::CANCEL_RECORDING_HELP)
+                    .accessible_label(text::transcripts::CANCEL_RECORDING_HELP)
+                    .disabled(control.busy || !control.may_record)
+                    .selector("cancel-recording")
+                    .on_click(self.call_listener(cx, |this, _, _, cx| {
+                        this.state.update(cx, |state, cx| state.stop_recording(cx));
+                    }))
+                    .into_any_element(),
+                );
                 shown
             }
             RecordingShown::Running { elapsed, stopping } => {
@@ -909,22 +906,20 @@ impl Shell {
                     None => text::RECORDING_MARK.into(),
                 };
                 let mut shown = vec![recording_mark_reserved(mark, compact, theme)];
-                if control.may_record {
-                    let (label, help) = stop_action(*stopping);
-                    shown.push(
-                        labelled(Button::new("stop-recording"), label)
-                            .icon(Icon::Stop)
-                            .icon_colour(colors.cinnabar)
-                            .tooltip(help)
-                            .accessible_label(help)
-                            .disabled(*stopping || control.busy)
-                            .selector("stop-recording")
-                            .on_click(self.call_listener(cx, |this, _, _, cx| {
-                                this.state.update(cx, |state, cx| state.stop_recording(cx));
-                            }))
-                            .into_any_element(),
-                    );
-                }
+                let (label, help) = stop_action(*stopping);
+                shown.push(
+                    labelled(Button::new("stop-recording"), label)
+                        .icon(Icon::Stop)
+                        .icon_colour(colors.cinnabar)
+                        .tooltip(help)
+                        .accessible_label(help)
+                        .disabled(*stopping || control.busy || !control.may_record)
+                        .selector("stop-recording")
+                        .on_click(self.call_listener(cx, |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| state.stop_recording(cx));
+                        }))
+                        .into_any_element(),
+                );
                 shown
             }
             RecordingShown::Failed(problem) => {
@@ -952,40 +947,63 @@ impl Shell {
                     )
                     .when(open, |details| {
                         let line = format!("{strong}{rest}");
+                        let copy = Self::value_copy_button(
+                            "copy-recording-details",
+                            text::COPY_DETAILS,
+                            line.clone(),
+                            cx,
+                        );
                         details.child(
+                            // The details stay inside the window at its least width
+                            // (ADR 0731).
                             div().absolute().left_0().top(u(32.0)).child(deferred(
-                                div()
-                                    .id("recording-details-text")
-                                    .role(Role::Status)
-                                    .aria_label(line.clone())
-                                    .debug_selector(|| "recording-details-text".to_owned())
-                                    .occlude()
-                                    .w(u(340.0))
-                                    .pt(u(8.0))
-                                    .px(u(10.0))
-                                    .pb(u(9.0))
-                                    .rounded(u(theme.metrics.radius))
-                                    .border_1()
-                                    .border_color(Hsla::from(colors.rule))
-                                    .bg(Hsla::from(colors.travertine_hi))
-                                    .shadow(float_shadow(colors.shadow, 6.0, 16.0))
-                                    .typeface(theme.types.small, theme)
-                                    .line_height(u(17.0))
-                                    .font_weight(gpui::FontWeight::NORMAL)
-                                    .ink(colors.ink_2)
-                                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                        this.recording_details_open = false;
-                                        this.recording_details_closed_by_press = true;
-                                        cx.notify();
-                                    }))
-                                    .child(StyledText::new(line).with_highlights([(
-                                        0..strong.len(),
-                                        gpui::HighlightStyle {
-                                            font_weight: Some(gpui::FontWeight::BOLD),
-                                            color: Some(Hsla::from(colors.ink)),
-                                            ..gpui::HighlightStyle::default()
-                                        },
-                                    )])),
+                                gpui::anchored().snap_to_window_with_margin(px(8.0)).child(
+                                    div()
+                                        .id("recording-details-text")
+                                        .role(Role::Status)
+                                        .aria_label(line.clone())
+                                        .debug_selector(|| "recording-details-text".to_owned())
+                                        .occlude()
+                                        .w(u(340.0))
+                                        .pt(u(8.0))
+                                        .px(u(10.0))
+                                        .pb(u(9.0))
+                                        .rounded(u(theme.metrics.radius))
+                                        .border_1()
+                                        .border_color(Hsla::from(colors.rule))
+                                        .bg(Hsla::from(colors.travertine_hi))
+                                        .shadow(float_shadow(colors.shadow, 6.0, 16.0))
+                                        .typeface(theme.types.small, theme)
+                                        .line_height(u(17.0))
+                                        .font_weight(gpui::FontWeight::NORMAL)
+                                        .ink(colors.ink_2)
+                                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                            this.recording_details_open = false;
+                                            this.recording_details_closed_by_press = true;
+                                            cx.notify();
+                                        }))
+                                        .flex()
+                                        .items_start()
+                                        .gap(u(6.0))
+                                        .child(div().flex_1().min_w_0().child(
+                                            StyledText::new(line).with_highlights([(
+                                                0..strong.len(),
+                                                gpui::HighlightStyle {
+                                                    font_weight: Some(gpui::FontWeight::BOLD),
+                                                    color: Some(Hsla::from(colors.ink)),
+                                                    ..gpui::HighlightStyle::default()
+                                                },
+                                            )]),
+                                        ))
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .debug_selector(|| {
+                                                    "copy-recording-details".to_owned()
+                                                })
+                                                .child(copy),
+                                        ),
+                                ),
                             )),
                         )
                     })
@@ -1506,7 +1524,7 @@ impl Shell {
             ServerStatus::Banned => StatePanel::new(text::BANNED_TITLE, text::BANNED)
                 .icon(Icon::Warning)
                 .selector("banned")
-                .action(check(text::CHECK_AGAIN, cx))
+                .action(check(text::TRY_AGAIN, cx))
                 .action(forget(cx))
                 .action(remove(cx)),
             ServerStatus::Inactive => StatePanel::new(text::INACTIVE_TITLE, text::INACTIVE)
@@ -1531,14 +1549,14 @@ impl Shell {
                 StatePanel::new(title, detail)
                     .icon(Icon::Warning)
                     .selector("incompatible")
-                    .action(check(text::CHECK_AGAIN, cx))
+                    .action(check(text::TRY_AGAIN, cx))
                     .action(remove(cx))
             }
             ServerStatus::OtherServer => {
                 StatePanel::new(text::OTHER_SERVER_TITLE, text::OTHER_SERVER)
                     .icon(Icon::Warning)
                     .selector("other-server")
-                    .action(check(text::CHECK_AGAIN, cx))
+                    .action(check(text::TRY_AGAIN, cx))
                     .action(remove(cx))
             }
         };
@@ -1568,17 +1586,75 @@ impl Shell {
                 if members.iter().any(|member| member.account_id == account_id && self.member_search.matches(member)))
     }
 
+    /// The member list of a shown channel asks for the people who can see the channel, which
+    /// only the server knows (ADR 0790).
+    pub(crate) fn members_follow(&mut self, view: &ShellView, cx: &mut Context<Self>) {
+        if !self.members_open
+            || view
+                .lists()
+                .is_some_and(|lists| lists.conversation.is_some())
+        {
+            return;
+        }
+        let Some(server_id) = view.selected.as_ref().map(|server| server.id) else {
+            return;
+        };
+        let Some(workspace) = view.workspace() else {
+            return;
+        };
+        let Some(channel_id) = workspace.channel.as_ref().map(|channel| channel.id) else {
+            return;
+        };
+        if workspace.viewers.is_none() || workspace.viewers_stale {
+            let state = self.state.clone();
+            cx.defer(move |cx| {
+                state.update(cx, |state, cx| {
+                    state.read_channel_viewers(server_id, channel_id, cx)
+                });
+            });
+        }
+    }
+
     /// The members of the shown workspace in the side panel. Without a workspace the panel
     /// states that there is none, so that the main area keeps its width (ADR 0730).
     fn render_members(
         &mut self,
         lists: &ServerLists,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // A group conversation shows its own people (ADR 0741).
+        if let Some(group) = lists
+            .conversation
+            .as_ref()
+            .filter(|conversation| conversation.account_id.is_none())
+            && let Some(owner) = self
+                .view
+                .as_ref()
+                .and_then(|view| view.selected.as_ref())
+                .and_then(|server| self.state.read(cx).server(server.id))
+                .and_then(|server| server.owner())
+        {
+            return self.render_group_people(owner, group.id, window, cx);
+        }
         let workspace = lists.workspace.as_ref();
         let colors = theme.colors;
-        let header = SideHeader::new(text::MEMBERS)
+        // In a channel the list holds the people who can see the channel (ADR 0790).
+        let channel = workspace
+            .filter(|_| lists.conversation.is_none())
+            .and_then(|workspace| workspace.channel.as_ref());
+        // Until the server listed them, the list of a channel is being read.
+        let viewers = channel.map(|_| {
+            workspace
+                .and_then(|workspace| workspace.viewers.clone())
+                .unwrap_or(crate::state::view::Viewers::Reading)
+        });
+        let title: SharedString = match channel {
+            Some(channel) => text::members_of(&channel.name).into(),
+            None => text::MEMBERS.into(),
+        };
+        let header = SideHeader::new(title)
             .title_bar()
             .icon(Icon::People)
             .note(
@@ -1615,9 +1691,41 @@ impl Shell {
                 cx,
             );
         };
-        let body: AnyElement = match members {
-            Members::NotLoaded | Members::Loading => note(text::MEMBERS_LOADING).into_any_element(),
-            Members::Failed => div()
+        let body: AnyElement = match (members, viewers.as_ref()) {
+            (_, Some(crate::state::view::Viewers::Failed)) => div()
+                .flex()
+                .flex_col()
+                .gap(u(8.0))
+                .px(u(14.0))
+                .pt(u(12.0))
+                .child(Notice::error(text::VIEWERS_FAILED).selector("viewers-failed"))
+                .child(
+                    div().flex().child(
+                        Button::new("reload-viewers")
+                            .label(text::TRY_AGAIN)
+                            .icon(Icon::Retry)
+                            .selector("reload-viewers")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let view = this.state.read(cx).view();
+                                let target = view.selected.as_ref().map(|server| server.id).zip(
+                                    view.workspace()
+                                        .and_then(|workspace| workspace.channel.as_ref())
+                                        .map(|channel| channel.id),
+                                );
+                                if let Some((server_id, channel_id)) = target {
+                                    this.state.update(cx, |state, cx| {
+                                        state.read_channel_viewers(server_id, channel_id, cx)
+                                    });
+                                }
+                            })),
+                    ),
+                )
+                .into_any_element(),
+            (Members::NotLoaded | Members::Loading, _)
+            | (_, Some(crate::state::view::Viewers::Reading)) => {
+                note(text::MEMBERS_LOADING).into_any_element()
+            }
+            (Members::Failed, _) => div()
                 .flex()
                 .flex_col()
                 .gap(u(8.0))
@@ -1636,10 +1744,19 @@ impl Shell {
                     ),
                 )
                 .into_any_element(),
-            Members::Loaded(members) => {
+            (Members::Loaded(members), seeing) => {
+                let seeing = match seeing {
+                    Some(crate::state::view::Viewers::Read(seeing)) => Some(seeing.clone()),
+                    _ => None,
+                };
                 let shown: Rc<Vec<_>> = Rc::new(
                     members
                         .iter()
+                        .filter(|member| {
+                            seeing
+                                .as_ref()
+                                .is_none_or(|seeing| seeing.contains(&member.account_id))
+                        })
                         .filter(|member| self.member_search.matches(member))
                         .cloned()
                         .collect(),
@@ -1841,6 +1958,12 @@ impl Shell {
                     super::account_menus::AccountSource::Members(workspace),
                 )
             });
+        let focus = crate::ui::row_focus(
+            SharedString::from(format!("member-actions:{owner:?}:{account_id}")),
+            window,
+            cx,
+        );
+        let focused = focus.is_focused(window);
         let (row, mut actions) = crate::ui::collect_actions(|| {
             if let Some(open) = &context {
                 self.register_identity_actions(open, cx);
@@ -1855,8 +1978,8 @@ impl Shell {
                         )))
                         .kind(ButtonKind::Ghost)
                         .icon(Icon::Chat)
-                        .tooltip(text::message_person(&member.name))
-                        .accessible_label(text::message_person(&member.name))
+                        .tooltip(text::MESSAGE_PERSON)
+                        .accessible_label(text::MESSAGE_PERSON)
                         .disabled(asked == Some(account_id))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let Some(server_id) = server_id else {
@@ -1936,6 +2059,23 @@ impl Shell {
                                     )
                                 }),
                         )
+                        // The status text of the person, with the status (ADR 0401).
+                        .when_some(
+                            faces.status_text(account_id).map(text::label),
+                            |column, status| {
+                                column.child(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("member-status-text:{account_id}")
+                                        })
+                                        .typeface(theme.types.small, &theme)
+                                        .line_height(u(18.0))
+                                        .ink(colors.ink)
+                                        .truncate()
+                                        .child(status),
+                                )
+                            },
+                        )
                         .when(!detail.is_empty(), |column| {
                             column.child(
                                 div()
@@ -1961,12 +2101,12 @@ impl Shell {
         }
         let ring = crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let row = row
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
             .focus_visible(move |style| style.shadow(ring));
-        crate::ui::bind_action_menu(
+        crate::ui::bind_row_action_menu(
             row,
             SharedString::from(format!("member-actions:{owner:?}:{account_id}")),
+            crate::ui::RowMenu::end(focused),
             actions,
             window,
             cx,
@@ -2015,7 +2155,7 @@ fn stop_action(stopping: bool) -> (&'static str, &'static str) {
     if stopping {
         (text::STOPPING, text::RECORDING_STOPS)
     } else {
-        (text::STOP, text::STOP_RECORDING)
+        (text::STOP_RECORDING, text::STOP_RECORDING)
     }
 }
 
@@ -2184,6 +2324,9 @@ impl Shell {
         }
         self.recording_details_open = false;
         self.open_layer(Layer::RecordLanguage, window, cx);
+        let find = self.record_language_find.clone();
+        find.update(cx, |find, cx| find.set_value("", window, cx));
+        self.focus_field(&find, window, cx);
     }
 
     /// The languages of the speech of a new recording (ADR 0603): the detection of the
@@ -2218,7 +2361,7 @@ impl Shell {
         items.push(choice(
             ("record-language", 0),
             text::transcripts::DETECT,
-            None,
+            Some("auto"),
             "record-language:auto".to_owned(),
             self,
             cx,
@@ -2226,8 +2369,32 @@ impl Shell {
         items.push(
             crate::ui::menu_label(text::transcripts::ONE_LANGUAGE, false, cx).into_any_element(),
         );
+        items.push(
+            div()
+                .flex_none()
+                .px(u(10.0))
+                .pb(u(6.0))
+                .child(
+                    crate::ui::Field::new(
+                        &self.record_language_find,
+                        text::transcripts::FIND_LANGUAGE,
+                    )
+                    .kind(crate::ui::FieldKind::Find)
+                    .selector("record-language-find"),
+                )
+                .into_any_element(),
+        );
+        let wanted = self
+            .record_language_find
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
         let mut languages: Vec<AnyElement> = Vec::new();
         for (index, (code, name)) in text::transcripts::LANGUAGES.iter().enumerate() {
+            if !wanted.is_empty() && !name.to_lowercase().contains(&wanted) {
+                continue;
+            }
             languages.push(choice(
                 ("record-language", index + 1),
                 name,
@@ -2279,7 +2446,10 @@ mod tests {
 
     #[test]
     fn the_stop_action_of_a_stopping_recording_states_that_it_stops() {
-        assert_eq!(stop_action(false), (text::STOP, text::STOP_RECORDING));
+        assert_eq!(
+            stop_action(false),
+            (text::STOP_RECORDING, text::STOP_RECORDING)
+        );
         assert_eq!(stop_action(true), (text::STOPPING, text::RECORDING_STOPS));
     }
 }

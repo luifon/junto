@@ -7,7 +7,7 @@ use gpui::{
 };
 use junto_client_core::{
     Owner,
-    protocol::ids::{AccountId, ChannelId, MessageId},
+    protocol::ids::{AccountId, ChannelId, MessageId, ServerId, WorkspaceId},
 };
 
 use super::{Layer, Shell};
@@ -26,7 +26,6 @@ pub(crate) struct AccountTarget {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CallSurface {
     Hidden,
-    InviteChoice,
     Presenter,
     RaisedHand,
     MeetingWaiting,
@@ -38,6 +37,8 @@ pub(crate) enum CallSurface {
     Member {
         inside: bool,
     },
+    /// The row of a person in the call in the list of channels (ADR 0735).
+    Row,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,7 +78,8 @@ pub(crate) enum AccountSource {
     },
     Profile,
     MentionCandidate {
-        pane: super::Pane,
+        /// The composer or the editor of a row whose mention picker shows the person.
+        pen: super::Pen,
         query: String,
         place: junto_client_core::model::PlaceId,
     },
@@ -251,7 +253,6 @@ impl OpenAccountMenu {
                                         .any(|person| person.account_id == *account_id)
                             }
                             CallSurface::Hidden
-                            | CallSurface::InviteChoice
                             | CallSurface::Presenter
                             | CallSurface::RaisedHand
                             | CallSurface::MeetingWaiting => {
@@ -666,6 +667,8 @@ impl Shell {
                     && lists.notices.is_none()
                     && self.call_panel_shown(self.call_panel_overlay, cx)
             }
+            // The list of channels shows the row while the call is drawn.
+            CallSurface::Row => true,
             _ => false,
         }
     }
@@ -770,6 +773,7 @@ impl Shell {
                 );
             }
         }
+        items.extend(self.manage_items(&open, cx));
         let close = Self::handler(cx, |this, window, cx| this.close_layer(window, cx));
         Menu::new("account-menu", text::ACCOUNT_ACTIONS, self.layer_focus())
             .selector("account-menu")
@@ -777,4 +781,139 @@ impl Shell {
             .children(items)
             .popup_at_stable(open.position, self.account_menu_placement.clone())
     }
+
+    /// The group "Manage" of the menu of one person on the selected server, each item only
+    /// with its permission (ADR 0761): the roles of the person in the shown workspace
+    /// ("manage roles"), the removal from that workspace (an administrator), and the ban
+    /// from the server ("ban members"). Each opens Server settings at the question or the
+    /// choices of the page, with the same words.
+    fn manage_items(&mut self, open: &OpenAccountMenu, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let [person] = open.people.as_slice() else {
+            return Vec::new();
+        };
+        let account_id = person.account_id;
+        let server_id = open.owner.entry.server_id;
+        let view = self.state.read(cx).view();
+        if view.selected.as_ref().map(|server| server.id) != Some(server_id)
+            || account_id == open.owner.account_id
+            || person.departed
+        {
+            return Vec::new();
+        }
+        let Some(model) = self
+            .state
+            .read(cx)
+            .client()
+            .server(server_id)
+            .and_then(|server| server.live().view().model)
+        else {
+            return Vec::new();
+        };
+        let Some(workspace) = view.workspace().and_then(|shown| model.workspace(shown.id)) else {
+            return Vec::new();
+        };
+        let workspace_id = workspace.workspace.id;
+        let workspace_name = workspace.workspace.name.clone();
+        let member = workspace
+            .members
+            .loaded()
+            .is_none_or(|members| members.iter().any(|held| held.account_id == account_id));
+        let mut entries: Vec<(&'static str, String, Manage)> = Vec::new();
+        if member && workspace.holds(junto_client_core::protocol::WorkspacePermission::ManageRoles)
+        {
+            entries.push((
+                "manage-roles",
+                text::admin::people::roles_in(&workspace_name),
+                Manage::Roles,
+            ));
+        }
+        if member && model.is_administrator() {
+            entries.push((
+                "manage-remove",
+                text::admin::people::remove_from(&workspace_name),
+                Manage::Remove,
+            ));
+        }
+        if crate::state::admin::view::holds_server(
+            &model,
+            junto_client_core::protocol::ServerPermission::BanMembers,
+        ) {
+            entries.push((
+                "manage-ban",
+                text::admin::people::BAN_FROM_SERVER.to_owned(),
+                Manage::Ban,
+            ));
+        }
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        let mut items = vec![menu_label(text::admin::people::MANAGE, false, cx).into_any_element()];
+        for (id, label, action) in entries {
+            let selector = format!("{id}:{account_id}");
+            items.push(
+                div()
+                    .debug_selector(move || selector)
+                    .child(MenuItem::new(id, label).on_click(cx.listener(
+                        move |this, _, window, cx| {
+                            this.manage_person(
+                                server_id,
+                                workspace_id,
+                                account_id,
+                                action,
+                                window,
+                                cx,
+                            );
+                        },
+                    )))
+                    .into_any_element(),
+            );
+        }
+        items
+    }
+
+    fn manage_person(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        account_id: AccountId,
+        action: Manage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let page = match action {
+            Manage::Roles | Manage::Remove => crate::state::admin::AdminPage::Members,
+            Manage::Ban => crate::state::admin::AdminPage::People,
+        };
+        self.close_layer(window, cx);
+        self.open_admin(
+            crate::state::admin::AdminOpen::Server { server_id, page },
+            window,
+            cx,
+        );
+        if page == crate::state::admin::AdminPage::Members {
+            self.choose_admin_workspace(workspace_id, window, cx);
+            self.open_server_admin(page, window, cx);
+        }
+        match action {
+            Manage::Roles => self.show_account_roles(Some(account_id), cx),
+            Manage::Remove => self.set_people_open(
+                Some(super::admin::people::Open::RemoveMember(account_id)),
+                window,
+                cx,
+            ),
+            Manage::Ban => self.set_people_open(
+                Some(super::admin::people::Open::BanAccount(account_id)),
+                window,
+                cx,
+            ),
+        }
+    }
+}
+
+/// An item of the group "Manage" of the menu of a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Manage {
+    Roles,
+    Remove,
+    Ban,
 }

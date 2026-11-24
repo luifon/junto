@@ -35,7 +35,7 @@ fn closing_the_main_window_keeps_the_client_and_the_tray_opens_it_again(cx: &mut
 fn closing_in_the_background_can_be_disabled_and_the_choice_is_kept(cx: &mut TestAppContext) {
     let (directory, mut window) = named(cx, "Member");
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     assert!(window.shows("keep-running-after-close"));
     window.click("keep-running-after-close");
     window.run_tasks();
@@ -47,7 +47,7 @@ fn closing_in_the_background_can_be_disabled_and_the_choice_is_kept(cx: &mut Tes
     window.close();
     let mut window = open(cx, directory.path());
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     window.click("keep-running-after-close");
     window.run_tasks();
     assert!(
@@ -76,10 +76,9 @@ fn the_settings_show_one_section_at_a_time_from_a_list_of_sections(cx: &mut Test
     assert!(window.shows_named(page(SettingsSection::Profile)));
     let shown = [
         (SettingsSection::Profile, "name-field"),
-        (SettingsSection::Picture, "preset-picture"),
-        (SettingsSection::Interface, "scale-0"),
+        (SettingsSection::Profile, "preset-picture"),
+        (SettingsSection::Appearance, "scale-0"),
         (SettingsSection::VoiceAndVideo, "input-mode-0"),
-        (SettingsSection::Quiet, "quiet-no-server"),
         (SettingsSection::Notifications, "notifications-state"),
         (SettingsSection::Devices, "settings-link-first"),
         (SettingsSection::Permissions, "check-permissions"),
@@ -104,10 +103,10 @@ fn the_settings_show_one_section_at_a_time_from_a_list_of_sections(cx: &mut Test
         // The list keeps its place when another section opens.
         assert_eq!(bounds(&mut window, "settings-dialog"), panel);
     }
-    // The settings open at their first section again.
+    // The settings open at the section that was open last (ADR 0703).
     window.click("dialog-close");
     window.click("app-settings");
-    assert!(window.shows_named(page(SettingsSection::Profile)));
+    assert!(window.shows_named(page(SettingsSection::About)));
 }
 
 /// The live test found a large empty space after the name, the picture, the scale and the
@@ -116,24 +115,32 @@ fn the_settings_show_one_section_at_a_time_from_a_list_of_sections(cx: &mut Test
 fn a_section_ends_after_its_last_control_and_its_help(cx: &mut TestAppContext) {
     let (_directory, mut window) = named(cx, "Luca");
     window.click("app-settings");
-    for (section, last) in [
-        (SettingsSection::Profile, "save-name"),
-        (SettingsSection::Interface, "theme-0"),
+    for (section, last, lines) in [
+        // The picture for new servers follows the name in one section (ADR 0717): its help
+        // and the sentence that no picture is set follow it.
+        (SettingsSection::Profile, "preset-picture", 3.0),
+        (SettingsSection::Appearance, "keep-running-after-close", 2.0),
         (
             SettingsSection::VoiceAndVideo,
             "hide-own-camera-setting-row",
+            2.0,
         ),
-        (SettingsSection::Notifications, "notifications-state"),
-        // The switch of the last kind of sounds, with its help, ends the section (ADR 0707).
-        (SettingsSection::Sounds, "sound-kind-hand-raised-row"),
+        // The daily quiet time ends the section; without a server it states that.
+        (SettingsSection::Notifications, "quiet-no-server", 2.0),
+        // The switch of the last sound of the last group ends the section (ADR 0707).
+        (
+            SettingsSection::Sounds,
+            "sound-kind-recording-stopped-row",
+            2.0,
+        ),
     ] {
         window.click(section.selector());
         let page = bounds(&mut window, selector(page(section)));
         let last = bounds(&mut window, last);
         let below = page.bottom() - last.bottom();
-        // One or two lines of help follow the last control, and nothing else.
+        // A few lines of help follow the last control, and nothing else.
         assert!(
-            below < px(48.0),
+            below < px(24.0 * lines),
             "{section:?}: {below:?} of the section under its last control"
         );
     }
@@ -161,7 +168,7 @@ fn the_dark_theme_is_chosen_in_the_interface_section_and_kept(cx: &mut TestAppCo
     let colours = |window: &mut Window| window.cx.update(|_, cx| theme::theme(cx).colors);
     assert_eq!(colours(&mut window), Theme::stone().colors);
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     // Light, Dark and System, in this order.
     assert!(window.shows("theme-0") && window.shows("theme-1") && window.shows("theme-2"));
     window.click("theme-1");
@@ -184,7 +191,7 @@ fn the_dark_theme_is_chosen_in_the_interface_section_and_kept(cx: &mut TestAppCo
     let mut window = crate::harness::open(cx, directory.path());
     assert_eq!(colours(&mut window), Theme::broadcast().colors);
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     window.click("theme-0");
     assert_eq!(colours(&mut window), Theme::stone().colors);
 }
@@ -236,7 +243,7 @@ fn the_switches_of_the_sounds_are_kept_and_all_sounds_holds_every_kind(cx: &mut 
 fn startup_at_login_is_available_in_the_interface_settings(cx: &mut TestAppContext) {
     let (_directory, mut window) = named(cx, "Member");
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     assert!(window.shows("start-at-login"));
 }
 
@@ -251,7 +258,7 @@ fn startup_at_login_follows_the_system_adapter_and_refreshes_external_changes(
         state.use_startup_service(system.clone(), cx)
     });
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     window.click("start-at-login");
     window.until("the login setting is on", |window| {
         window.state.read_with(&window.cx, |state, _| {
@@ -265,7 +272,7 @@ fn startup_at_login_follows_the_system_adapter_and_refreshes_external_changes(
         state.use_startup_service(system.clone(), cx)
     });
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     assert_eq!(
         window
             .state
@@ -295,7 +302,7 @@ fn the_settings_of_another_profile_name_it_and_change_its_own_entry(cx: &mut Tes
         state.use_startup_service(profile.clone(), cx)
     });
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     let label = "Start Junto at login with the profile Work";
     window.until("the profile is named", |window| {
         crate::admin_pages::drawn_text(window)
@@ -342,7 +349,7 @@ fn startup_at_login_keeps_a_failed_write_and_retries_it(cx: &mut TestAppContext)
         state.use_startup_service(system.clone(), cx)
     });
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     window.click("start-at-login");
     window.until("the login failure is shown", |window| {
         window.shows("startup-error")
@@ -380,7 +387,7 @@ fn startup_at_login_shows_approval_and_unavailable_statuses(cx: &mut TestAppCont
         state.use_startup_service(system.clone(), cx)
     });
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     window.until("the approval requirement is shown", |window| {
         window.shows("startup-approval")
     });

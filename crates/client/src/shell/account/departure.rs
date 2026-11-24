@@ -28,6 +28,18 @@ impl Shell {
                 text::account::DEPARTURE_HELP,
                 &theme,
             ))
+            // The groups of the account, also one whose row cannot be shown (ADR 0741).
+            .child(group_label(text::conversations::MEMBERSHIPS_TITLE, &theme))
+            .child(
+                div().flex().pb(u(12.0)).child(
+                    crate::ui::Button::new("manage-group-memberships")
+                        .label(text::conversations::MANAGE)
+                        .selector("manage-group-memberships")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_group_memberships(window, cx)
+                        })),
+                ),
+            )
             .child(group_label(text::account::WORKSPACES, &theme));
         if page.workspaces.is_empty() {
             column = column.child(sentence(text::account::NO_WORKSPACE, &theme));

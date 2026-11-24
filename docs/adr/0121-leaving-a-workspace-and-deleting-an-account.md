@@ -166,7 +166,7 @@ The client keeps no copy of messages or files on disk. Its local data of a serve
 ### Window controls and confirmation
 
 - The account layer (ADR 0781) has the page "Leave or delete". It lists the workspaces of which the account is a member, each with "Leave", and offers "Delete account".
-- The server menu offers "Leave workspace" for the shown workspace. It opens that page with the question for that workspace.
+- The menu of a workspace offers "Leave workspace" for that workspace (ADR 0780). It opens that page with the question for that workspace.
 - For the owner, "Leave" of the last workspace and "Delete account" are disabled, with the sentence that another account must first become the owner through the host command.
 - Each control opens a question in its row that states what stays and what ends before the person confirms:
   - Stays: the messages, files, reactions, threads, direct conversations, recordings and transcripts in which the person took part, under the person's name with the mark, and every audit entry.

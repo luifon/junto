@@ -180,6 +180,7 @@ pub struct SegmentResult {
 /// that the recorder reported for it (ADR 0601).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartRow {
+    pub segment_id: RecordingSegmentId,
     pub title: String,
     pub state: String,
     /// The times of day of its start and of its end. Absent when the recorder reported
@@ -261,6 +262,9 @@ pub struct CardDetail {
     /// The name under which the transcript is saved as text, without its ending.
     pub text_stem: String,
     pub text_download: Option<DownloadProgress>,
+    /// The video begins this much after the recording started: its first job was replaced
+    /// by a later one (ADR 0606). Absent for a video that begins with the recording.
+    pub video_late: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -529,6 +533,7 @@ fn parts(
                     && segment.file.is_none()
                     && detail.recording.bytes.is_some());
             PartRow {
+                segment_id: segment.id,
                 title: segment_title(Some(segment), names),
                 state: text::transcripts::part_state(segment, detail.recording.bytes.is_some()),
                 span,
@@ -613,6 +618,9 @@ pub fn card(source: &CardSource<'_>) -> RecordingCard {
     }
 }
 
+/// A video that begins this much after its recording is stated on the card (ADR 0606).
+const LATE_VIDEO: Duration = Duration::from_secs(5);
+
 fn shown(source: &CardSource<'_>, open: &OpenRecording, detail: &RecordingDetail) -> CardDetail {
     let recording = &detail.recording;
     let names = source.names;
@@ -674,7 +682,17 @@ fn shown(source: &CardSource<'_>, open: &OpenRecording, detail: &RecordingDetail
             stem: text::recording_file(&stamp, kind, person.as_deref(), same),
             person,
             bytes: file.bytes,
-            problem: (file.check == FileCheck::Failed).then(|| text::file_problems(&file.problems)),
+            problem: (file.check == FileCheck::Failed).then(|| {
+                let mut problem = text::file_problems(&file.problems);
+                // The stretch of sound that the video lacks, by its place in the recording.
+                if let Some(gap) = &file.missing_sound {
+                    let offset =
+                        |at: OffsetDateTime| Duration::try_from(at - began).unwrap_or_default();
+                    problem.push(' ');
+                    problem.push_str(&text::sound_missing_at(offset(gap.from), offset(gap.until)));
+                }
+                problem
+            }),
             download: source
                 .downloads
                 .get(&(source.server_id, segment.id))
@@ -682,7 +700,16 @@ fn shown(source: &CardSource<'_>, open: &OpenRecording, detail: &RecordingDetail
         });
     }
     let count = |kind| files.iter().filter(|file| file.kind == kind).count();
+    let video_late = detail
+        .segments
+        .iter()
+        .filter(|segment| segment.source == SegmentSource::Composite)
+        .filter_map(|segment| segment.file.as_ref()?.starts_at)
+        .min()
+        .and_then(|starts| Duration::try_from(starts - began).ok())
+        .filter(|late| *late >= LATE_VIDEO);
     CardDetail {
+        video_late,
         channel: source.channel.to_owned(),
         day: text::day_or_today(local(began).date(), source.today),
         span: ended.map(|ended| (clock(began), clock(ended))),

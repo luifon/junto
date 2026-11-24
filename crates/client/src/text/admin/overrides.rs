@@ -209,7 +209,7 @@ pub const fn name(permission: WorkspacePermission) -> &'static str {
         WorkspacePermission::MuteMembers => "Mute members",
         WorkspacePermission::DeafenMembers => "Deafen members",
         WorkspacePermission::DisconnectMembers => "Disconnect members",
-        WorkspacePermission::LockRoom => "Lock room",
+        WorkspacePermission::LockRoom => "Lock call",
         WorkspacePermission::RunMeetingMode => "Run meeting mode",
         WorkspacePermission::ViewAuditEntries => "View audit entries",
         WorkspacePermission::AdmitToFullCall => "Admit to full call",
@@ -367,7 +367,7 @@ pub fn member_help(workspace: &str) -> String {
 }
 pub const MEMBER_CHANNELS: &str = "The server also checks each channel: a choice that gives the member a permission in a \
      channel where you do not hold it is refused.";
-pub const ACCESS: &str = "What this person can use";
+pub const ACCESS: &str = "Access by channel";
 pub fn access_help(workspace: &str) -> String {
     format!(
         "The permissions that this member holds in each channel of the workspace “{workspace}” \
@@ -392,7 +392,6 @@ pub fn back_to(page: &str) -> String {
 
 pub const fn person_page_name(page: PersonPage) -> &'static str {
     match page {
-        PersonPage::Permissions(_) => MEMBER_PERMISSIONS,
         PersonPage::Access(_) => ACCESS,
         PersonPage::Server => SERVER_PERMISSIONS,
     }
@@ -400,7 +399,7 @@ pub const fn person_page_name(page: PersonPage) -> &'static str {
 
 pub const fn person_page_icon(page: PersonPage) -> Icon {
     match page {
-        PersonPage::Permissions(_) | PersonPage::Server => Icon::ShieldCheck,
+        PersonPage::Server => Icon::ShieldCheck,
         PersonPage::Access(_) => Icon::Hash,
     }
 }
@@ -408,7 +407,6 @@ pub const fn person_page_icon(page: PersonPage) -> Icon {
 /// The name of the row of a page of the settings of a person, for a test.
 pub const fn person_page_selector(page: PersonPage) -> &'static str {
     match page {
-        PersonPage::Permissions(_) => "person-nav-permissions",
         PersonPage::Access(_) => "person-nav-access",
         PersonPage::Server => "person-nav-server",
     }
@@ -436,6 +434,38 @@ pub const fn server_help(permission: ServerPermission) -> &'static str {
     super::roles::server_permission_help(permission)
 }
 
+/// The fold of the full list of the rules of a channel.
+pub const ADVANCED: &str = "Advanced permissions";
+pub const WHO_SEES: &str = "Who can see this channel";
+pub const ADD_VIEWER: &str = "Add a role or person";
+pub const REMOVE_VIEWER: &str = "Remove";
+pub const DENIED_BY_ADVANCED: &str = "Denied by an advanced rule";
+pub const ONLY_ADMINISTRATORS_SEE: &str = "Only server administrators see it now.";
+
+/// The label of a group of permissions in a rule.
+pub const fn group_name(
+    group: crate::state::admin::view::overrides::PermissionGroup,
+) -> &'static str {
+    use crate::state::admin::view::overrides::PermissionGroup;
+    match group {
+        PermissionGroup::General => "General",
+        PermissionGroup::Messages => "Messages",
+        PermissionGroup::Calls => "Calls",
+        PermissionGroup::Moderation => "Moderation",
+        PermissionGroup::Recordings => "Recordings",
+    }
+}
+
+pub const STOP_SYNC_CONFIRM: &str = "Change";
+
+/// The question before the first change of who sees a channel that takes the rules of its
+/// category.
+pub fn stop_sync_question(category: &str) -> String {
+    format!(
+        "The channel takes the permissions of “{category}”. A change gives it permissions of its own, which no longer follow the category."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,10 +474,13 @@ mod tests {
     fn every_permission_has_a_name_and_a_help_text_of_its_own() {
         let all = WorkspacePermission::ALL;
         for (index, permission) in all.iter().copied().enumerate() {
-            assert_eq!(
-                name(permission).to_lowercase(),
-                permission.name().replace('_', " ")
-            );
+            // The call of a voice channel is a "call" in the window, also in the name of
+            // its lock (ADR 0703).
+            let expected = match permission {
+                WorkspacePermission::LockRoom => "lock call".to_owned(),
+                other => other.name().replace('_', " "),
+            };
+            assert_eq!(name(permission).to_lowercase(), expected);
             assert!(help(permission).ends_with('.'));
             for other in all[..index].iter().copied() {
                 assert_ne!(help(permission), help(other));

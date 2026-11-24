@@ -115,7 +115,6 @@ fn channel_scope() -> impl Strategy<Value = ChannelScope> {
                 ChannelScope {
                     person_override: Default::default(),
                     workspace: WorkspaceScope {
-                        person_override: Default::default(),
                         membership,
                         everyone,
                         roles,
@@ -491,7 +490,6 @@ proptest! {
         let holding = |roles: Vec<HeldRole>| ChannelScope {
             person_override: Default::default(),
             workspace: WorkspaceScope {
-                person_override: Default::default(),
                 membership: Membership::Member,
                 everyone: caller.workspace.everyone,
                 roles,

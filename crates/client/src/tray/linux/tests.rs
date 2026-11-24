@@ -260,7 +260,7 @@ async fn the_item_registers_shows_the_call_and_takes_presses_of_its_menu() {
         .unwrap();
     assert_eq!(
         labels(&menu).await,
-        [(4, "Open Junto".to_owned()), (5, "Quit".to_owned())]
+        [(4, "Open Junto".to_owned()), (5, "Quit Junto".to_owned())]
     );
 
     // A call with a closed microphone: the picture, the text and the menu follow.
@@ -306,9 +306,9 @@ async fn the_item_registers_shows_the_call_and_takes_presses_of_its_menu() {
         [
             (9, "Unmute microphone".to_owned()),
             (10, "Turn sound off".to_owned()),
-            (11, "Leave the call".to_owned()),
+            (11, "Leave call".to_owned()),
             (12, "Open Junto".to_owned()),
-            (13, "Quit".to_owned()),
+            (13, "Quit Junto".to_owned()),
         ]
     );
 

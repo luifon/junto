@@ -22,13 +22,13 @@ fn a_person_creates_names_extends_and_leaves_a_private_group(cx: &mut TestAppCon
     let (_added_device, added) = joined(&world, &server, &code, "Added");
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Writer");
     window.click("new-direct");
-    window.until("new direct chooser", |window| window.shows("new-group"));
-    window.click("new-group");
+    window.until("new direct chooser", |window| window.shows("contact-part"));
+    // One picker takes one or more people: two make a group (ADR 0741).
     for account in [logged_in(&reader), logged_in(&third)] {
         window.until("group participant is offered", |window| {
-            window.shows_named(format!("contact-{account}"))
+            window.shows_named(format!("contact-choose-{account}"))
         });
-        window.click_named(format!("contact-{account}"));
+        window.click_named(format!("contact-choose-{account}"));
     }
     window.type_into("group-name", "Project");
     window.click("group-save");
@@ -150,6 +150,7 @@ fn a_person_creates_names_extends_and_leaves_a_private_group(cx: &mut TestAppCon
                 document: document("Added to the project"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -237,12 +238,11 @@ fn late_group_creation_keeps_selection(cx: &mut TestAppContext, event_first: boo
     let channel = window.selected_channel();
     let workspace = window.view().workspace().unwrap().id;
     window.click("new-direct");
-    window.click("new-group");
     for account in [logged_in(&reader), logged_in(&third)] {
         window.until("group participant", |window| {
-            window.shows_named(format!("contact-{account}"))
+            window.shows_named(format!("contact-choose-{account}"))
         });
-        window.click_named(format!("contact-{account}"));
+        window.click_named(format!("contact-choose-{account}"));
     }
     window.type_into("group-name", "Project");
     proxy.hold_events();
@@ -359,7 +359,8 @@ fn an_unavailable_group_can_be_left_from_the_membership_list(cx: &mut TestAppCon
             .is_none_or(|lists| !lists.directs.iter().any(|row| row.id == group.id))
             && window.shows("new-direct")
     });
-    window.click("new-direct");
+    window.open_account();
+    window.click("account-nav-departure");
     window.click("manage-group-memberships");
     window.until("the membership is listed", |window| {
         window.shows_named(format!("membership-leave:{}", group.id))
@@ -376,7 +377,8 @@ fn an_unavailable_group_can_be_left_from_the_membership_list(cx: &mut TestAppCon
         "a withdrawn membership closes the management source",
         |window| !window.shows("group-memberships"),
     );
-    window.click("new-direct");
+    window.open_account();
+    window.click("account-nav-departure");
     window.click("manage-group-memberships");
     window.until(
         "a fresh membership read restores its current source",
@@ -402,5 +404,231 @@ fn an_unavailable_group_can_be_left_from_the_membership_list(cx: &mut TestAppCon
                     .messages(PlaceId::Direct(group.id), &Default::default())
             )
             .is_err()
+    );
+}
+
+/// A group without a name shows the names of its people; its header has Call and People,
+/// and the X of a conversation row hides the conversation (ADR 0302, ADR 0741).
+#[gpui::test]
+fn an_unnamed_group_shows_its_people_and_its_header_offers_call_and_people(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let code = invite(&world, &admin.handle, Vec::new());
+    let (_reader_device, reader) = joined(&world, &server, &code, "Reader");
+    let code = invite(&world, &admin.handle, Vec::new());
+    let (_third_device, third) = joined(&world, &server, &code, "Third");
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Writer");
+    let writer = window.own_account();
+    let group = world
+        .run(
+            reader
+                .api()
+                .create_group(String::new(), vec![writer, logged_in(&third)]),
+        )
+        .unwrap();
+    window.until("the unnamed group is named by its people", |window| {
+        window.view().lists().is_some_and(|lists| {
+            lists.directs.iter().any(|row| {
+                row.id == group.id
+                    && row
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name.contains("Reader") && name.contains("Third"))
+            })
+        })
+    });
+    window.click_named(format!("direct-row:{}", group.id));
+    window.until("the header offers Call and People", |window| {
+        window.shows("conversation-call") && window.shows("conversation-people")
+    });
+    assert!(!window.shows("members-button"));
+    window.click("conversation-people");
+    window.until("the panel lists the people", |window| {
+        window.shows("group-people-panel")
+            && window.shows_named(format!("group-member-{}", logged_in(&reader)))
+    });
+    // Search names the group by its people as the conversation list does (ADR 0302).
+    window.search_here_for("plan");
+    let panel = window.until_searched();
+    assert!(
+        panel
+            .conversations
+            .iter()
+            .any(|(id, name)| *id == group.id && name.contains("Reader") && name.contains("Third")),
+        "{:?}",
+        panel.conversations
+    );
+    window.press("escape");
+
+    // A conversation of two has the profile of the other person in place of People.
+    let pair = world
+        .run(admin.handle.api().open_conversation(writer))
+        .unwrap();
+    window.until("the pair row", |window| {
+        window.shows_named(format!("direct-row:{}", pair.id))
+    });
+    window.click_named(format!("direct-row:{}", pair.id));
+    window.until("the header offers Call and the profile", |window| {
+        window.shows("conversation-call") && window.shows("conversation-profile")
+    });
+
+    // The X of the row hides the conversation.
+    window.hover_named(format!("direct-row:{}", pair.id));
+    window.click(crate::harness::selector(format!("hide-direct:{}", pair.id)));
+    window.until("the conversation is hidden", |window| {
+        !window.shows_named(format!("direct-row:{}", pair.id))
+    });
+}
+
+/// The side panel "People" stays open when another group is shown, and then belongs to that
+/// group: its name field, its leave confirmation and its Save act on the shown group only
+/// (ADR 0741).
+#[gpui::test]
+fn the_people_panel_belongs_to_the_group_that_is_shown(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let code = invite(&world, &admin.handle, Vec::new());
+    let (_reader_device, reader) = joined(&world, &server, &code, "Reader");
+    let code = invite(&world, &admin.handle, Vec::new());
+    let (_third_device, third) = joined(&world, &server, &code, "Third");
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Writer");
+    let writer = window.own_account();
+    let group = |name: &str| {
+        world
+            .run(
+                reader
+                    .api()
+                    .create_group(name.to_owned(), vec![writer, logged_in(&third)]),
+            )
+            .unwrap()
+    };
+    let (first, second) = (group("First"), group("Second"));
+    for id in [first.id, second.id] {
+        window.until("the group is listed", |window| {
+            window.shows_named(format!("direct-row:{id}"))
+        });
+    }
+    window.click_named(format!("direct-row:{}", first.id));
+    window.until("the first group is shown", |window| {
+        window.shows("conversation-people")
+    });
+    window.click("conversation-people");
+    window.until("the panel of the first group", |window| {
+        window.shows("group-people-panel")
+    });
+    window.type_into("group-name", " changed");
+    window.click("group-leave");
+    assert!(window.shows("group-leave-confirm"));
+
+    window.click_named(format!("direct-row:{}", second.id));
+    window.until("the panel belongs to the second group", |window| {
+        window.shows("group-people-panel")
+            && window.in_shell(|shell, _, cx| shell.group_name_field(cx)) == "Second"
+    });
+    assert!(!window.shows("group-leave-confirm"));
+    // Save renames the shown group with its own name, and the first group keeps its name.
+    window.type_into("group-name", " plans");
+    window.click("group-rename");
+    window.until("the second group has its new name", |window| {
+        window.view().lists().is_some_and(|lists| {
+            lists
+                .directs
+                .iter()
+                .any(|row| row.id == second.id && row.name.as_deref() == Some("Second plans"))
+        })
+    });
+    let groups = world.run(reader.api().groups()).unwrap();
+    let name_of = |id| {
+        groups
+            .iter()
+            .find(|held| held.id == id)
+            .map(|held| held.name.clone())
+    };
+    assert_eq!(name_of(first.id).as_deref(), Some("First"));
+    assert!(
+        groups
+            .iter()
+            .any(|held| held.id == first.id && held.account_ids.contains(&writer))
+    );
+}
+
+/// A group without a name is named by its present members with one rule on every surface:
+/// after a member deletes the account, the conversation list, Activity and search all leave
+/// that person out (ADR 0302).
+#[gpui::test]
+fn an_unnamed_group_leaves_a_departed_member_out_of_its_name_on_every_surface(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::state::notices::Whereabouts;
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let mut members = Vec::new();
+    for name in ["Reader", "Third", "Fourth"] {
+        let code = invite(&world, &admin.handle, Vec::new());
+        members.push(joined(&world, &server, &code, name));
+    }
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Writer");
+    let writer = window.own_account();
+    let (reader, third, fourth) = (&members[0].1, &members[1].1, &members[2].1);
+    let group = world
+        .run(reader.api().create_group(
+            String::new(),
+            vec![writer, logged_in(third), logged_in(fourth)],
+        ))
+        .unwrap();
+    world
+        .run(reader.api().send_message(
+            PlaceId::Direct(group.id),
+            &SendMessage {
+                document: document("The plan for Friday"),
+                reply_to: None,
+                attachments: Vec::new(),
+                comment: None,
+            },
+        ))
+        .unwrap();
+    world.run(third.api().delete_account()).unwrap();
+    let row_name = |window: &mut crate::harness::Window| {
+        window.view().lists().and_then(|lists| {
+            lists
+                .directs
+                .iter()
+                .find(|row| row.id == group.id)
+                .and_then(|row| row.name.clone())
+        })
+    };
+    window.until("the row leaves the departed member out", |window| {
+        row_name(window).is_some_and(|name| name.contains("Reader") && !name.contains("Third"))
+    });
+    let shown = row_name(&mut window).unwrap();
+
+    window.open_notices();
+    window.until("Activity names the group as the row does", |window| {
+        window.notices().is_some_and(|panel| {
+            panel.rows.iter().any(|row| {
+                matches!(&row.place, Whereabouts::Direct { name: Some(name) } if *name == shown)
+            })
+        })
+    });
+    window.press("escape");
+
+    window.click_named(format!("direct-row:{}", group.id));
+    window.search_here_for("plan");
+    let panel = window.until_searched();
+    assert!(
+        panel.results.iter().any(|row| {
+            matches!(&row.place, Whereabouts::Direct { name: Some(name) } if *name == shown)
+        }),
+        "{:?}",
+        panel
+            .results
+            .iter()
+            .map(|row| &row.place)
+            .collect::<Vec<_>>()
     );
 }

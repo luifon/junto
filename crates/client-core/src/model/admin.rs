@@ -26,7 +26,7 @@ use junto_protocol::roles::{
 };
 use junto_protocol::structure::{
     ArchivePeriod, ArchivedChannel, CategoryRules, Channel, ChannelPermissions, ChannelRules,
-    PermissionRule, PersonPermissions, RulePlace, RuleSubject,
+    PermissionRule, RulePlace, RuleSubject,
 };
 
 use super::rank::sort_server_roles;
@@ -132,8 +132,6 @@ pub enum AdminPart {
     Glossary(WorkspaceId),
     /// The rules of one category, which its synced channels take (ADR 0304).
     CategoryRules(WorkspaceId, CategoryId),
-    /// The workspace permissions that are allowed to or denied to one member (ADR 0306).
-    MemberPermissions(WorkspaceId, AccountId),
     /// What one member can use in each channel of the workspace that the account sees
     /// (ADR 0304).
     MemberAccess(WorkspaceId, AccountId),
@@ -181,7 +179,6 @@ pub(crate) enum AdminPayload {
     RoleActions(Vec<ListedWorkspaceRole>),
     Glossary(Vec<String>),
     CategoryRules(CategoryRules),
-    MemberPermissions(PersonPermissions),
     MemberAccess(Vec<ChannelPermissions>),
     ServerPermissions(ServerPersonPermissions),
 }
@@ -214,6 +211,10 @@ pub struct AdminModel {
     /// stated them (ADR 0311). They describe the account at that read and are no authority
     /// for a request: the server decides.
     pub unbannable: Vec<AccountId>,
+    /// The workspaces of each account that the account sees, as the last read of the
+    /// accounts stated them and the membership events since, in the order of their
+    /// identifiers.
+    pub memberships: std::collections::BTreeMap<AccountId, Vec<WorkspaceId>>,
     /// The newest first.
     pub invites: Collection<Vec<Invite>>,
     /// The oldest first.
@@ -242,8 +243,6 @@ pub struct AdminModel {
     pub glossaries: Vec<(WorkspaceId, Collection<GlossaryList>)>,
     /// The rules of the categories that a reader asked for.
     pub category_rules: Vec<((WorkspaceId, CategoryId), Collection<CategoryRules>)>,
-    /// The workspace permissions of the members that a reader asked for.
-    pub member_permissions: Vec<((WorkspaceId, AccountId), Collection<PersonPermissions>)>,
     /// What the members that a reader asked for can use, by channel, in the order of the
     /// channels of the answer.
     pub member_access: MemberAccessList,
@@ -377,15 +376,6 @@ impl AdminModel {
         keyed(&self.category_rules, (workspace_id, category_id))
     }
 
-    /// The workspace permissions of one member, while a reader has them open.
-    pub fn member_permissions(
-        &self,
-        workspace_id: WorkspaceId,
-        account_id: AccountId,
-    ) -> &Collection<PersonPermissions> {
-        keyed(&self.member_permissions, (workspace_id, account_id))
-    }
-
     /// What one member can use in the channels that the account sees, while a reader has
     /// it open.
     pub fn member_access(
@@ -468,6 +458,11 @@ impl AdminModel {
             .map(|(_, actions)| actions)
     }
 
+    /// The workspaces of an account, while the accounts are read.
+    pub fn workspaces_of(&self, account_id: AccountId) -> &[WorkspaceId] {
+        self.memberships.get(&account_id).map_or(&[], Vec::as_slice)
+    }
+
     /// Whether the last read of the accounts stated that the account may unban this one.
     /// Absent while the accounts are not read.
     pub fn may_unban(&self, account_id: AccountId) -> Option<bool> {
@@ -500,9 +495,6 @@ impl AdminModel {
             AdminPart::Glossary(workspace_id) => state_of(self.glossary(workspace_id)),
             AdminPart::CategoryRules(workspace_id, category_id) => {
                 state_of(self.category_rules(workspace_id, category_id))
-            }
-            AdminPart::MemberPermissions(workspace_id, account_id) => {
-                state_of(self.member_permissions(workspace_id, account_id))
             }
             AdminPart::MemberAccess(workspace_id, account_id) => {
                 state_of(self.member_access(workspace_id, account_id))
@@ -584,9 +576,6 @@ impl AdminModel {
         reading_keyed(&mut self.category_rules, |(workspace_id, _)| {
             in_scope(workspace_id)
         });
-        reading_keyed(&mut self.member_permissions, |(workspace_id, _)| {
-            in_scope(workspace_id)
-        });
         reading_keyed(&mut self.member_access, |(workspace_id, _)| {
             in_scope(workspace_id)
         });
@@ -656,9 +645,6 @@ impl AdminModel {
                 AdminPart::CategoryRules(workspace_id, category_id) => {
                     mark_keyed_loading(&mut self.category_rules, (workspace_id, category_id));
                 }
-                AdminPart::MemberPermissions(workspace_id, account_id) => {
-                    mark_keyed_loading(&mut self.member_permissions, (workspace_id, account_id));
-                }
                 AdminPart::MemberAccess(workspace_id, account_id) => {
                     mark_keyed_loading(&mut self.member_access, (workspace_id, account_id));
                 }
@@ -671,6 +657,7 @@ impl AdminModel {
         match part {
             AdminPart::Accounts => {
                 let mut unbannable = Vec::new();
+                let mut memberships = std::collections::BTreeMap::new();
                 self.accounts = plain(set, |payload| match payload {
                     AdminPayload::Accounts(listed) => {
                         let mut accounts = Vec::with_capacity(listed.len());
@@ -678,6 +665,9 @@ impl AdminModel {
                             if held.may_unban {
                                 unbannable.push(held.account.id);
                             }
+                            let mut workspaces = held.workspace_ids;
+                            workspaces.sort();
+                            memberships.insert(held.account.id, workspaces);
                             accounts.push(held.account);
                         }
                         accounts.sort_by_key(|held| held.id);
@@ -686,6 +676,7 @@ impl AdminModel {
                     _ => None,
                 });
                 self.unbannable = unbannable;
+                self.memberships = memberships;
             }
             AdminPart::Invites => {
                 self.invites = plain(set, |payload| match payload {
@@ -837,19 +828,6 @@ impl AdminModel {
                     collection,
                 );
             }
-            AdminPart::MemberPermissions(workspace_id, account_id) => {
-                let collection = plain(set, |payload| match payload {
-                    AdminPayload::MemberPermissions(held) if held.account_id == account_id => {
-                        Some(held)
-                    }
-                    _ => None,
-                });
-                set_keyed(
-                    &mut self.member_permissions,
-                    (workspace_id, account_id),
-                    collection,
-                );
-            }
             AdminPart::MemberAccess(workspace_id, account_id) => {
                 let collection = plain(set, |payload| match payload {
                     AdminPayload::MemberAccess(channels) => Some(channels),
@@ -903,6 +881,7 @@ impl AdminModel {
                 let carried = plain(&mut self.accounts, &before.accounts);
                 if carried {
                     self.unbannable.clone_from(&before.unbannable);
+                    self.memberships.clone_from(&before.memberships);
                 }
                 carried
             }
@@ -952,11 +931,6 @@ impl AdminModel {
                 &mut self.category_rules,
                 &before.category_rules,
                 (workspace_id, category_id),
-            ),
-            AdminPart::MemberPermissions(workspace_id, account_id) => by_key(
-                &mut self.member_permissions,
-                &before.member_permissions,
-                (workspace_id, account_id),
             ),
             AdminPart::MemberAccess(workspace_id, account_id) => by_key(
                 &mut self.member_access,
@@ -1039,8 +1013,6 @@ impl AdminModel {
         self.settings.retain(|(held, _)| *held != workspace_id);
         self.category_rules
             .retain(|((held, _), _)| *held != workspace_id);
-        self.member_permissions
-            .retain(|((held, _), _)| *held != workspace_id);
         self.member_access
             .retain(|((held, _), _)| *held != workspace_id);
         self.rules.retain(|(held, _)| !channels.contains(held));
@@ -1053,6 +1025,26 @@ impl AdminModel {
     /// Applies an event to the collections that are loaded.
     fn apply(&mut self, event: &Event) {
         match event {
+            Event::WorkspaceMemberAdded {
+                workspace_id,
+                member,
+            } => {
+                if self.accounts.loaded().is_some() {
+                    let workspaces = self.memberships.entry(member.account_id).or_default();
+                    if !workspaces.contains(workspace_id) {
+                        workspaces.push(*workspace_id);
+                        workspaces.sort();
+                    }
+                }
+            }
+            Event::WorkspaceMemberRemoved {
+                workspace_id,
+                account_id,
+            } => {
+                if let Some(workspaces) = self.memberships.get_mut(account_id) {
+                    workspaces.retain(|held| held != workspace_id);
+                }
+            }
             Event::AttachmentLimitsChanged { limits } => {
                 if let Some(held) = self.attachment_limits.loaded_mut() {
                     held.clone_from(limits);
@@ -1257,24 +1249,6 @@ impl AdminModel {
                     }
                 }
             }
-            Event::WorkspacePersonPermissionsSet {
-                workspace_id,
-                account_id,
-                allow,
-                deny,
-            } => {
-                let key = (*workspace_id, *account_id);
-                for (_, held) in self
-                    .member_permissions
-                    .iter_mut()
-                    .filter(|(of, _)| *of == key)
-                {
-                    if let Some(held) = held.loaded_mut() {
-                        held.allow.clone_from(allow);
-                        held.deny.clone_from(deny);
-                    }
-                }
-            }
             Event::ServerPersonPermissionsSet {
                 account_id,
                 allow,
@@ -1304,7 +1278,9 @@ impl AdminPart {
         match self {
             Self::Accounts => matches!(
                 event,
-                Event::AccountAdded { .. }
+                Event::WorkspaceMemberAdded { .. }
+                    | Event::WorkspaceMemberRemoved { .. }
+                    | Event::AccountAdded { .. }
                     | Event::AccountProfileUpdated { .. }
                     | Event::AccountStatusChanged { .. }
                     | Event::AccountServerRolesChanged { .. }
@@ -1381,11 +1357,6 @@ impl AdminPart {
                 Event::WorkspaceRoleDeleted { .. } => true,
                 _ => false,
             },
-            Self::MemberPermissions(workspace_id, account_id) => matches!(
-                event,
-                Event::WorkspacePersonPermissionsSet { workspace_id: of, account_id: who, .. }
-                    if of == workspace_id && who == account_id
-            ),
             Self::ServerPermissions(account_id) => matches!(
                 event,
                 Event::ServerPersonPermissionsSet { account_id: who, .. } if who == account_id
@@ -1469,7 +1440,6 @@ impl AdminPart {
             | Self::RoleActions(workspace_id)
             | Self::Glossary(workspace_id)
             | Self::CategoryRules(workspace_id, _)
-            | Self::MemberPermissions(workspace_id, _)
             | Self::MemberAccess(workspace_id, _) => Some(*workspace_id),
             _ => None,
         }
@@ -1689,8 +1659,6 @@ impl ServerModel {
                     Event::PermissionRuleSet { .. } | Event::WorkspaceRoleDeleted { .. }
                 ) && (!self.admin.rules.is_empty()
                     || !self.admin.category_rules.is_empty()))
-                    || (matches!(event, Event::WorkspacePersonPermissionsSet { .. })
-                        && !self.admin.member_permissions.is_empty())
                     || (matches!(event, Event::ServerPersonPermissionsSet { .. })
                         && !self.admin.server_permissions.is_empty());
                 if touched {

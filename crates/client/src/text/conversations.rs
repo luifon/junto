@@ -1,6 +1,48 @@
 pub const TITLE: &str = "Group conversation";
 pub const NAME: &str = "Conversation name";
-pub const MENU: &str = "Conversation name and people";
+pub const PEOPLE: &str = "People";
+pub const CLOSE_PEOPLE: &str = "Close the people of this conversation";
+pub const PROFILE: &str = "Profile";
+pub const START: &str = "Start conversation";
+pub const CHOOSE: &str = "Choose";
+pub const NAME_OPTIONAL: &str = "Conversation name (optional)";
+pub const EXPORT: &str = "Export conversation…";
+pub const EXPORT_TITLE: &str = "Export this conversation";
+pub const EXPORT_ABOUT: &str = "The server prepares a ZIP file with the messages and files of this conversation, as JSON and as HTML pages. When it is ready, it is listed in Exports of your account on this server, where you download it.";
+pub const EXPORT_START: &str = "Export";
+pub const CLOSED: &str =
+    "This conversation is closed: you no longer share a workspace with this person.";
+/// The name of a group conversation: its name, or the names of its present members when
+/// it has none (ADR 0302).
+pub fn group_name(name: &str, members: &[String]) -> String {
+    let name = name.trim();
+    if !name.is_empty() {
+        return crate::text::label(name);
+    }
+    if members.is_empty() {
+        return TITLE.to_owned();
+    }
+    members.join(", ")
+}
+/// The name of a group conversation from its members: every surface that names a group uses
+/// it, so that a group without a name has the same name everywhere (ADR 0302). `name_of`
+/// gives the name of a present member and nothing for a member who left.
+pub fn group_title(
+    name: &str,
+    account_ids: &[junto_client_core::protocol::ids::AccountId],
+    own: junto_client_core::protocol::ids::AccountId,
+    name_of: impl Fn(junto_client_core::protocol::ids::AccountId) -> Option<String>,
+) -> String {
+    if !name.trim().is_empty() {
+        return group_name(name, &[]);
+    }
+    let members: Vec<String> = account_ids
+        .iter()
+        .filter(|id| **id != own)
+        .filter_map(|id| name_of(*id))
+        .collect();
+    group_name(name, &members)
+}
 pub const NEW: &str = "New group conversation";
 pub const CREATE: &str = "Create group";
 pub const SAVE_NAME: &str = "Save name";
@@ -8,7 +50,7 @@ pub const ADD: &str = "Add people";
 pub const ADD_SELECTED: &str = "Add selected person";
 pub const PEOPLE_HELP: &str =
     "Choose the people in this conversation. Groups have at most ten people.";
-pub const NAME_INVALID: &str = "Use a name of 1 to 80 characters without controls.";
+pub const NAME_INVALID: &str = "Use a name of at most 80 characters without controls.";
 pub const LEAVE: &str = "Leave conversation";
 pub const LEAVE_QUESTION: &str =
     "Leave this conversation? Its messages and files will no longer be available to you.";

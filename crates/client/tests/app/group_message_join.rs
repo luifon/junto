@@ -89,6 +89,7 @@ fn group_forwarding_preserves_its_draft_and_manual_unread_boundary(cx: &mut Test
                 document: document("return to this group"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

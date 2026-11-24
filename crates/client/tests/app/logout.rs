@@ -22,7 +22,7 @@ fn a_person_logs_out_and_the_device_logs_in_again_only_when_the_person_asks(
     let account_id = window.view().person.account_id.unwrap();
 
     // "Log out" in the menu of the server ends the session on the server.
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.until("the menu offers the logout", |window| {
         window
             .view()
@@ -30,6 +30,13 @@ fn a_person_logs_out_and_the_device_logs_in_again_only_when_the_person_asks(
             .is_some_and(|selected| selected.can_log_out)
     });
     window.click("menu-log-out");
+    // The logout asks first, with what it ends and what stays; Cancel keeps the session.
+    assert!(window.shows("confirm-log-out"));
+    window.click("cancel");
+    assert_ne!(window.status(), Some(ServerStatus::LoggedOutByPerson));
+    window.open_server_menu();
+    window.click("menu-log-out");
+    window.click("confirm");
     window.until("the logout is shown", |window| {
         window.status() == Some(ServerStatus::LoggedOutByPerson)
     });
@@ -47,7 +54,7 @@ fn a_person_logs_out_and_the_device_logs_in_again_only_when_the_person_asks(
     let logins = proxy.seen(LOGIN).len();
 
     // The menu of a server without a session offers no logout, at the same place.
-    window.click("server-menu-button");
+    window.open_server_menu();
     assert!(window.shows("menu-log-out"));
     assert!(!window.view().selected.unwrap().can_log_out);
     window.press("escape");

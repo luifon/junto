@@ -95,7 +95,7 @@ fn incoming_direct_call_can_be_declined(cx: &mut TestAppContext) {
     window.until("incoming ring view", |window| {
         window.shows("incoming-direct-call")
     });
-    assert!(!window.shows("start-direct-call"));
+    assert!(!window.shows("conversation-call"));
     assert_eq!(window.view().invitations[0].by.as_deref(), Some("Ada"));
     window.click("direct-call-decline");
     window.until("ring dismissed", |window| {
@@ -199,7 +199,7 @@ fn missed_direct_call_is_shown_in_conversation(cx: &mut TestAppContext) {
             .unwrap();
     });
     window.until("missed outcome in conversation", |window| {
-        window.shows("direct-call-history")
+        shows_call_line(window)
             && window.state.read_with(&window.cx, |state, _| {
                 state
                     .direct_calls()
@@ -273,7 +273,7 @@ fn outgoing_decline_ends_call_and_is_shown(cx: &mut TestAppContext) {
             .lists()
             .is_some_and(|lists| lists.conversation.is_some())
     });
-    window.click("start-direct-call");
+    window.click("conversation-call");
     window.until("ring arrives", |_| {
         admin
             .handle
@@ -296,7 +296,7 @@ fn outgoing_decline_ends_call_and_is_shown(cx: &mut TestAppContext) {
         .run(admin.handle.api().refuse_call_invitation(invitation))
         .unwrap();
     window.until("decline ends outgoing call", |window| {
-        window.view().call.is_none() && window.shows("direct-call-history")
+        window.view().call.is_none() && shows_call_line(window)
     });
 }
 
@@ -326,9 +326,9 @@ fn direct_and_voice_calls_share_one_owner_and_refusal_preserves_voice(cx: &mut T
         state.open_conversation(server_id, other, cx)
     });
     window.until("direct conversation ready", |window| {
-        window.shows("start-direct-call")
+        window.shows("conversation-call")
     });
-    window.click("start-direct-call");
+    window.click("conversation-call");
     window.until("direct replaces voice", |window| {
         window.state.read_with(&window.cx, |state, _| {
             state
@@ -380,9 +380,9 @@ fn direct_and_voice_calls_share_one_owner_and_refusal_preserves_voice(cx: &mut T
         state.open_conversation(server_id, other, cx)
     });
     window.until("direct conversation ready", |window| {
-        window.shows("start-direct-call")
+        window.shows("conversation-call")
     });
-    window.click("start-direct-call");
+    window.click("conversation-call");
     window.until("decline pause is shown", |window| {
         window.view().call_notice.is_some()
     });
@@ -416,9 +416,9 @@ fn an_unanswered_outgoing_call_ends_even_when_the_recipient_muted_it(cx: &mut Te
         state.open_conversation(server_id, other, cx)
     });
     window.until("conversation ready", |window| {
-        window.shows("start-direct-call")
+        window.shows("conversation-call")
     });
-    window.click("start-direct-call");
+    window.click("conversation-call");
     window.until("outgoing call connected without a ring", |window| {
         window
             .view()
@@ -451,7 +451,7 @@ fn an_unanswered_outgoing_call_ends_even_when_the_recipient_muted_it(cx: &mut Te
             .advance_clock(std::time::Duration::from_millis(20));
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert!(window.shows("direct-call-history"));
+    assert!(shows_call_line(&mut window));
     assert_eq!(
         window.state.read_with(&window.cx, |state, _| state
             .direct_calls()
@@ -492,9 +492,9 @@ fn an_outgoing_call_that_the_server_finds_unanswered_first_ends_with_no_answer(
         state.open_conversation(server_id, other, cx)
     });
     window.until("conversation ready", |window| {
-        window.shows("start-direct-call")
+        window.shows("conversation-call")
     });
-    window.click("start-direct-call");
+    window.click("conversation-call");
     window.until("outgoing call connected", |window| {
         window
             .view()
@@ -518,7 +518,7 @@ fn an_outgoing_call_that_the_server_finds_unanswered_first_ends_with_no_answer(
     });
     // The resolution of the server ended the call, and not the deadline of this device.
     assert!(connected.elapsed() < std::time::Duration::from_secs(30));
-    assert!(window.shows("direct-call-history"));
+    assert!(shows_call_line(&mut window));
     assert_eq!(
         window.state.read_with(&window.cx, |state, _| state
             .direct_calls()
@@ -547,10 +547,10 @@ fn a_decline_before_the_answer_to_the_join_ends_the_outgoing_call(cx: &mut TestA
         state.open_conversation(server_id, other, cx)
     });
     window.until("conversation ready", |window| {
-        window.shows("start-direct-call")
+        window.shows("conversation-call")
     });
     proxy.hold_answer_ending("POST", &format!("/direct-calls/{other}/join"));
-    window.click("start-direct-call");
+    window.click("conversation-call");
     window.until("ring arrives", |_| {
         admin
             .handle
@@ -597,7 +597,7 @@ fn a_decline_before_the_answer_to_the_join_ends_the_outgoing_call(cx: &mut TestA
         })
     });
     window.until("the call is left", |window| window.view().call.is_none());
-    assert!(window.shows("direct-call-history"));
+    assert!(shows_call_line(&mut window));
 }
 
 /// The panel of the direct-message call that the window shows: one person of the call.
@@ -630,12 +630,12 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
         state.open_conversation(server_id, other, cx)
     });
     window.until("conversation shown", |window| {
-        window.shows("start-direct-call")
+        window.shows("conversation-call")
     });
 
     // While it rings, the stage names the person, and the members list the person outside
     // the call.
-    window.click("start-direct-call");
+    window.click("conversation-call");
     window.until("the call rings in the page of a call", |window| {
         window.shows("outgoing-direct-call")
             && window.shows("direct-call-ringing")
@@ -680,9 +680,12 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
         heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS
     });
 
-    // The volume of the other person.
-    let slider = crate::harness::selector(format!("volume:{other}"));
-    window.until("the volume control is drawn", |window| window.shows(slider));
+    // The volume of the other person, in the menu of the person.
+    window.until("the other person is listed in the call", |window| {
+        window.shows_named(format!("call-member:{other}"))
+    });
+    window.right_click_named(format!("call-member:{other}"));
+    let slider = "call-menu-volume";
     window.click(slider);
     window.press(&["left"; 20].join(" "));
     window.until("the other person is not played", |window| {
@@ -697,6 +700,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
     window.until("the other person is played again", |window| {
         heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS
     });
+    window.press("escape");
 
     // The chat of the call is the conversation.
     window.click("call-tab-chat");
@@ -710,6 +714,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
                 document: crate::messages::document("Can you hear me"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -719,7 +724,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
 
     // The microphone, the speaker and the camera, in the settings of the application at
     // "Voice and video".
-    window.click("open-call-settings");
+    window.open_call_devices();
     window.until("the devices are listed", |window| {
         direct_panel(window)
             .is_some_and(|panel| panel.audio.inputs.len() == 2 && panel.audio.outputs.len() == 2)
@@ -790,7 +795,8 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
         },
     );
     // The volume of the watched share, and the quality of the own share.
-    // The slider is on the line of the watched share (ADR 0738).
+    // The slider is in the menu of the speaker of the watched share (ADR 0738).
+    window.click("share-sound-control");
     window.tab_to("share-volume");
     window.press(&["left"; 20].join(" "));
     window.until("the share is not played", |window| {
@@ -799,7 +805,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
             .is_some_and(|stage| stage.volume == 0)
             && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
     });
-    window.click("open-call-settings");
+    window.open_call_devices();
     window.click_in_settings("share-resolution-0");
     window.click_in_settings("share-frame-rate-0");
     window.press("escape");
@@ -815,7 +821,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
 
     window.click("leave-call");
     window.until("the call has ended", |window| {
-        window.view().call.is_none() && window.shows("start-direct-call")
+        window.view().call.is_none() && window.shows("conversation-call")
     });
     world.run(caller.calls.leave());
 }
@@ -917,4 +923,14 @@ fn an_account_menu_starts_a_direct_call_with_its_captured_person(cx: &mut TestAp
     window.until("the direct call ends", |window| {
         window.view().call.is_none()
     });
+}
+
+/// True when the conversation lists a line of the outcome of a call: the outcome of a call
+/// is a line of the messages, and no notice above them repeats it (ADR 0741).
+fn shows_call_line(window: &mut Window) -> bool {
+    window.feed().is_some_and(|feed| {
+        feed.rows
+            .iter()
+            .any(|row| matches!(row, junto_client::state::feed::FeedRow::System(_)))
+    })
 }

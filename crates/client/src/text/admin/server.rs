@@ -11,7 +11,6 @@ pub const LOGO_NOT_SHOWN: &str = "This server has a logo. This window does not h
 pub const CHOOSE_IMAGE: &str = "Choose image…";
 pub const REMOVE_LOGO: &str = "Remove logo";
 pub const REMOVE_LOGO_QUESTION: &str = "Remove the logo of this server?";
-pub const LOGO_NEEDS: &str = "Only an administrator can change the logo.";
 
 pub const ATTACHMENTS: &str = "Files of messages";
 pub const ATTACHMENTS_HELP: &str = "The server refuses a larger file and a message with more files. A \
@@ -54,6 +53,11 @@ pub const fn invalid_logo(invalid: InvalidAvatar) -> &'static str {
         InvalidAvatar::Unsupported => "The file is not a PNG, JPEG or WebP image.",
     }
 }
+
+pub const RECORDINGS: &str = "Recordings";
+pub const RECORDING_LANGUAGE_HELP: &str = "The spoken language of a recording that starts with Record. A person can choose another language for one recording.";
+pub const CHANGE_LANGUAGE: &str = "Change";
+pub const LANGUAGE_NOT_READ: &str = "Reading…";
 
 #[cfg(test)]
 mod tests {

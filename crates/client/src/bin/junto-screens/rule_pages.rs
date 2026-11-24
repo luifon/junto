@@ -9,7 +9,7 @@ use junto_client_core::model::{Collection, ServerModel};
 use junto_client_core::protocol::ids::{AccountId, CategoryId, ChannelId, WorkspaceId};
 use junto_client_core::protocol::roles::ServerPersonPermissions;
 use junto_client_core::protocol::structure::{
-    CategoryRules, ChannelPermissions, ChannelRules, PermissionRule, PersonPermissions, RuleSubject,
+    CategoryRules, ChannelPermissions, ChannelRules, PermissionRule, RuleSubject,
 };
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
@@ -120,19 +120,6 @@ fn open_person(
         page,
     };
     shell.open_admin(open, window, cx);
-}
-
-/// The workspace permissions of Bruno in "Studio": "mention everyone" allowed, "send
-/// messages" denied.
-fn bruno_permissions(model: &mut ServerModel) {
-    collections(model).member_permissions = vec![(
-        (id(STUDIO), person("Bruno")),
-        Collection::Loaded(PersonPermissions {
-            account_id: person("Bruno"),
-            allow: vec![WorkspacePermission::MentionEveryone],
-            deny: vec![WorkspacePermission::SendMessages],
-        }),
-    )];
 }
 
 /// What Bruno can use in the channels of "Studio".
@@ -287,49 +274,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         open_category,
     )?;
 
-    // The page of a member and what the member can use.
-    studio.draw(
-        Screen::new(
-            "admin-rules-member",
-            servers(|model| {
-                owner(model);
-                bruno_permissions(model);
-            }),
-        ),
-        |shell, window, cx| {
-            open_person(
-                shell,
-                person("Bruno"),
-                PersonPage::Permissions(id(STUDIO)),
-                window,
-                cx,
-            );
-        },
-    )?;
-    studio.draw(
-        Screen::new(
-            "admin-rules-member-ceiling",
-            servers(|model| {
-                lead(
-                    model,
-                    &[
-                        WorkspacePermission::ManageRoles,
-                        WorkspacePermission::ViewChannel,
-                    ],
-                );
-                bruno_permissions(model);
-            }),
-        ),
-        |shell, window, cx| {
-            open_person(
-                shell,
-                person("Bruno"),
-                PersonPage::Permissions(id(STUDIO)),
-                window,
-                cx,
-            );
-        },
-    )?;
+    // What a member can use.
     studio.draw(
         Screen::new(
             "admin-rules-member-access",

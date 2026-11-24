@@ -37,6 +37,7 @@ The existing refusal to remove the last device changes from `conflict` to the mo
 ## Consequences
 
 - A client of today shows an error of a later server by its status and its message, and shows a later audit entry without its details.
+- The code `retired` (HTTP 410), added in release 0.3.0, answers a route that a release removed within its version (ADR 0201). A reader that predates it reads `unknown` with the status 410 and shows the message of the server, which names the change and what replaces the route.
 - A program that decides on an error code must have a branch for `unknown`.
 - A test builds the crate without the feature, and the server tests build it with the feature.
 - Erasing a secret on drop does not cover the copies in buffers of the HTTP library and of the JSON reader.

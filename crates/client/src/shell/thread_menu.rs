@@ -8,6 +8,7 @@ use junto_client_core::{
 
 use super::{Layer, Shell};
 use crate::{
+    assets::Icon,
     state::{
         AppState,
         view::{ShellView, ThreadEntry},
@@ -119,6 +120,7 @@ impl ThreadMenuOpen {
                     mentions: mark.mentions,
                     open: mark.open,
                     available: row.can_thread && row.thread_refused.is_none(),
+                    has_replies: mark.replies > 0,
                 })
             })
         })
@@ -221,6 +223,7 @@ impl Shell {
         let failed = state.thread_menu_read_failed(open.owner, open.root_id);
         let busy = control.as_ref().is_none_or(|control| control.busy);
         let following = control.as_ref().is_some_and(|control| control.following);
+        let setting = control.as_ref().map(|control| control.setting);
         let refused = control.as_ref().and_then(|control| control.refused.clone());
         let title = entry
             .title
@@ -237,9 +240,6 @@ impl Shell {
                 MenuItem::new("thread-open", text::OPEN_THREAD)
                     .selector("thread-open")
                     .disabled(!available)
-                    .when(!available && open.followed(), |item| {
-                        item.detail(text::THREAD_IN_CALL)
-                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if !this.thread_menu_current(open, cx) {
                             return;
@@ -257,25 +257,43 @@ impl Shell {
                         );
                     })),
             )
-            .child(
-                MenuItem::new("thread-read", text::MARK_AS_READ)
-                    .selector("thread-read")
-                    .disabled(busy || !unread)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if this.thread_menu_current(open, cx)
-                            && this.state.update(cx, |state, cx| {
-                                state.mark_thread_menu_read(open.owner, open.root_id, cx)
-                            })
-                        {
-                            if let Layer::ThreadMenu(open) = &mut this.layer {
-                                open.waiting = true;
+            .when(entry.has_replies, |menu| {
+                // One read item that follows the state (ADR 0741).
+                let item = if unread {
+                    MenuItem::new("thread-read", text::MARK_AS_READ)
+                        .icon(Icon::CheckDouble)
+                        .selector("thread-read")
+                } else {
+                    MenuItem::new("thread-unread", text::MARK_AS_UNREAD)
+                        .icon(Icon::Unread)
+                        .selector("thread-unread")
+                };
+                menu.child(
+                    item.disabled(busy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.thread_menu_current(open, cx)
+                                && this.state.update(cx, |state, cx| {
+                                    if unread {
+                                        state.mark_thread_menu_read(open.owner, open.root_id, cx)
+                                    } else {
+                                        state.mark_thread_menu_unread(open.owner, open.root_id, cx)
+                                    }
+                                })
+                            {
+                                if let Layer::ThreadMenu(open) = &mut this.layer {
+                                    open.waiting = true;
+                                }
+                                cx.notify();
                             }
-                            cx.notify();
-                        }
-                    })),
-            )
+                        })),
+                )
+            })
             .child(
                 MenuItem::new("thread-follow", text::followed::action(following))
+                    .icon(if following { Icon::BellOff } else { Icon::Bell })
+                    .when_some(setting, |item, setting| {
+                        item.detail(text::followed::state(following, setting))
+                    })
                     .selector("thread-follow")
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -296,6 +314,27 @@ impl Shell {
                         }
                     })),
             )
+            // The same words as the follow control of the thread panel (ADR 0741).
+            .when(setting.flatten().is_some(), |menu| {
+                menu.child(
+                    MenuItem::new("thread-follow-default", text::followed::USE_DEFAULT)
+                        .detail(text::followed::USE_DEFAULT_HELP)
+                        .selector("thread-follow-default")
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.thread_menu_current(open, cx)
+                                && this.state.update(cx, |state, cx| {
+                                    state.clear_thread_menu_follow(open.owner, open.root_id, cx)
+                                })
+                            {
+                                if let Layer::ThreadMenu(open) = &mut this.layer {
+                                    open.waiting = true;
+                                }
+                                cx.notify();
+                            }
+                        })),
+                )
+            })
             .child(
                 MenuItem::new("thread-copy-link", text::COPY_TARGET_LINK)
                     .selector("thread-copy-link")

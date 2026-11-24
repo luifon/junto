@@ -20,8 +20,10 @@ mod input_menu;
 mod link_menu;
 mod marks;
 mod menu;
+mod menu_button;
 mod mosaic;
 mod notice;
+mod offer;
 mod paint_text;
 mod panel;
 mod pattern;
@@ -42,7 +44,11 @@ use std::sync::Arc;
 
 use gpui::{App, BoxShadow, FocusHandle, FontFeatures, Hsla, Rgba, Styled, Svg, Window, px, svg};
 
-pub use action_menu::{RowAction, bind_action_menu, bind_lazy_action_menu, collect_actions};
+pub use action_menu::{
+    ButtonMenu, RowAction, RowMenu, RowMenuPlace, bind_action_menu, bind_button_menu,
+    bind_lazy_action_menu, bind_lazy_row_action_menu, bind_row_action_menu, collect_actions,
+    row_focus,
+};
 pub use area::{CENTRED, COVER, KEPT, area, cover};
 #[cfg(feature = "test-support")]
 pub use area::{record_areas, take_areas};
@@ -51,7 +57,7 @@ pub use button::{Button, ButtonKind};
 pub(crate) use code_text::code_text;
 #[cfg(feature = "test-support")]
 pub use code_text::{CodePaintRecord, PaintedCode, record_painted_code, take_painted_code};
-pub use controls::{LevelSlider, SelectBox, Stepper, Tab, TabRow, Toggle, VolumeSlider};
+pub use controls::{CheckBox, LevelSlider, SelectBox, Stepper, Tab, TabRow, Toggle, VolumeSlider};
 pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};
 pub use fit::Fit;
@@ -62,10 +68,15 @@ pub use held::{Held, MOVED_GUARD, MovedControls, Moves, WAIT_BOUND, held};
 pub use input_menu::InputMenu;
 pub use link_menu::{CopyToClipboard, LinkMenu, OpenLink};
 pub use marks::{Badge, Chip, CornerCount, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
-pub use menu::{ContextMenuExt, Menu, MenuItem, MenuPlacement, menu_label, menu_separator};
-pub(crate) use menu::{has_focused_menu, over_focused_menu};
+pub(crate) use menu::has_focused_menu;
+pub use menu::{
+    BoundKeys, ContextMenuExt, Menu, MenuItem, MenuPlacement, menu_label, menu_separator,
+    set_bound_keys,
+};
+pub use menu_button::{MENU_ROW, MenuButton, OwnPress};
 pub use mosaic::{Mosaic, MosaicKind};
 pub use notice::notice_slot;
+pub use offer::Offer;
 pub(crate) use paint_text::paint_text;
 #[cfg(feature = "test-support")]
 pub use paint_text::{PaintedText, TextPaintRecord, record_painted_text, take_painted_text};
@@ -81,7 +92,8 @@ pub use placed::{record_controls, take_controls};
 pub use presence::PresenceMark;
 pub use profile::{OpenProfile, ProfileAccess, ProfileName};
 pub use rows::{
-    CategoryHeader, ChannelRow, ChannelState, OccupantMark, OccupantRow, UnreadSign, WorkspaceRow,
+    CategoryHeader, ChannelRow, ChannelState, OCCUPANT_STATUS_LINE, OccupantMark, OccupantRow,
+    UnreadSign, WorkspaceRow,
 };
 pub use scroll::{ScrollArea, scroll_bar};
 pub use segmented::Segmented;
@@ -172,3 +184,9 @@ pub(crate) fn float_shadow(colour: Rgba, offset: f32, blur: f32) -> Vec<BoxShado
 }
 
 pub(crate) use profile::role_name;
+
+/// True while a menu of the window holds the keyboard focus (for the window tests).
+#[cfg(feature = "test-support")]
+pub fn window_has_focused_menu(window: &gpui::Window, cx: &gpui::App) -> bool {
+    has_focused_menu(window, cx)
+}

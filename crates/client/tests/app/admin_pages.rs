@@ -43,7 +43,7 @@ use junto_client_core::protocol::message::SendMessage;
 use junto_client_core::protocol::roles::{CreateServerRole, CreateWorkspaceRole};
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::protocol::structure::{
-    ChannelKind, CreateCategory, CreateChannel, UpdateChannel,
+    ChannelKind, CreateCategory, CreateChannel, OverrideState, RuleSubject, UpdateChannel,
 };
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use junto_client_core::secret::SecretToken;
@@ -335,12 +335,110 @@ pub(crate) fn awaited<T>(
 /// visible part of the page. An element outside that part is brought nearer with the
 /// wheel, as a person does, and is not clicked. True when the element was clicked.
 pub(crate) fn try_click(window: &mut Window, selector: &'static str) -> bool {
+    // The trail of the settings of a channel, a category or a person, with its tabs, stays
+    // above the page.
+    window.park();
+    if let (Some(trail), Some(element)) = (
+        window.cx.debug_bounds("admin-trail"),
+        window.cx.debug_bounds(selector),
+    ) && trail.contains(&element.center())
+    {
+        window.press_as_drawn(selector);
+        window.park();
+        return true;
+    }
+    // An action of a row with a menu button is an item of the menu of the row (ADR 0731):
+    // the secondary press on the row shows it, and a shown item is pressed where it is.
+    if let Some(row) = menu_row_of(selector) {
+        if window.cx.debug_bounds(selector).is_none() {
+            if !reveal_row_start(window, row) {
+                return false;
+            }
+            window.right_click_row(row);
+            if !window.shows(selector) {
+                window.press("escape");
+                return false;
+            }
+        }
+        window.press_as_drawn(selector);
+        window.park();
+        // A disabled item does nothing and leaves the menu open; the menu is put away, as a
+        // person does, so that it does not hold the wheel and the keyboard.
+        if window.shows("row-context-menu") {
+            window.press("escape");
+        }
+        return true;
+    }
     if try_reveal(window, selector).is_none() {
         return false;
     }
     window.press_as_drawn(selector);
     window.park();
     true
+}
+
+/// Brings the first line of a row into the visible part of the page with the wheel; a row
+/// with a part open under its first line can be taller than the page. True when the first
+/// line is in view.
+fn reveal_row_start(window: &mut Window, row: &'static str) -> bool {
+    window.park();
+    let (Some(page), Some(bounds)) = (
+        window.cx.debug_bounds("admin-page"),
+        window.cx.debug_bounds(row),
+    ) else {
+        return try_reveal(window, row).is_some();
+    };
+    let line = px(40.0).min(bounds.size.height);
+    if bounds.top() >= page.top() && bounds.top() + line <= page.bottom() {
+        return true;
+    }
+    window.simulate(|cx| {
+        cx.simulate_event(ScrollWheelEvent {
+            position: margin(page),
+            delta: ScrollDelta::Pixels(point(px(0.0), page.top() + px(8.0) - bounds.top())),
+            ..Default::default()
+        })
+    });
+    window.park();
+    false
+}
+
+/// The row whose menu holds the action of this name, for the actions that are items of the
+/// menu of their row.
+fn menu_row_of(selector: &str) -> Option<&'static str> {
+    const ACTIONS: [(&str, &str); 22] = [
+        ("account-roles-toggle-", "account-"),
+        ("account-permissions-", "account-"),
+        ("account-remove-", "account-"),
+        ("account-ban-", "account-"),
+        ("account-unban-", "account-"),
+        ("account-recover-", "account-"),
+        ("channel-settings-", "channel-"),
+        ("channel-rename-", "channel-"),
+        ("channel-move-", "channel-"),
+        ("channel-up-", "channel-"),
+        ("channel-down-", "channel-"),
+        ("channel-archive-", "channel-"),
+        ("channel-delete-", "channel-"),
+        ("category-rename-", "category-"),
+        ("category-permissions-", "category-"),
+        ("category-up-", "category-"),
+        ("category-down-", "category-"),
+        ("category-delete-", "category-"),
+        ("role-rename-", "role-"),
+        ("role-up-", "role-"),
+        ("role-down-", "role-"),
+        ("role-delete-", "role-"),
+    ];
+    ACTIONS.iter().find_map(|(action, row)| {
+        // The rest is the identifier of the row, not a further part of the name.
+        selector
+            .strip_prefix(action)
+            .filter(|rest| {
+                rest.len() == 36 && rest.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+            })
+            .map(|rest| crate::harness::selector(format!("admin-row-{row}{rest}")))
+    })
 }
 
 /// The bounds of an element of the open page of the administration when it is drawn
@@ -361,7 +459,7 @@ pub(crate) fn try_reveal(
         } else {
             window.simulate(|cx| {
                 cx.simulate_event(ScrollWheelEvent {
-                    position: page.center(),
+                    position: margin(page),
                     delta: ScrollDelta::Pixels(point(px(0.0), -page.size.height * 0.8)),
                     ..Default::default()
                 })
@@ -372,6 +470,16 @@ pub(crate) fn try_reveal(
     if element.top() >= page.top() && element.bottom() <= page.bottom() {
         return Some(element);
     }
+    // The list lays out rows above the first row in view to measure them, and such a row
+    // can report a place under the page: at the end of the page the row is above it.
+    if element.top() >= page.bottom() && window.in_shell(|shell, _, _| shell.admin_page_at_end()) {
+        window.in_shell(|shell, _, cx| {
+            shell.scroll_admin_page_to_start();
+            cx.notify();
+        });
+        return None;
+    }
+
     let distance = if element.top() < page.top() {
         page.top() - element.top()
     } else {
@@ -379,12 +487,18 @@ pub(crate) fn try_reveal(
     };
     window.simulate(|cx| {
         cx.simulate_event(ScrollWheelEvent {
-            position: page.center(),
+            position: margin(page),
             delta: ScrollDelta::Pixels(point(px(0.0), distance)),
             ..Default::default()
         })
     });
     None
+}
+
+/// A point in the left margin of the page, where the wheel turns the page and no element
+/// inside it that scrolls on its own.
+fn margin(page: gpui::Bounds<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
+    point(page.left() + px(6.0), page.center().y)
 }
 
 pub(crate) fn reveal_in_page(
@@ -488,7 +602,7 @@ pub(crate) fn reveal_pair(
             };
             window.simulate(|cx| {
                 cx.simulate_event(ScrollWheelEvent {
-                    position: page.center(),
+                    position: margin(page),
                     delta: ScrollDelta::Pixels(point(px(0.0), -distance)),
                     ..Default::default()
                 })
@@ -523,6 +637,11 @@ pub(crate) fn open_page(
     mut open: impl FnMut(&mut Window) -> bool,
 ) {
     window.until(&format!("the page of {row} is open"), |window| {
+        // The rules of a channel are under "Advanced permissions", folded at first.
+        if row == "channel-nav-permissions" && window.shows("rules-advanced") {
+            try_click(window, "rules-advanced");
+            return false;
+        }
         if open(window) {
             return true;
         }
@@ -531,7 +650,7 @@ pub(crate) fn open_page(
     });
 }
 
-/// Shows a channel of the channel list and opens its settings with the gear of its header.
+/// Shows a channel of the channel list and opens its settings from the menu of its row.
 #[track_caller]
 pub(crate) fn open_channel_settings(window: &mut Window, name: &str, channel_id: ChannelId) {
     window.until("the channel is in the channel list", |window| {
@@ -551,8 +670,8 @@ pub(crate) fn open_channel_settings(window: &mut Window, name: &str, channel_id:
             .workspace()
             .and_then(|workspace| workspace.channel.as_ref())
             .is_some_and(|channel| channel.id == channel_id);
-        if shown {
-            window.click_if_shown("channel-settings");
+        if shown && !window.shows("admin") {
+            window.open_settings_from_channel_menu(channel_id);
         }
         false
     });
@@ -812,9 +931,8 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
     // The server states that the owner may unban the account, after the read of the
     // accounts that the ban asked for (ADR 0311).
     let banned = awaited(&mut window, "the row shows the ban", |window| {
-        account(window, bruno).filter(|row| {
-            row.status == AccountStatus::Banned && window.shows(unban) && row.unban.is_ok()
-        })
+        account(window, bruno)
+            .filter(|row| row.status == AccountStatus::Banned && row.unban.is_ok())
     });
     assert_eq!(
         (banned.remove, banned.ban, banned.unban),
@@ -1066,7 +1184,7 @@ fn a_member_with_the_permission_follows_the_invites_and_creates_one_with_the_for
     // Without the permission the list of pages has no page of the invites.
     window.open_administration();
     window.until("the list of pages has no page of the invites", |window| {
-        window.shows("admin-nav-workspaces") && !window.shows("admin-nav-invites")
+        window.shows("admin-nav-members") && !window.shows("admin-nav-invites")
     });
     grant_server(&world, &admin.handle, own, ServerPermission::CreateInvites);
     open_page(&mut window, "admin-nav-invites", |window| {
@@ -1409,7 +1527,9 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
         |model| model.channel(plans).is_some(),
     );
 
-    // A member without "manage channel" has no page of the permissions.
+    // A member who may export the channel and does not hold "manage channel" opens its
+    // settings from the channel menu and has no page of the permissions (ADR 0761).
+    admin.allow_everyone(&world, &[WorkspacePermission::ExportChannel]);
     open_channel_settings(&mut window, "plans", plans);
     window.until("the settings have no page of the permissions", |window| {
         window.shows("channel-nav-archive") && !window.shows("channel-nav-permissions")
@@ -1613,6 +1733,7 @@ fn the_owner_exports_a_channel_saves_the_file_and_removes_the_export(cx: &mut Te
         document: document("kept in the export"),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(owner.api().send_message(PlaceId::Channel(plans), &message))
@@ -1627,7 +1748,7 @@ fn the_owner_exports_a_channel_saves_the_file_and_removes_the_export(cx: &mut Te
         });
     });
 
-    // The page "Archive and deletion" of the settings of the channel asks for the export.
+    // The page "Archive" of the settings of the channel asks for the export.
     open_channel_settings(&mut window, "plans", plans);
     open_page(&mut window, "channel-nav-archive", |window| {
         matches!(
@@ -1991,7 +2112,7 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
     }
 }
 
-/// What the open page "Archive and deletion" of a channel states.
+/// What the open page "Archive" of a channel states.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ArchivePage {
     /// The messages of the channel are permanent.
@@ -2065,7 +2186,7 @@ fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut T
     window.until("the settings are closed", |window| !window.shows("admin"));
 
     // The deletion of a channel with permanent messages is the owner's: the action is
-    // drawn, and a click opens no question.
+    // absent for another person (ADR 0790).
     open_channel_settings(&mut window, "plans", plans);
     open_page(&mut window, "channel-nav-archive", |window| {
         let permanent = ArchivePage {
@@ -2075,10 +2196,8 @@ fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut T
         };
         archive_page_of(window, plans) == Some(permanent)
     });
-    click_in_page(&mut window, "channel-delete");
     window.settle();
-    assert!(!window.shows("channel-delete-confirm"));
-    assert!(window.shows("channel-delete"));
+    assert!(!window.shows("channel-delete"));
 }
 
 /// Tab reaches "Open" and "Settings" of each archived channel for a member who may not
@@ -2127,8 +2246,8 @@ fn tab_reaches_each_archived_channel_of_a_member_who_may_not_restore(cx: &mut Te
     });
 }
 
-/// The settings of a channel that a member opens without "manage channel" show the page
-/// "Archive and deletion", the only one. When the role arrives, the pages of the channel
+/// The settings of a channel that a member who may export it opens without "manage channel"
+/// show the page "Archive", the only one. When the role arrives, the pages of the channel
 /// are offered, and the page that is shown stays (ADR 0761).
 #[gpui::test]
 fn a_role_that_arrives_keeps_the_shown_page_of_the_channel_settings(cx: &mut TestAppContext) {
@@ -2140,7 +2259,8 @@ fn a_role_that_arrives_keeps_the_shown_page_of_the_channel_settings(cx: &mut Tes
     let default = default_workspace(&world, &admin.handle);
     let notes = text_channel(&world, &admin.handle, default, "notes");
 
-    // The gear asks for the overview, which the member may not use.
+    // "Channel settings" asks for the overview, which the member may not use.
+    admin.allow_everyone(&world, &[WorkspacePermission::ExportChannel]);
     open_channel_settings(&mut window, "notes", notes);
     let unmanaged = ArchivePage {
         permanent: false,
@@ -2169,8 +2289,9 @@ fn a_role_that_arrives_keeps_the_shown_page_of_the_channel_settings(cx: &mut Tes
     assert_eq!(archive_page_of(&mut window, notes), Some(managed));
 }
 
-/// A page of the administration that the person may not use any more gives way to the page
-/// of the workspaces. When the permission returns, the page of the workspaces stays (ADR 0761).
+/// A page of Server settings that the person may not use any more gives way to the first page
+/// of the list, here the members of the workspace. When the permission returns, that page
+/// stays (ADR 0761).
 #[gpui::test]
 fn a_permission_that_returns_keeps_the_shown_page_of_the_administration(cx: &mut TestAppContext) {
     let world = World::new();
@@ -2193,15 +2314,15 @@ fn a_permission_that_returns_keeps_the_shown_page_of_the_administration(cx: &mut
         server_page!(window, Invites).is_some()
     });
     world.run(api.unassign_server_role(own, role)).unwrap();
-    window.until("the page of the workspaces is shown", |window| {
-        server_page!(window, Workspaces).is_some() && !window.shows("admin-nav-invites")
+    window.until("the page of the members is shown", |window| {
+        server_page!(window, Members).is_some() && !window.shows("admin-nav-invites")
     });
 
     world.run(api.assign_server_role(own, role)).unwrap();
     window.until("the page of the invites is offered again", |window| {
         window.shows("admin-nav-invites")
     });
-    assert!(server_page!(window, Workspaces).is_some());
+    assert!(server_page!(window, Members).is_some());
 }
 
 /// The answers to the questions before the ban and before the removal of an account close
@@ -2497,6 +2618,13 @@ const TOKENS: NewRowPage = NewRowPage {
     request: "/access-tokens",
 };
 
+/// The access tokens of the account, in the group "Your account": also for a person who is
+/// not an administrator, who creates none.
+const OWN_TOKENS: NewRowPage = NewRowPage {
+    nav: "admin-nav-own-tokens",
+    ..TOKENS
+};
+
 impl NewRowPage {
     /// The identifiers of the rows of the list in the state, when it is read.
     fn rows(self, window: &mut Window) -> Option<Vec<String>> {
@@ -2559,7 +2687,7 @@ impl NewRowPage {
         window.until("the form is open", |window| {
             try_reveal(window, self.create).is_some()
         });
-        if self.nav == TOKENS.nav {
+        if self.request == TOKENS.request {
             window.in_shell(|shell, window, cx| shell.type_token_name("setup", window, cx));
             window.settle();
         }
@@ -2849,35 +2977,43 @@ fn a_token_form_that_a_lost_permission_puts_away_holds_its_row_until_a_release(
     };
     let role = world.run(api.create_server_role(&role)).unwrap();
     world.run(api.assign_server_role(own, role.id)).unwrap();
+    // The role adds "Invite people" to the menu of the server: the menu opens after it, so
+    // that the item does not move "Administration" between the press and the release.
+    window.until("the menu offers the invite of the role", |window| {
+        window
+            .view()
+            .selected
+            .is_some_and(|server| server.may_invite_people)
+    });
     window.open_administration();
-    TOKENS.open(&mut window);
+    OWN_TOKENS.open(&mut window);
     window.until("the account may create a token", |window| {
         server_page!(window, Tokens).is_some_and(|page| page.may_create)
     });
-    TOKENS.open_form(&mut window);
-    proxy.hold_answer_ending("POST", TOKENS.request);
-    click_in_page(&mut window, TOKENS.create);
+    OWN_TOKENS.open_form(&mut window);
+    proxy.hold_answer_ending("POST", OWN_TOKENS.request);
+    click_in_page(&mut window, OWN_TOKENS.create);
     window.until("the answer waits", |_| proxy.answers_waiting() == 1);
 
     world.run(api.unassign_server_role(own, role.id)).unwrap();
     window.until("the form is put away", |window| {
-        !window.shows(TOKENS.form)
+        !window.shows(OWN_TOKENS.form)
             && server_page!(window, Tokens).is_some_and(|page| !page.may_create)
     });
     proxy.release();
     window.until("the secret is shown", |window| {
-        idle(window) && window.shows(TOKENS.result)
+        idle(window) && window.shows(OWN_TOKENS.result)
     });
-    let made = TOKENS.made(&mut window).unwrap();
+    let made = OWN_TOKENS.made(&mut window).unwrap();
     window.until("the state has the new token", |window| {
-        TOKENS.rows(window).unwrap_or_default().contains(&made)
+        OWN_TOKENS.rows(window).unwrap_or_default().contains(&made)
     });
     window.settle();
-    assert!(!window.shows(sel(TOKENS.row, &made)));
+    assert!(!window.shows(sel(OWN_TOKENS.row, &made)));
 
-    click_in_page(&mut window, TOKENS.done);
+    click_in_page(&mut window, OWN_TOKENS.done);
     window.until("the new token is in the list", |window| {
-        window.shows(sel(TOKENS.row, &made))
+        window.shows(sel(OWN_TOKENS.row, &made))
     });
 }
 
@@ -3506,7 +3642,7 @@ fn the_audit_log_goes_on_after_the_most_entries_that_the_page_keeps(cx: &mut Tes
     assert_eq!(end.passed + end.loaded, total);
     reveal_in_page(&mut window, "audit-count");
 
-    // "Read again" returns to the newest entries.
+    // "Try again" returns to the newest entries.
     click_in_page(&mut window, "audit-reload");
     let newest = awaited(&mut window, "the newest entries again", |window| {
         server_page!(window, AuditLog)
@@ -3785,4 +3921,106 @@ fn administration_people_have_identity_actions_without_leaving_the_page(cx: &mut
         "Bruno"
     );
     assert!(server_page!(&mut window, Members).is_some());
+}
+
+/// The overview of a workspace lists every voice channel that can be the AFK channel; the page
+/// scrolls to the last one (ADR 0761).
+#[gpui::test]
+fn the_workspace_overview_scrolls_to_its_last_afk_channel(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let workspace = default_workspace(&world, &owner);
+    let mut last = None;
+    for index in 0..30 {
+        let channel = CreateChannel {
+            topic: String::new(),
+            name: format!("room-{index:02}"),
+            kind: ChannelKind::Voice,
+            category_id: None,
+            position: None,
+        };
+        last = Some(
+            world
+                .run(owner.api().create_channel(workspace, &channel))
+                .unwrap()
+                .id,
+        );
+    }
+    let last = last.unwrap();
+    window.open_administration();
+    open_page(&mut window, "admin-nav-workspace-overview", |window| {
+        window.shows("afk-settings-open")
+    });
+    click_in_page(&mut window, "afk-settings-open");
+    let row = sel("afk-channel", last);
+    window.until("the voice channels are listed", |window| window.shows(row));
+    reveal_in_page(&mut window, row);
+}
+
+/// A page of the account in a low window scrolls to its last control (ADR 0781).
+#[gpui::test]
+fn a_page_of_the_account_scrolls_in_a_low_window(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.simulate(|cx| cx.simulate_resize(gpui::size(px(720.0), px(480.0))));
+    window.open_administration();
+    window.click("account-nav-departure");
+    window.until("the page of the departure is shown", |window| {
+        window.shows("account-delete")
+    });
+    reveal_in_page(&mut window, "account-delete");
+}
+
+/// The menu of a channel offers only what the person may do there: a rule of the channel
+/// that denies "manage channel" takes its Rename, Move to, Archive and Delete away, and
+/// another channel keeps them (ADR 0761, ADR 0731).
+#[gpui::test]
+fn the_menu_of_a_channel_leaves_out_what_its_rules_refuse(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let luca = window.view().person.account_id.unwrap();
+    let workspace = default_workspace(&world, &admin.handle);
+    grant_workspace(
+        &world,
+        &admin.handle,
+        workspace,
+        luca,
+        WorkspacePermission::ManageChannel,
+    );
+    let plans = text_channel(&world, &admin.handle, workspace, "plans");
+    let notes = text_channel(&world, &admin.handle, workspace, "notes");
+    world
+        .run(admin.handle.api().change_channel_rule(
+            plans,
+            RuleSubject::Person { account_id: luca },
+            WorkspacePermission::ManageChannel,
+            OverrideState::Deny,
+        ))
+        .unwrap();
+    window.open_administration();
+    open_page(&mut window, "admin-nav-channels", |window| {
+        window.shows(sel("admin-row-channel", plans))
+            && window.shows(sel("admin-row-channel", notes))
+    });
+    let items = |channel: ChannelId| {
+        ["rename", "move", "archive", "delete"].map(|item| sel(&format!("channel-{item}"), channel))
+    };
+    reveal_in_page(&mut window, sel("admin-row-channel", plans));
+    window.right_click_row(sel("admin-row-channel", plans));
+    assert!(window.shows(sel("channel-settings", plans)));
+    for item in items(plans) {
+        assert!(!window.shows(item), "{item} is offered");
+    }
+    window.press("escape");
+    reveal_in_page(&mut window, sel("admin-row-channel", notes));
+    window.right_click_row(sel("admin-row-channel", notes));
+    for item in items(notes) {
+        assert!(window.shows(item), "{item} is not offered");
+    }
+    window.press("escape");
 }

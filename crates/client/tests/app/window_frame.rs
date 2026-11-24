@@ -123,7 +123,7 @@ fn a_drawn_frame_puts_the_strip_with_the_window_buttons_above_the_columns(cx: &m
     assert_strip(&mut window);
     // A dialog covers the columns and leaves the strip and its buttons free.
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     assert!(window.shows("scale-4"));
     assert_strip(&mut window);
 }
@@ -190,8 +190,8 @@ fn the_headers_act_as_the_title_bar_where_no_control_is(cx: &mut TestAppContext)
     let book = point(px(20.0), column.top() + px(4.0));
     double_press(&mut window, book);
     assert_eq!(taken(&requests), [TitleBarRequest::DoublePress]);
-    // The button of the menu of the server lies in the header of the channels.
-    let menu = bounds(&mut window, "server-menu-button").center();
+    // The button of the menu of the workspace lies in the header of the channels.
+    let menu = bounds(&mut window, "workspace-menu-button").center();
     drag(&mut window, menu, menu + point(px(30.0), px(0.0)));
     assert_eq!(taken(&requests), []);
     window.press("escape");
@@ -207,7 +207,7 @@ fn the_strip_works_while_a_dialog_is_open(cx: &mut TestAppContext) {
     let requests = record_requests(cx);
     let (_directory, mut window) = named(cx, "Luca");
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     assert!(window.shows("scale-4"));
     window.click("window-minimize");
     assert_eq!(taken(&requests), [TitleBarRequest::Minimize]);
@@ -292,7 +292,7 @@ fn over_a_layer_the_top_band_is_the_title_bar_and_a_dialog_header_is_not(cx: &mu
         .cx
         .update(|window, cx| content_reaches_title_bar(window, cx));
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     assert!(window.shows("scale-4"));
     let band = bounds(&mut window, "title-band");
     assert_eq!(band.top(), px(0.0));
@@ -325,8 +325,8 @@ fn a_press_without_a_release_does_not_keep_a_menu_closed(cx: &mut TestAppContext
     let server = world.server("Menus");
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
-    window.click("server-menu-button");
-    assert!(window.shows("server-menu"));
+    window.click("workspace-menu-button");
+    assert!(window.shows("workspace-menu"));
     let width = window.cx.update(|window, _| window.viewport_size().width);
     let outside = point(width - px(40.0), px(300.0));
     window.dispatch(MouseDownEvent {
@@ -336,9 +336,12 @@ fn a_press_without_a_release_does_not_keep_a_menu_closed(cx: &mut TestAppContext
         click_count: 1,
         first_mouse: false,
     });
-    assert!(!window.shows("server-menu"));
-    window.click("server-menu-button");
-    assert!(window.shows("server-menu"), "the menu did not open again");
+    assert!(!window.shows("workspace-menu"));
+    window.click("workspace-menu-button");
+    assert!(
+        window.shows("workspace-menu"),
+        "the menu did not open again"
+    );
 }
 
 /// A menu has no cover over the headers: in the main window on macOS no band lies over them
@@ -353,7 +356,7 @@ fn a_menu_puts_no_band_over_the_headers_and_a_dialog_does(cx: &mut TestAppContex
     window
         .cx
         .update(|window, cx| content_reaches_title_bar(window, cx));
-    window.click("server-menu-button");
+    window.open_server_menu();
     assert!(window.shows("server-menu"));
     assert!(
         !window.shows("title-band"),
@@ -362,6 +365,6 @@ fn a_menu_puts_no_band_over_the_headers_and_a_dialog_does(cx: &mut TestAppContex
     window.press("escape");
     assert!(!window.shows("server-menu"));
     window.click("app-settings");
-    window.click("settings-section-interface");
+    window.click("settings-section-appearance");
     assert!(window.shows("scale-4") && window.shows("title-band"));
 }

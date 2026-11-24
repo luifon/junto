@@ -5,8 +5,8 @@
 use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallMove, ChannelCall, EntryRequest,
     InviteToCall, MAX_SHARES, MoveParticipant, MuteDirectConversation, OwnCallView,
-    ReportCallState, ReportScreenShare, ReportSpeaking, SetVoiceChannelStatus, ShareAudio,
-    ShareShows, UpdateCallSettings,
+    ReportCallState, ReportScreenShare, SetVoiceChannelStatus, ShareAudio, ShareShows,
+    UpdateCallSettings,
 };
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
 use junto_protocol::recording::{Recording, StartRecording};
@@ -153,13 +153,6 @@ impl ServerApi {
         self.act(Method::Delete, "/call/hand".to_owned()).await
     }
 
-    /// Reports whether the person speaks, for the marks that people outside the voice
-    /// channel see (ADR 0513).
-    pub async fn report_speaking(&self, speaking: bool) -> Result<(), ApiError> {
-        let report = ReportSpeaking { speaking };
-        self.put("/call/speaking".to_owned(), &report).await
-    }
-
     // The call of a voice channel.
 
     pub async fn channel_call(&self, channel_id: ChannelId) -> Result<ChannelCall, ApiError> {
@@ -243,7 +236,8 @@ impl ServerApi {
 
     /// Starts a recording of the call that the caller is in. The answer has the state
     /// `starting`; what follows arrives as events. `language`: the language of the speech
-    /// for the transcript, or nothing when it is to be detected.
+    /// for the transcript, `default` for the default language of the server, or nothing
+    /// when it is to be detected.
     pub async fn start_recording(
         &self,
         channel_id: ChannelId,

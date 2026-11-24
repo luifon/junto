@@ -40,8 +40,15 @@ fn holds(window: &mut Window, workspace_id: WorkspaceId) -> bool {
         .any(|row| row.id == workspace_id)
 }
 
-/// Types the code into the open redemption and sends it.
+/// Types the code into the open redemption and sends it. The menus open the tab Workspace of
+/// "Add server or workspace" (ADR 0732), which sends the code to the redemption.
 fn redeem(window: &mut Window, code: &InviteCode) {
+    if window.shows("add-window") {
+        window.click("add-code-field");
+        crate::rehearsal::type_into(window, "add-code-field", code.expose());
+        window.click("add-code-submit");
+        return;
+    }
     assert!(
         window.shows("redeem-invite"),
         "the redemption of the account is open"
@@ -66,7 +73,7 @@ fn a_member_joins_further_workspaces_from_the_menus_of_the_server(cx: &mut TestA
     let code = invite_for(&world, &admin, vec![lab.id, studio.id]);
 
     // The menu of the selected server.
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.click("menu-join-with-invite");
     redeem(&mut window, &code);
     window.until("the dialog names the two added workspaces", |window| {

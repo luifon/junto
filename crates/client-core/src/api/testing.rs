@@ -76,6 +76,14 @@ struct DeviceRow {
     origin: DeviceOrigin,
 }
 
+/// The relay of the link of a new device (ADR 0104), by the new device.
+struct Relay {
+    account_id: AccountId,
+    old_device: DeviceId,
+    offer: junto_protocol::device_relay::Sealed,
+    answer: Option<junto_protocol::device_relay::Sealed>,
+}
+
 struct Request {
     id: JoinRequestId,
     public_key: PublicKey,
@@ -98,6 +106,9 @@ struct World {
     invites: BTreeMap<String, u32>,
     requests: Vec<Request>,
     links: BTreeMap<String, (PublicKey, String)>,
+    relays: BTreeMap<DeviceId, Relay>,
+    /// A key that the answer of an approval names instead of the key of the added device.
+    approved_key: Option<PublicKey>,
     faults: Vec<(String, VecDeque<Fault>)>,
     /// Refusals with a status and a code of the test, by the end of the path.
     refusals: Vec<(String, u16, String)>,
@@ -142,10 +153,13 @@ impl FakeServer {
                     capabilities: junto_protocol::server::Capabilities {
                         afk_channel: true,
                         channel_topics: true,
+                        workspace_threads: true,
                         message_format: junto_protocol::message::DocumentFormat {
                             event_revision: junto_protocol::events::EVENT_REVISION,
                         },
                         search: junto_protocol::discovery::SearchCapabilities::ALL,
+                        status_text: true,
+                        device_link_relay: true,
                     },
                 },
                 owner_code: Some("OWNER-CODE".to_owned()),
@@ -159,6 +173,8 @@ impl FakeServer {
                 invites: BTreeMap::new(),
                 requests: Vec::new(),
                 links: BTreeMap::new(),
+                relays: BTreeMap::new(),
+                approved_key: None,
                 faults: Vec::new(),
                 refusals: Vec::new(),
                 held_answers: Vec::new(),
@@ -255,6 +271,34 @@ impl FakeServer {
     }
 
     /// The next requests whose path ends with `path` fail in the given ways, in order.
+    /// The relays of device links that the server keeps.
+    pub(crate) fn relay_count(&self) -> usize {
+        self.world().relays.len()
+    }
+
+    /// Replaces the answer in the relay of the new device `device_id`, as a server that
+    /// writes what it wants would.
+    pub(crate) fn write_answer(
+        &self,
+        device_id: DeviceId,
+        answer: junto_protocol::device_relay::Sealed,
+    ) {
+        if let Some(relay) = self.world().relays.get_mut(&device_id) {
+            relay.answer = Some(answer);
+        }
+    }
+
+    /// Makes the answer of the next approvals name `key` as the key of the added device, as
+    /// a server that writes what it wants would.
+    pub(crate) fn answer_approvals_with_key(&self, key: PublicKey) {
+        self.world().approved_key = Some(key);
+    }
+
+    /// Makes the server one that keeps no relay of device links.
+    pub(crate) fn without_relay(&self) {
+        self.world().info.capabilities.device_link_relay = false;
+    }
+
     pub(crate) fn fail(&self, path: &str, faults: impl IntoIterator<Item = Fault>) {
         self.world()
             .faults
@@ -387,6 +431,15 @@ impl FakeServer {
             .rfind(|request| request.public_key == public_key)
             .unwrap();
         request.state = JoinRequestState::Expired;
+    }
+
+    /// The device that has `public_key`.
+    pub(crate) fn device_of(&self, public_key: PublicKey) -> Option<DeviceId> {
+        self.world()
+            .devices
+            .iter()
+            .find(|device| device.public_key == public_key)
+            .map(|device| device.id)
     }
 
     pub(crate) fn account_of(&self, public_key: PublicKey) -> Option<AccountId> {
@@ -657,6 +710,38 @@ impl World {
         let reached = &reached;
         if let Some(account) = route.strip_prefix("/accounts/") {
             return self.account_route(request, account).map_err(plain);
+        }
+        if let Some(device) = route.strip_prefix("/account/device-link-relays/") {
+            let caller = self.session_device(request).map_err(plain)?;
+            let (caller_id, account_id) = (caller.id, caller.account_id);
+            let device_id: DeviceId = device.parse().map_err(|_| plain("not_found"))?;
+            let relay = self
+                .relays
+                .get(&device_id)
+                .filter(|relay| relay.account_id == account_id)
+                .ok_or(plain("not_found"))?;
+            return match request.method {
+                Method::Get if relay.old_device == caller_id => {
+                    let new_public_key = self
+                        .devices
+                        .iter()
+                        .find(|device| device.id == device_id)
+                        .map(|device| device.public_key)
+                        .ok_or(plain("not_found"))?;
+                    let answer = junto_protocol::device_relay::RelayAnswer {
+                        new_device_id: device_id,
+                        new_public_key,
+                        answer: relay.answer.clone(),
+                        expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(15),
+                    };
+                    json(200, &answer).map_err(plain)
+                }
+                Method::Delete if relay.old_device == caller_id || device_id == caller_id => {
+                    self.relays.remove(&device_id);
+                    Ok((204, Vec::new()))
+                }
+                _ => Err(plain("not_found")),
+            };
         }
         if let Some(recovery) = route.strip_prefix("/account/recovery-notices/") {
             let device_id = self.session_device(request).map_err(plain)?.id;
@@ -965,6 +1050,32 @@ impl World {
                     .collect();
                 json(200, &devices).map_err(plain)
             }
+            (Method::Get, "/account/device-link-relay") => {
+                let caller = self.session_device(request).map_err(plain)?;
+                let caller_id = caller.id;
+                let relay = self.relays.get(&caller_id).ok_or(plain("not_found"))?;
+                let old_public_key = self
+                    .devices
+                    .iter()
+                    .find(|device| device.id == relay.old_device)
+                    .map(|device| device.public_key)
+                    .ok_or(plain("not_found"))?;
+                let offer = junto_protocol::device_relay::RelayOffer {
+                    old_device_id: relay.old_device,
+                    old_public_key,
+                    offer: relay.offer.clone(),
+                    expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(15),
+                };
+                json(200, &offer).map_err(plain)
+            }
+            (Method::Put, "/account/device-link-relay/answer") => {
+                let caller_id = self.session_device(request).map_err(plain)?.id;
+                let body: junto_protocol::device_relay::AnswerRelay =
+                    read(request).map_err(plain)?;
+                let relay = self.relays.get_mut(&caller_id).ok_or(plain("not_found"))?;
+                relay.answer = Some(body.answer);
+                Ok((204, Vec::new()))
+            }
             (Method::Post, "/account/device-links/lookup") => {
                 self.session_device(request).map_err(plain)?;
                 let body: LookUpDeviceLink = read(request).map_err(plain)?;
@@ -994,11 +1105,25 @@ impl World {
                 }
                 self.links.remove(body.code.expose());
                 let id = self.add_device(account_id, public_key, &device_name, DeviceOrigin::Link);
-                let shown = self
+                if let Some(offer) = body.relay {
+                    self.relays.insert(
+                        id,
+                        Relay {
+                            account_id,
+                            old_device: approver_id,
+                            offer,
+                            answer: None,
+                        },
+                    );
+                }
+                let mut shown = self
                     .devices
                     .iter()
                     .find(|device| device.id == id)
                     .map(|device| device.shown(approver_id));
+                if let (Some(shown), Some(key)) = (shown.as_mut(), self.approved_key) {
+                    shown.public_key = key;
+                }
                 json(201, &shown).map_err(plain)
             }
             _ => Err(plain("not_found")),

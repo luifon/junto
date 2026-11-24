@@ -276,8 +276,7 @@ fn call_of(event: &Event) -> Option<(CallId, CallPlace)> {
         | Event::CallParticipantLeft { call_id, place, .. }
         | Event::CallLockChanged { call_id, place, .. }
         | Event::CallMeetingStarted { call_id, place, .. }
-        | Event::CallMeetingEnded { call_id, place, .. }
-        | Event::CallSpeaking { call_id, place, .. } => Some((*call_id, *place)),
+        | Event::CallMeetingEnded { call_id, place, .. } => Some((*call_id, *place)),
         Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => {
             Some((recording.call_id, place_of(recording)))
         }
@@ -756,7 +755,6 @@ impl ServerModel {
                 if let Some(call) = self.call_mut(*call_id, place, false) {
                     call.participants
                         .retain(|held| held.account_id != *account_id);
-                    call.speaking.retain(|held| held != account_id);
                 }
             }
             Event::CallLockChanged {
@@ -788,15 +786,6 @@ impl ServerModel {
                     for participant in &mut call.participants {
                         participant.microphone_block = None;
                     }
-                }
-            }
-            Event::CallSpeaking {
-                call_id,
-                place,
-                account_ids,
-            } => {
-                if let Some(call) = self.call_mut(*call_id, place, false) {
-                    call.speaking.clone_from(account_ids);
                 }
             }
             Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => {
@@ -1119,6 +1108,7 @@ impl ServerModel {
             // needs them (ADR 0207). The collections of the administration that a reader
             // has open follow them (ADR 0760); the state holds none of the others.
             Event::DeviceAdded { .. }
+            | Event::DeviceLinkRelayChanged { .. }
             | Event::DeviceRenamed { .. }
             | Event::DeviceRemoved { .. }
             | Event::DeviceLoggedIn { .. }

@@ -1,4 +1,4 @@
-# 0781. The account layer: profile and devices
+# 0781. The pages of the account: profile and devices
 
 ## Status
 
@@ -12,7 +12,8 @@ An account has a name and an avatar per server (ADR 0119) and one or more device
 
 One layer:
 
-- "Your account" is an item of the menu of the selected server. It opens one layer above the window, in the frame of the administration layer: a list of pages at the left and one page at the right. The pages are "Profile", "Devices" and "Recoveries".
+- The pages of the account are the group "Your account" of Server settings (ADR 0761): Profile, Linked devices, Recoveries and Leave or delete, with the exports and the own access tokens. "Your account" in the menu of a server opens Server settings at Profile. There is no separate layer of the account. Reason: name, picture and devices are stored per account per server (ADR 0119), so they belong to the layer of the server, and two separate places called "Your account" made a person know where a thing is stored before finding it. Settings keeps the name and the picture that a new account of this device starts with (ADR 0717).
+- While Server settings show a page of the account, the state of the pages of the account is open for that server and page; another page of the layer and the closing of the layer close it, with the link code that the devices page held. The page scrolls in the page area of the layer. Tests: the window tests `account::*` open the pages through the menu of the server.
 - The layer follows the rules of ADR 0761 for requests. Each request has the states sending and refused. A refusal is a sentence at the control that asked. Only the answer to the newest request of the open page changes what the page tells; an answer that arrives after the page changed or the layer closed is dropped.
 - A page sends one request at a time. While a request is on its way, the state of the layer starts no other request of that page, and the controls of the page that send one are disabled. Reason: the page holds the state of one request, so a second request would hide the first one and its refusal. What the page tells about a request that is on its way is not put away.
 - Every request of the layer is sent for the account that the layer was opened for (ADR 0714). When the server of the layer leaves the server book, or shows another account or none, the layer closes and keeps nothing.
@@ -49,10 +50,7 @@ Recoveries:
 
 Approval of a new device:
 
-- "Link a new device" on the devices page is the approving side of ADR 0112. It draws the four states of the flow of the client core: the entry of the code, the key to compare with "Approve" and "Cancel", "Device linked", and "outcome unknown" with "Check again".
-- The key of the new device is shown as the text that the command-line tool prints for a key, in groups of four characters (ADR 0782).
-- The flow belongs to the open page. It holds the code from the start of the lookup. The code field is emptied when the lookup starts, when the person cancels, when the link ends, and when the layer closes. Reason: the field needs the code only until the flow has it, and a code is not kept longer than it is needed. After a refusal, and after a lookup without an answer, the person types the code again.
-- An approval reads the list of devices again also when the event of the server was missed.
+- "Link a new device" on the devices page opens the layer of ADR 0782 in the role that approves a new device, with only the server of the page on. The person can turn the other servers on there. Reason: one flow links a device (ADR 0716), and the page does not keep a second form of it.
 
 Text of a server:
 
@@ -69,6 +67,4 @@ Each linked-device row has a context menu made from its current row actions (ADR
 - A server that tells device events without end causes one read after another, never two at once, and only while the devices page is open.
 - A person who removes the device of the session by mistake needs a device link or a recovery to return.
 - The name field does not follow a change of the name that another device makes while the page is open; the button then reads "Save" again.
-- The typed link code is held by the text input of the component library until the lookup starts, in memory that this crate cannot overwrite (ADR 0732 states the same of an invite code).
-- A person whose lookup got no answer types the 8 symbols of the code again.
 - A person who saves the name and chooses a picture does the second after the first has ended.

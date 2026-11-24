@@ -83,19 +83,23 @@ fn preview_keeps_reply_files_and_edit_state_in_a_conversation(cx: &mut TestAppCo
     assert_eq!(reply.reply_to, Some(root.id));
     assert_eq!(reply.attachments.len(), 1);
     window.in_shell(|shell, window, cx| shell.edit_message(Pane::Main, reply.id, window, cx));
-    let before = window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx));
-    window.click("composer-view-1");
+    let before = window.in_shell(|shell, _, cx| {
+        shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+    });
+    window.click("edit-composer-view-1");
     assert_eq!(
         window.in_shell(|shell, _, _| shell.compose_state(Pane::Main).1),
         Some(reply.id)
     );
-    window.click("composer-view-0");
+    window.click("edit-composer-view-0");
     assert_eq!(
-        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        window.in_shell(
+            |shell, _, cx| shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+        ),
         before
     );
-    window.click("composer-view-1");
-    window.click("send-message");
+    window.click("edit-composer-view-1");
+    window.click("edit-send-message");
     window.until("the previewed edit completes", |window| {
         window.in_shell(|shell, _, _| shell.compose_state(Pane::Main).1.is_none())
     });

@@ -3,9 +3,9 @@
 //! and the section "Version" of the settings.
 
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Entity, FocusHandle, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Window, div,
+    AnyElement, App, ClipboardItem, Context, Entity, FontWeight, Hsla, InteractiveElement,
+    IntoElement, ParentElement, Role, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, Window, div, prelude::FluentBuilder,
 };
 use gpui_base::input::InputState;
 use junto_client_core::version::Incompatibility;
@@ -18,8 +18,7 @@ use crate::state::view::{ServerRow, ShellView};
 use crate::text::book as txt;
 use crate::theme::{Theme, u};
 use crate::ui::{
-    Badge, Button, ButtonKind, Field, MenuItem, Notice, StyleExt, focus_ring, icon, tooltip,
-    unread_dot,
+    Badge, Button, ButtonKind, Field, MenuItem, Notice, StyleExt, tooltip, unread_dot,
 };
 
 /// What the window holds of the update notice.
@@ -38,8 +37,6 @@ pub(crate) struct BookUi {
     settings_scroll: ScrollHandle,
     /// The position of the list of the sections of the settings.
     pub(crate) settings_nav_scroll: ScrollHandle,
-    /// The keyboard focus of the update notice.
-    notice: FocusHandle,
 }
 
 impl BookUi {
@@ -56,7 +53,6 @@ impl BookUi {
             copied: None,
             settings_scroll: ScrollHandle::new(),
             settings_nav_scroll: ScrollHandle::new(),
-            notice: cx.focus_handle().tab_stop(true),
         }
     }
 }
@@ -174,11 +170,11 @@ impl Shell {
         }
     }
 
-    /// The items of the menu of the selected server that arrange the server book
-    /// (ADR 0780, ADR 0775): one step up and one step down, among the servers of its group
-    /// or among the top-level parts over a whole group; the choice of its group; the
-    /// collapse of its workspaces; and mark as read. An item at the end that it leads to
-    /// stays in the menu and keeps the keyboard focus; it does nothing and says why.
+    /// The items of the menu of a server that arrange the server book (ADR 0780, ADR 0775):
+    /// one step up and one step down, among the servers of its group or among the top-level
+    /// parts over a whole group, and the choice of its group. An item at the end that it
+    /// leads to stays in the menu and keeps the keyboard focus; it does nothing and says why.
+    /// `view` is the view in which the server of the menu is the selected one.
     pub(crate) fn render_move_items(
         &mut self,
         view: &ShellView,
@@ -204,7 +200,9 @@ impl Shell {
         .into_iter()
         .map(|(step, id, selector, at_end)| {
             MenuItem::new(id, txt::move_title(step))
-                .detail(txt::server_move_help(step, at_end, in_group))
+                .when(at_end, |item| {
+                    item.detail(txt::server_move_end(step, in_group))
+                })
                 .disabled(at_end)
                 .selector(selector)
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -217,65 +215,10 @@ impl Shell {
         items.push(
             MenuItem::new("server-group", txt::MOVE_TO_GROUP)
                 .icon(Icon::FolderOpen)
-                .detail(txt::MOVE_TO_GROUP_HELP)
                 .end_icon(Icon::ChevronRight)
                 .selector("menu-server-group")
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_layer(Layer::GroupChoice(server_id), window, cx);
-                }))
-                .into_any_element(),
-        );
-        if !row.workspaces.is_empty() {
-            let collapsed = row.workspaces_collapsed;
-            items.push(
-                MenuItem::new(
-                    "server-workspaces",
-                    if collapsed {
-                        txt::EXPAND_WORKSPACES
-                    } else {
-                        txt::COLLAPSE_WORKSPACES
-                    },
-                )
-                .icon(if collapsed {
-                    Icon::ChevronDown
-                } else {
-                    Icon::ChevronRight
-                })
-                .detail(if collapsed {
-                    txt::EXPAND_WORKSPACES_HELP
-                } else {
-                    txt::COLLAPSE_WORKSPACES_HELP
-                })
-                .selector("menu-server-workspaces")
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state.update(cx, |state, cx| {
-                        state.arrange(
-                            junto_client_core::arrangement::Change::CollapseWorkspaces {
-                                server: server_id,
-                                collapsed: !collapsed,
-                            },
-                            cx,
-                        );
-                    });
-                }))
-                .into_any_element(),
-            );
-        }
-        let unread = row.unread.any();
-        items.push(
-            MenuItem::new("mark-server-read", txt::MARK_SERVER_READ)
-                .icon(Icon::CheckDouble)
-                .detail(if unread {
-                    txt::MARK_SERVER_READ_HELP
-                } else {
-                    txt::NOTHING_UNREAD
-                })
-                .disabled(!unread)
-                .selector("menu-mark-server-read")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.state
-                        .update(cx, |state, _| state.mark_server_read(server_id, None));
-                    this.close_layer(window, cx);
                 }))
                 .into_any_element(),
         );
@@ -302,80 +245,10 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The notice of a newer build: one line of the channel column, directly above the
-    /// profile strip. The whole line is one control, which opens the section "Version" of
-    /// the settings. Nothing while the update check names no newer build.
-    pub(crate) fn render_update_notice(
-        &mut self,
-        view: &ShellView,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        self.settings_closed();
-        let update = view.update?;
-        let install = self.state.read(cx).supports_update_install();
-        let installed = self.state.read(cx).update_installed();
-        let colors = theme.colors;
-        let ring = focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
-        // The sentence of the line names no version: the name and the tooltip do.
-        let label: SharedString = txt::update_available(update.version).into();
-        Some(
-            div()
-                .id("update-notice")
-                .role(Role::Button)
-                .aria_label(label.clone())
-                .debug_selector(|| "update-notice".to_owned())
-                .tooltip(tooltip(label))
-                .track_focus(&self.book.notice)
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(u(7.0))
-                .h(u(30.0))
-                .mx(u(8.0))
-                .mb(u(8.0))
-                .px(u(9.0))
-                .rounded(u(theme.metrics.radius))
-                .border_1()
-                .border_color(Hsla::from(colors.cypress_wash_rule))
-                .bg(Hsla::from(colors.cypress_wash))
-                .typeface(theme.types.control, theme)
-                .text_size(u(13.0))
-                .ink(colors.cypress_ink)
-                .cursor_pointer()
-                .focus_visible(move |style| style.shadow(ring))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    // After an installed update the line restarts Junto.
-                    if installed {
-                        this.state
-                            .update(cx, |state, cx| state.restart_after_update(cx));
-                        return;
-                    }
-                    this.state.update(cx, |state, cx| state.install_update(cx));
-                    this.open_version_settings(window, cx);
-                }))
-                .child(icon(Icon::Download, 14.0, colors.cypress_ink))
-                .child(div().flex_1().min_w_0().truncate().child(txt::NEW_VERSION))
-                .child(
-                    div()
-                        .flex_none()
-                        .font_weight(FontWeight::BOLD)
-                        .underline()
-                        .child(if installed {
-                            txt::RESTART
-                        } else if install {
-                            txt::UPDATE
-                        } else {
-                            txt::DETAILS
-                        }),
-                )
-                .into_any_element(),
-        )
-    }
-
-    /// The version of this copy below "Add server": the version, where its update stands,
-    /// and the button of the next step (ADR 0780). Collapsed, the server book shows the
-    /// version number and, while a newer version waits, the button alone.
+    /// The version of this copy at the end of the server book, the one notice of a newer
+    /// version: the version with the button of the next step beside it, and where its update
+    /// stands (ADR 0780). Collapsed, the server book shows the version number and, while a
+    /// newer version waits, the button alone.
     pub(crate) fn render_client_version(
         &mut self,
         collapsed: bool,
@@ -383,6 +256,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         use crate::state::update_install::VersionAction;
+        self.settings_closed();
         let colors = theme.colors;
         let line = self.state.read(cx).version_line();
         let label = |action: VersionAction| match action {
@@ -468,9 +342,19 @@ impl Shell {
             .typeface(theme.types.small, theme)
             .child(
                 div()
-                    .ink(colors.bone_2)
-                    .debug_selector(|| "client-version-number".to_owned())
-                    .child(line.version.clone()),
+                    .flex()
+                    .items_center()
+                    .gap(u(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .ink(colors.bone_2)
+                            .debug_selector(|| "client-version-number".to_owned())
+                            .child(line.version.clone()),
+                    )
+                    .children(button.map(|button| div().flex_none().child(button))),
             )
             .child(
                 div()
@@ -482,7 +366,6 @@ impl Shell {
                     .debug_selector(|| "client-version-state".to_owned())
                     .child(line.sentence.clone()),
             )
-            .children(button.map(|button| div().flex().mt(u(2.0)).child(button)))
             .into_any_element()
     }
 
@@ -544,14 +427,25 @@ impl Shell {
                 .child(txt::VERSION)
                 .into_any_element(),
             div()
+                .flex()
                 .flex_none()
-                .typeface(theme.types.control, theme)
-                .font_weight(FontWeight::SEMIBOLD)
-                .ink(colors.ink)
-                .debug_selector(|| "version-build".to_owned())
-                .child(crate::selectable::SelectableText::value(
-                    txt::this_build(version.build),
-                    version.build.to_string(),
+                .items_center()
+                .gap(u(6.0))
+                .child(
+                    div()
+                        .typeface(theme.types.control, theme)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .ink(colors.ink)
+                        .debug_selector(|| "version-build".to_owned())
+                        .child(txt::this_build(version.build)),
+                )
+                .child(div().debug_selector(|| "copy-version".to_owned()).child(
+                    Self::value_copy_button(
+                        "copy-version",
+                        crate::text::COPY_VERSION,
+                        version.build.to_string(),
+                        cx,
+                    ),
                 ))
                 .into_any_element(),
             crate::ui::notice_slot("version-state-slot")
@@ -827,12 +721,6 @@ impl Shell {
     #[cfg(feature = "test-support")]
     pub fn release_page_was_copied(&self) -> bool {
         self.book.copied.is_some()
-    }
-
-    /// True while the update notice holds the keyboard focus.
-    #[cfg(feature = "test-support")]
-    pub fn update_notice_is_focused(&self, window: &Window) -> bool {
-        self.book.notice.is_focused(window)
     }
 
     /// True while the settings are open.

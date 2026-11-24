@@ -447,9 +447,28 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
         CallTab::Members
     );
     let row: &'static str = Box::leak(format!("call-member:{}", ada.account_id).into_boxed_str());
-    let slider: &'static str = Box::leak(format!("volume:{}", ada.account_id).into_boxed_str());
-    assert!(window.shows(row) && window.shows(slider));
+    // The volume of a person is in the menu of the person, not on the row (ADR 0735).
+    assert!(window.shows(row) && !window.shows_named(format!("volume:{}", ada.account_id)));
+    // One menu of a person in a call: the row of the list, the tile and the row of the
+    // channel give the same items in the same order (ADR 0735).
+    let mut menus = Vec::new();
+    for target in [
+        format!("call-member:{}", ada.account_id),
+        format!("call-tile:{}", ada.account_id),
+        format!("occupant:{}", ada.account_id),
+    ] {
+        window.right_click_named(target.clone());
+        assert!(window.shows("account-menu"), "{target}");
+        menus.push((target, person_menu_items(&mut window)));
+        window.press("escape");
+    }
+    assert!(menus[0].1.contains(&"call-menu-volume"), "{menus:?}");
+    for (target, items) in &menus[1..] {
+        assert_eq!(items, &menus[0].1, "{target}");
+    }
     let full = heard(&window.sound, ADMIN_TONE_HZ);
+    window.right_click_named(format!("call-member:{}", ada.account_id));
+    let slider = "call-menu-volume";
     // A click on the track sets the volume of that place, and takes the keyboard focus.
     window.click(slider);
     window.press(&["left"; 20].join(" "));
@@ -470,12 +489,13 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
     window.until("the administrator is quieter", |window| {
         (full - heard(&window.sound, ADMIN_TONE_HZ) - 6.0).abs() < 2.0
     });
+    window.press("escape");
 
     // The devices during the call: the settings button of the call opens the settings of the
     // application at "Voice and video". Their input level is the level of the call's own
     // microphone, they open no test, and a device chosen there is used by the call at once
     // (ADR 0735).
-    window.click("open-call-settings");
+    window.open_call_devices();
     assert!(window.shows("settings-page-settings-section-voice-and-video"));
     window.until(
         "the settings show the level of the call's microphone",
@@ -594,6 +614,7 @@ fn the_chat_of_a_call_is_read_when_its_tab_is_shown(cx: &mut TestAppContext) {
         },
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     let place = PlaceId::Channel(room(&mut window).id);
     world
@@ -650,8 +671,10 @@ fn push_to_talk_and_a_block_of_a_moderator_in_the_window(cx: &mut TestAppContext
     window.click("settings-section-voice-and-video");
     window.click_in_settings("input-mode-1");
     window.click_in_settings("confirm-push-to-talk");
-    window.until("the key is offered", |window| window.shows("talk-key-1"));
-    window.click_in_settings("talk-key-1");
+    window.until("the key is shown", |window| window.shows("talk-key"));
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_talk_keys(junto_client_core::voice::TalkKey::Control.combo(), cx);
+    });
     window.press("escape");
     window.click_channel(ROOM);
     window.click("join-call");
@@ -805,12 +828,13 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
         window.shows("share-sources")
     });
 
-    // Nothing is chosen for the person: without a picture and a sound, no share starts.
-    window.click("start-share");
-    assert!(window.in_shell(|shell, _, _| shell.share_picker_is_open()));
+    // "No sound" is chosen at the start, and the screen when it is the only one; the
+    // person chooses another sound before the share starts (ADR 0738).
     window.click("share-display:1");
-    window.click("start-share");
-    assert!(window.in_shell(|shell, _, _| shell.share_picker_is_open()));
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.share_picker_choice()),
+        Some((PictureSource::Display(1), SoundChoice::None))
+    );
     assert!(window.capture.started().is_empty());
     // The screen with all system sound.
     window.click("share-sound-1");
@@ -907,7 +931,10 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
         "the window plays the share of the administrator",
         |window| heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS,
     );
-    window.click("share-mute-header");
+    // The speaker of the watched share opens its mute and its volume (ADR 0738).
+    window.click("share-sound-control");
+    assert!(window.shows("share-sound-menu") && window.shows("share-volume"));
+    window.click("share-sound-mute");
     window.until(
         "the received share is muted without losing its picture",
         |window| {
@@ -916,7 +943,10 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
                 && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
         },
     );
-    window.tab_to("share-mute-header");
+    window.tab_to("share-sound-control");
+    window.press("enter");
+    assert!(window.shows("share-sound-menu"));
+    window.tab_to("share-sound-mute");
     window.press("enter");
     window.until("the share is audible again", |window| {
         heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
@@ -924,12 +954,16 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     share_controls::share_sound_keyboard_paths(&mut window);
     window.click("detach-call");
     let mut detached = window.call_window();
-    detached.click("share-mute-header");
+    detached.click("share-sound-control");
+    detached.click("share-sound-mute");
     detached.until("the detached share is muted", |window| {
         window.shows("share-picture") && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
     });
-    detached.tab_to("share-mute-header");
+    detached.tab_to("share-sound-control");
     detached.press("space");
+    assert!(detached.shows("share-sound-menu"));
+    detached.tab_to("share-sound-mute");
+    detached.press("enter");
     detached.until("the detached share is audible again", |window| {
         heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
     });
@@ -948,7 +982,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     });
 
     // The settings of a share and of the view are stored, and the strip hides the people.
-    window.click("open-call-settings");
+    window.open_call_devices();
     window.click_in_settings("share-resolution-0");
     window.click_in_settings("share-frame-rate-0");
     window.click_in_settings("hide-without-video");
@@ -972,7 +1006,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     // opens the camera that the call holds (ADR 0735).
     let (started, active) = (window.camera.started(), window.camera.active());
     assert_eq!(active, 1, "the call holds one capture");
-    window.click("open-call-settings");
+    window.open_call_devices();
     window.until("the settings show the picture of the call", |window| {
         window.shows("camera-preview-picture")
     });
@@ -1033,7 +1067,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     // The recording: the roles of the person do not allow it, until an administrator
     // gives "record calls" to every member. This server has no recorder, and the refusal
     // of the request is told.
-    assert!(window.shows("no-record-permission"));
+    assert!(window.shows("start-recording") && !window.may_record());
     let roles = world
         .run(admin.handle.api().workspace_roles(workspace_id))
         .unwrap();
@@ -1052,12 +1086,9 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
             },
         ))
         .unwrap();
-    window.until("the person may record", |window| {
-        !window.shows("no-record-permission")
-    });
+    window.until("the person may record", |window| window.may_record());
     // "Record" opens the languages of the speech; a choice sends the request (ADR 0616).
     window.click("start-recording");
-    window.click("record-language:auto");
     window.until("the refusal is told", |window| {
         window.shows("recording-error")
     });
@@ -1172,7 +1203,7 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
         })
     });
     window.click("call-share");
-    window.click("share-stop-all");
+    stop_the_one_share(&mut window);
     window.until("no own share is left", |window| {
         own_share(window) == OwnShare::Off && window.capture.running() == 0
     });
@@ -1214,10 +1245,15 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
     });
 
     let volume = stage(&mut window).unwrap().volume;
+    // The menu of the watched share has no sound control: the volume is in the menu of
+    // its speaker (ADR 0738).
     window.right_click_named("share-viewport".to_owned());
-    assert!(window.shows("call-menu-volume"));
-    window.press("down right");
-    window.until("the share menu changes shared sound volume", |window| {
+    assert!(!window.shows("call-menu-volume") && !window.shows("call-menu-mute-share"));
+    window.press("escape");
+    window.click("share-sound-control");
+    window.tab_to("share-volume");
+    window.press("right");
+    window.until("the speaker menu changes shared sound volume", |window| {
         stage(window).is_some_and(|stage| stage.volume == volume + 10)
     });
     window.press("escape");
@@ -1378,7 +1414,7 @@ fn a_person_shares_an_application_and_each_side_names_it_an_application(cx: &mut
         heard(&caller.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
     });
     window.click("call-share");
-    window.click("share-stop-all");
+    stop_the_one_share(&mut window);
     window.until("no own share is left", |window| {
         own_share(window) == OwnShare::Off && window.capture.running() == 0
     });
@@ -1539,7 +1575,7 @@ fn one_of_two_shares_ends_by_itself_and_its_notice_leaves_the_other_running(
             && heard(&caller.sound, SYSTEM_TONE_HZ) < ABSENT_DBFS
     });
     window.click("call-share");
-    window.click("share-stop-all");
+    stop_the_one_share(&mut window);
     window.until("no own share is left", |window| {
         own_share(window) == OwnShare::Off && window.capture.running() == 0
     });
@@ -1612,7 +1648,7 @@ fn try_again_opens_a_microphone_that_was_refused_or_that_failed(cx: &mut TestApp
 
     // The device stops, and it cannot be opened again by itself: the settings at "Voice and
     // video" state it with "Try again".
-    window.click("open-call-settings");
+    window.open_call_devices();
     assert!(!window.shows("retry-microphone"));
     let opened = window.sound.opened_inputs().len();
     let unplugged = AudioError::Failed("the device was disconnected".to_owned());
@@ -1726,4 +1762,44 @@ fn afk_inactivity_moves_the_window_and_the_notice_rejoins_the_previous_channel(
     });
     window.click("leave-call");
     window.until("the call ends", |window| window.view().call.is_none());
+}
+
+/// Stops the one own share from the menu of the share button: "Stop all shares" is only
+/// offered with two or more shares (ADR 0738).
+fn stop_the_one_share(window: &mut Window) {
+    let slot = window
+        .view()
+        .call
+        .and_then(|call| call.own_shares.first().map(|share| share.slot))
+        .expect("an own share");
+    assert!(!window.shows("share-stop-all"));
+    window.click_named(format!("share-stop:{slot}"));
+}
+
+/// The items of the open menu of a person in a call, in their order on the screen.
+fn person_menu_items(window: &mut Window) -> Vec<&'static str> {
+    let names = [
+        "call-menu-volume",
+        "call-person-pin",
+        "call-person-unpin",
+        "call-menu-allow-speak",
+        "call-menu-block-microphone",
+        "call-menu-lower-hand",
+        "call-menu-block-sound",
+        "call-menu-move",
+        "call-menu-disconnect",
+        "call-menu-invite",
+    ];
+    window.settle();
+    let mut shown: Vec<(f32, &'static str)> = names
+        .into_iter()
+        .filter_map(|name| {
+            window
+                .cx
+                .debug_bounds(name)
+                .map(|bounds| (f32::from(bounds.top()), name))
+        })
+        .collect();
+    shown.sort_by(|first, second| first.0.total_cmp(&second.0));
+    shown.into_iter().map(|(_, name)| name).collect()
 }

@@ -21,12 +21,11 @@ use junto_client_core::protocol::ids::{AccountId, DeviceId, ServerId, WorkspaceI
 
 use super::{Layer, Shell};
 use crate::assets::Icon;
-use crate::state::account::{AccountOpen, AccountPage, AccountView, AskKind, AskState, PageView};
+use crate::state::account::{AccountPage, AccountView, AskKind, AskState, PageView};
 use crate::text;
-use crate::theme::{Theme, theme, u};
+use crate::theme::{theme, u};
 use crate::ui::{
-    Button, ButtonKind, ChannelRow, Field, FieldEvent, FormSpace, ScrollArea, SideHeader, StyleExt,
-    float_shadow,
+    Button, ButtonKind, Field, FieldEvent, FormSpace, ScrollArea, SideHeader, float_shadow,
 };
 
 /// The width and the height of a layer with pages, in design pixels.
@@ -64,19 +63,13 @@ pub(crate) struct AccountUi {
     pub(crate) name: Entity<InputState>,
     /// The new name of a device.
     pub(crate) device_name: Entity<InputState>,
-    /// The link code of a new device.
-    pub(crate) code: Entity<InputState>,
     pub(crate) mode: Option<Mode>,
-    /// Why the text of the code field was not sent.
-    pub(crate) invalid: Option<&'static str>,
     /// Why a file that the dialog returned was not sent as the picture.
     pub(crate) picture_refused: Option<&'static str>,
     /// The request that the open form or question was sent as.
     pub(crate) sent: Option<AskKind>,
     /// The space of the rows of the devices with a form or a question (ADR 0730).
     pub(crate) space: FormSpace<Mode>,
-    pub(crate) nav_scroll: ScrollHandle,
-    pub(crate) page_scroll: ScrollHandle,
     /// What the layer drew last. A test reads the layer from it.
     #[cfg(feature = "test-support")]
     pub(crate) drawn: Option<AccountView>,
@@ -86,7 +79,6 @@ impl AccountUi {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> (Self, Vec<Subscription>) {
         let name = Field::state(text::account::NAME_FIELD, window, cx);
         let device_name = Field::state(text::account::DEVICE_NAME, window, cx);
-        let code = Field::state("", window, cx);
         let subscriptions = vec![
             Field::observe(
                 &name,
@@ -106,27 +98,14 @@ impl AccountUi {
                     FieldEvent::Submitted => this.submit_device_name(window, cx),
                 },
             ),
-            Field::observe(
-                &code,
-                window,
-                cx,
-                |this: &mut Shell, event, window, cx| match event {
-                    FieldEvent::Changed => this.link_code_changed(cx),
-                    FieldEvent::Submitted => this.submit_link_code(window, cx),
-                },
-            ),
         ];
         let ui = Self {
             name,
             device_name,
-            code,
             mode: None,
-            invalid: None,
             picture_refused: None,
             sent: None,
             space: FormSpace::default(),
-            nav_scroll: ScrollHandle::new(),
-            page_scroll: ScrollHandle::new(),
             #[cfg(feature = "test-support")]
             drawn: None,
         };
@@ -248,16 +227,25 @@ impl Shell {
             .into_any_element()
     }
 
-    /// Opens the account layer of the selected server at a page.
+    /// Opens Server settings of the selected server at a page of the account (ADR 0781).
     pub fn open_account(&mut self, page: AccountPage, window: &mut Window, cx: &mut Context<Self>) {
         let Some(server_id) = self.state.read(cx).view().selected.map(|server| server.id) else {
             return;
         };
+        self.open_admin(
+            crate::state::admin::AdminOpen::Server {
+                server_id,
+                page: crate::state::admin::AdminPage::of_account(page),
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Readies a page of the account that Server settings open, whatever opened it: the menu,
+    /// the list of pages or a link. The name field starts with the name that the server holds.
+    pub(crate) fn ready_account_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.reset_account_ui(window, cx);
-        self.state.update(cx, |state, cx| {
-            state.open_account(AccountOpen { server_id, page }, cx);
-        });
-        // The name field starts with the name that the server holds.
         let held = self
             .state
             .read(cx)
@@ -271,16 +259,6 @@ impl Shell {
                 .name
                 .update(cx, |field, cx| field.set_value(name, window, cx));
         }
-        match self.layer {
-            Layer::Account => {}
-            Layer::None => self.open_layer(Layer::Account, window, cx),
-            // The layer takes the place of the menu that opened it; the focus returns
-            // to where it was before that menu.
-            _ => {
-                self.layer = Layer::Account;
-                self.layer_focus().clone().focus(window, cx);
-            }
-        }
         cx.notify();
     }
 
@@ -288,7 +266,6 @@ impl Shell {
     /// code is not kept in a field that nobody sees.
     pub(crate) fn reset_account_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.account.mode = None;
-        self.account.invalid = None;
         self.account.picture_refused = None;
         self.account.sent = None;
         self.account.space.release();
@@ -296,11 +273,7 @@ impl Shell {
         {
             self.account.drawn = None;
         }
-        for field in [
-            self.account.name.clone(),
-            self.account.device_name.clone(),
-            self.account.code.clone(),
-        ] {
+        for field in [self.account.name.clone(), self.account.device_name.clone()] {
             field.update(cx, |field, cx| field.set_value("", window, cx));
         }
     }
@@ -354,7 +327,6 @@ impl Shell {
                 }
             }
         }
-        self.settle_link_code(view, window, cx);
     }
 
     fn account_name_changed(&mut self, cx: &mut Context<Self>) {
@@ -369,6 +341,11 @@ impl Shell {
                 .update(cx, |state, cx| state.dismiss_account_ask(cx));
         }
         cx.notify();
+    }
+
+    /// The text of the name field of the profile page. The window tests read it.
+    pub fn account_name_typed(&self, cx: &App) -> String {
+        self.account.name.read(cx).value().to_string()
     }
 
     /// Puts text into the name field of the profile page, as typing does.
@@ -430,7 +407,7 @@ impl Shell {
     /// does. The dialog can return a file while another request of the page is on its
     /// way: that file is not sent, and the page says so at the button.
     pub fn set_account_picture_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if !matches!(self.layer, Layer::Account) {
+        if !self.account_is_open(cx) {
             return;
         }
         if self.state.read(cx).account_busy() {
@@ -457,15 +434,16 @@ impl Shell {
     /// The scroll position of the page of the account layer, for the window tests.
     #[cfg(feature = "test-support")]
     pub fn account_scroll_handle(&self) -> ScrollHandle {
-        self.account.page_scroll.clone()
+        self.admin.page_scroll.clone()
     }
 
-    /// True while the account layer is open.
-    pub fn account_is_open(&self) -> bool {
-        matches!(self.layer, Layer::Account)
+    /// True while Server settings show a page of the account.
+    pub fn account_is_open(&self, cx: &App) -> bool {
+        matches!(self.layer, Layer::Admin) && self.state.read(cx).account_open().is_some()
     }
 
-    pub(crate) fn render_account(
+    /// The open page of the account, in the frame of Server settings (ADR 0781).
+    pub(crate) fn render_account_page(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -478,60 +456,17 @@ impl Shell {
         {
             self.account.drawn = Some(view.clone());
         }
-        let theme = theme(cx);
-        let nav = self.render_account_nav(view.selected, &theme, cx);
-        let page = match &view.page {
-            PageView::Profile(page) => self.render_profile_page(&view, page, window, cx),
-            PageView::Devices(page) => self.render_devices_page(&view, page, window, cx),
-            PageView::Recoveries(list) => self.render_recoveries_page(list, window, cx),
-            PageView::Departure(page) => self.render_departure_page(&view, page, cx),
-        };
-        let surface = Surface {
-            id: "account",
-            title: text::account::TITLE,
-            icon: Icon::Account,
-            note: view.server_name.clone().into(),
-            close_selector: "account-close",
-            nav: Some((nav, text::account::PAGES, self.account.nav_scroll.clone())),
-            page,
-            page_scroll: self.account.page_scroll.clone(),
-        };
-        self.render_surface(surface, window, cx)
-    }
-
-    fn render_account_nav(
-        &mut self,
-        selected: AccountPage,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut column = div().flex().flex_col().pt(u(6.0)).pb(u(10.0)).child(
-            div()
-                .flex_none()
-                .pt(u(10.0))
-                .px(u(14.0))
-                .pb(u(4.0))
-                .typeface(theme.types.label, theme)
-                .ink(theme.colors.bronze)
-                .truncate()
-                .child(text::account::ON_THIS_SERVER),
-        );
-        for page in [
-            AccountPage::Profile,
-            AccountPage::Devices,
-            AccountPage::Recoveries,
-            AccountPage::Departure,
-        ] {
-            let name = text::account::page_name(page);
-            column = column.child(
-                ChannelRow::new(name, text::account::page_icon(page), name)
-                    .selected(page == selected)
-                    .selector(text::account::page_selector(page))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_account(page, window, cx);
-                    })),
-            );
-        }
-        column.into_any_element()
+        div()
+            .id("account")
+            .debug_selector(|| "account".to_owned())
+            .flex()
+            .flex_col()
+            .child(match &view.page {
+                PageView::Profile(page) => self.render_profile_page(&view, page, window, cx),
+                PageView::Devices(page) => self.render_devices_page(&view, page, window, cx),
+                PageView::Recoveries(list) => self.render_recoveries_page(list, window, cx),
+                PageView::Departure(page) => self.render_departure_page(&view, page, cx),
+            })
+            .into_any_element()
     }
 }

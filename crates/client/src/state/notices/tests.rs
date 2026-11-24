@@ -165,6 +165,7 @@ impl Scene {
             pinned: false,
             files_removed_by_retention: false,
             reply_authors: Vec::new(),
+            comment: None,
         }
     }
 
@@ -399,10 +400,9 @@ fn the_level_without_a_stored_one_follows_the_order_of_the_server() {
     let (server_id, studio, general) = (scene.server_id, scene.studio, scene.general);
     let channel = SettingsScope::Channel(general);
     let workspace = SettingsScope::Workspace(studio);
-    let inherited = |scene: &Scene, scope| {
-        notify_panel(scene.server_id, "Acme", scope, &scene.model, &scene.known)
-            .unwrap()
-            .level
+    let inherited = |scene: &Scene, scope| LevelView {
+        stored: stored_settings(scene.server_id, scope, &scene.model, &scene.known).level,
+        inherited: inherited_level_of(scene.server_id, scope, &scene.model, &scene.known),
     };
 
     // The level of the administrators is the one of the state (ADR 0792).
@@ -489,7 +489,7 @@ fn the_level_without_a_stored_one_follows_the_order_of_the_server() {
 
     // A scope that the state does not hold has no dialog.
     let unknown = SettingsScope::Channel(ChannelId::generate());
-    assert!(notify_panel(server_id, "Acme", unknown, &scene.model, &scene.known).is_none());
+    assert!(notify_panel(server_id, unknown, &scene.model, &scene.known).is_none());
 }
 
 #[test]
@@ -497,47 +497,13 @@ fn the_dialog_of_a_scope_shows_what_belongs_to_it() {
     let mut scene = scene();
     let (server_id, studio, general) = (scene.server_id, scene.studio, scene.general);
     let panel = |scene: &Scene, scope| {
-        notify_panel(
-            scene.server_id,
-            "Acme Studio",
-            scope,
-            &scene.model,
-            &scene.known,
-        )
-        .unwrap()
+        notify_panel(scene.server_id, scope, &scene.model, &scene.known).unwrap()
     };
 
-    let account = panel(&scene, SettingsScope::Account);
-    assert_eq!(account.name, "Acme Studio");
-    assert!(account.channel.is_none() && account.workspace_default.is_none());
-
-    let workspace = panel(&scene, SettingsScope::Workspace(studio));
-    assert_eq!(workspace.name, "Studio");
-    assert_eq!(
-        workspace.workspace_default,
-        Some(WorkspaceDefault {
-            level: None,
-            may_set: false,
-            changing: false,
-        })
-    );
-    scene.model.account.is_owner = true;
-    scene.known.defaults_sent.insert(
-        (server_id, studio),
-        SentDefault {
-            level: Some(NotificationLevel::Nothing),
-            answered: None,
-        },
-    );
-    assert_eq!(
-        panel(&scene, SettingsScope::Workspace(studio)).workspace_default,
-        Some(WorkspaceDefault {
-            level: Some(NotificationLevel::Nothing),
-            may_set: true,
-            changing: true,
-        })
-    );
-    scene.known.defaults_sent.clear();
+    // The levels of the server and of a workspace are on the page of the account group.
+    for scope in [SettingsScope::Account, SettingsScope::Workspace(studio)] {
+        assert!(notify_panel(server_id, scope, &scene.model, &scene.known).is_none());
+    }
 
     // A channel: the two mention switches are on until the person turns one off.
     let scope = SettingsScope::Channel(general);
@@ -568,7 +534,6 @@ fn the_dialog_of_a_scope_shows_what_belongs_to_it() {
     let key = (server_id, scope.id());
     scene.known.notify_busy.insert(key);
     assert!(panel(&scene, scope).busy);
-    assert!(!panel(&scene, SettingsScope::Account).busy);
     scene.known.notify_busy.clear();
     scene.known.notify_sent.insert(
         key,
@@ -585,7 +550,6 @@ fn the_dialog_of_a_scope_shows_what_belongs_to_it() {
         panel(&scene, scope).refused.as_deref(),
         Some("Not allowed.")
     );
-    assert_eq!(panel(&scene, SettingsScope::Account).refused, None);
 }
 
 #[test]
@@ -679,7 +643,6 @@ fn the_quiet_times_are_shown_for_all_servers_and_tell_where_they_differ() {
         )
     };
     let shown = view(&first, &known);
-    assert_eq!(shown.do_not_disturb, Some(Agreement::All(false)));
     assert_eq!(shown.daily, Some(Agreement::All(None)));
     assert!(!shown.quiet_now && !shown.busy && shown.failed.is_empty());
 
@@ -697,7 +660,6 @@ fn the_quiet_times_are_shown_for_all_servers_and_tell_where_they_differ() {
         .quiet_failed
         .push((second.server_id, "No answer.".to_owned()));
     let shown = view(&first, &known);
-    assert_eq!(shown.do_not_disturb, Some(Agreement::Differs));
     assert_eq!(shown.daily, Some(Agreement::Differs));
     assert!(shown.quiet_now && shown.busy);
     assert_eq!(
@@ -718,7 +680,6 @@ fn the_quiet_times_are_shown_for_all_servers_and_tell_where_they_differ() {
         },
     );
     let shown = view(&first, &known);
-    assert_eq!(shown.do_not_disturb, Some(Agreement::All(true)));
     assert_eq!(shown.daily, Some(Agreement::All(Some(quiet))));
 
     // A server that a change left out is named with the reason, also without its state.
@@ -732,7 +693,7 @@ fn the_quiet_times_are_shown_for_all_servers_and_tell_where_they_differ() {
     );
 
     let none = quiet_view(&[], &[], None, &known);
-    assert_eq!((none.do_not_disturb, none.daily), (None, None));
+    assert_eq!(none.daily, None);
 }
 
 #[test]

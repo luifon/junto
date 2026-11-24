@@ -51,7 +51,6 @@ fn role(key: u128, permissions: &[W]) -> HeldRole {
 
 fn workspace(everyone: &[W], roles: Vec<HeldRole>) -> WorkspaceScope {
     WorkspaceScope {
-        person_override: Default::default(),
         membership: Membership::Member,
         everyone: set(everyone),
         roles,
@@ -60,7 +59,6 @@ fn workspace(everyone: &[W], roles: Vec<HeldRole>) -> WorkspaceScope {
 
 fn outside(everyone: &[W]) -> WorkspaceScope {
     WorkspaceScope {
-        person_override: Default::default(),
         membership: Membership::NotMember,
         everyone: set(everyone),
         roles: vec![],
@@ -1103,48 +1101,6 @@ fn server_person_overrides_follow_roles_and_owner_still_passes() {
 }
 
 #[test]
-fn workspace_person_overrides_follow_every_role() {
-    for permission in W::ALL {
-        let mut scope = workspace(&[*permission], vec![role(1, &[*permission])]);
-        scope.person_override = rule(&[], &[*permission]);
-        assert_eq!(
-            authorize(
-                &plain(),
-                &Request::Workspace {
-                    scope: &scope,
-                    permission: *permission
-                }
-            ),
-            missing(*permission)
-        );
-        scope.everyone = WorkspacePermissions::EMPTY;
-        scope.roles.clear();
-        scope.person_override = rule(&[*permission], &[]);
-        assert_eq!(
-            authorize(
-                &plain(),
-                &Request::Workspace {
-                    scope: &scope,
-                    permission: *permission
-                }
-            ),
-            Allow
-        );
-        scope.membership = Membership::NotMember;
-        assert_eq!(
-            authorize(
-                &plain(),
-                &Request::Workspace {
-                    scope: &scope,
-                    permission: *permission
-                }
-            ),
-            Deny(Denial::NotMember)
-        );
-    }
-}
-
-#[test]
 fn channel_person_overrides_follow_everyone_and_role_overrides() {
     for permission in W::ALL {
         let mut scope = channel(
@@ -1236,37 +1192,6 @@ fn publishing_requires_connect_even_when_a_person_is_allowed_the_source() {
 }
 
 #[test]
-fn a_workspace_person_rule_comes_before_the_channel_rules() {
-    let mut base = workspace(&[W::ViewChannel, W::Connect], vec![role(1, &[])]);
-    base.person_override = rule(&[W::SendMessages], &[]);
-    let denied_by_role = channel(
-        base.clone(),
-        Override::NONE,
-        vec![role_rule(1, &[], &[W::SendMessages])],
-    );
-    let request = |scope| Request::Channel {
-        scope,
-        permission: W::SendMessages,
-    };
-    assert_eq!(
-        authorize(&plain(), &request(&denied_by_role)),
-        missing(W::SendMessages)
-    );
-    let allowed = channel(base.clone(), Override::NONE, vec![]);
-    assert_eq!(authorize(&plain(), &request(&allowed)), Allow);
-
-    let mut denied = workspace(&[W::ViewChannel, W::Connect, W::SendMessages], vec![]);
-    denied.person_override = rule(&[], &[W::SendMessages]);
-    let none = channel(denied.clone(), Override::NONE, vec![]);
-    assert_eq!(
-        authorize(&plain(), &request(&none)),
-        missing(W::SendMessages)
-    );
-    let opened = channel(denied, rule(&[W::SendMessages], &[]), vec![]);
-    assert_eq!(authorize(&plain(), &request(&opened)), Allow);
-}
-
-#[test]
 fn a_person_rule_counts_toward_what_a_caller_may_grant() {
     let mut scope = channel(
         workspace(&[W::ViewChannel], vec![role(1, &[W::ManageChannel])]),
@@ -1285,22 +1210,6 @@ fn a_person_rule_counts_toward_what_a_caller_may_grant() {
         let request = Request::ManageChannelOverrides {
             scope: &scope,
             granting,
-        };
-        assert_eq!(authorize(&plain(), &request), expected);
-    }
-    let mut manager = workspace(&[W::ViewChannel], vec![role(1, &[W::ManageRoles])]);
-    manager.person_override = rule(&[W::RecordCalls], &[]);
-    for (granting, expected) in [
-        (set(&[W::RecordCalls]), Allow),
-        (
-            set(&[W::ExportChannel]),
-            Deny(Denial::ExceedsOwnPermissions),
-        ),
-    ] {
-        let request = Request::ManageWorkspaceRoles {
-            scope: &manager,
-            granting,
-            in_channels: &[],
         };
         assert_eq!(authorize(&plain(), &request), expected);
     }

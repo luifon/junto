@@ -6,7 +6,7 @@ fn invite_people_in_the_server_menu_opens_the_invite_form(cx: &mut TestAppContex
     let world = World::new();
     let server = world.server("Harbor");
     let (_directory, mut window, _owner) = crate::admin_pages::owner_window(cx, &server);
-    window.click("server-menu-button");
+    window.open_server_menu();
     assert!(window.shows("menu-invite-people"));
     window.click("menu-invite-people");
     window.until("the invite form opens directly", |window| {
@@ -21,7 +21,7 @@ fn a_member_without_invite_permission_has_no_invite_shortcut(cx: &mut TestAppCon
     let server = world.server("Harbor");
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
-    window.click("server-menu-button");
+    window.open_server_menu();
     assert!(!window.shows("menu-invite-people"));
     let account = window.view().person.account_id.unwrap();
     world

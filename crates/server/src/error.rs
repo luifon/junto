@@ -64,6 +64,11 @@ impl ApiError {
         Self::new(ErrorCode::Conflict, message)
     }
 
+    /// The route was retired. The message names the change (ADR 0201).
+    pub fn retired(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(ErrorCode::Retired, message)
+    }
+
     /// An object holds the largest number of parts that the server allows (ADR 0306).
     pub fn limit_reached(message: impl Into<Cow<'static, str>>) -> Self {
         Self::new(ErrorCode::LimitReached, message)

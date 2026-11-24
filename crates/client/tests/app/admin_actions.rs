@@ -83,7 +83,7 @@ fn server_roles_are_created_renamed_changed_ordered_given_taken_and_deleted(
             .any(|row| row.id == helpers && row.name == "Operators")
     );
 
-    click_in_page(&mut window, sel("role-permissions", helpers));
+    click_in_page(&mut window, sel("role-select", helpers));
     let role = RoleRef::Server(helpers);
     let permission = RolePermission::Server(ServerPermission::CreateInvites);
     for on in [true, false, true] {
@@ -117,7 +117,7 @@ fn server_roles_are_created_renamed_changed_ordered_given_taken_and_deleted(
             on
         );
     }
-    click_in_page(&mut window, sel("role-permissions", helpers));
+    click_in_page(&mut window, sel("role-select", helpers));
     for (button, expected) in [
         ("role-up", vec![helpers, readers]),
         ("role-down", vec![readers, helpers]),
@@ -246,7 +246,8 @@ fn an_override_can_allow_a_permission_and_be_removed_as_a_whole(cx: &mut TestApp
             .of_role(role_of(&row))
             .is_some_and(|rule| rule.allow.contains(&WorkspacePermission::ManageMessages))
     );
-    click_in_page(&mut window, "override-lock_room-deny");
+    // A text channel lists no permission of calls (ADR 0761).
+    click_in_page(&mut window, "override-attach_files-deny");
     window.until("both changes are shown", |window| {
         idle(window)
             && everyone_role(window).is_some_and(|row| row.allowed() == 1 && row.denied() == 1)
@@ -257,8 +258,8 @@ fn an_override_can_allow_a_permission_and_be_removed_as_a_whole(cx: &mut TestApp
     });
     reveal_in_page(&mut window, "override-manage_messages-neutral");
     assert_drawn_label(&mut window, "Manage messages: Neutral, chosen");
-    reveal_in_page(&mut window, "override-lock_room-neutral");
-    assert_drawn_label(&mut window, "Lock room: Neutral, chosen");
+    reveal_in_page(&mut window, "override-attach_files-neutral");
+    assert_drawn_label(&mut window, "Attach files: Neutral, chosen");
     assert!(!window.shows(sel("override-clear", role_of(&row))));
     assert!(
         world
@@ -288,6 +289,13 @@ fn archive_and_retention_settings_are_saved_and_can_be_set_to_never(cx: &mut Tes
     .into_iter()
     .enumerate()
     {
+        // The files of direct messages are kept for the whole server: their row is on the
+        // overview of the server (ADR 0761).
+        if index == 3 {
+            open_page(&mut window, "admin-nav-server", |window| {
+                server_page!(window, Server).is_some()
+            });
+        }
         for days in [Some(14), None] {
             click_in_page(&mut window, control);
             if let Some(days) = days {
@@ -297,21 +305,14 @@ fn archive_and_retention_settings_are_saved_and_can_be_set_to_never(cx: &mut Tes
                 click_in_page(&mut window, "days-never");
             }
             window.until("the retention setting is shown", |window| {
-                let Some(page) = server_page!(window, Archive) else {
-                    return false;
-                };
+                let settings = server_page!(window, Archive).and_then(|page| page.settings);
                 let value = match index {
-                    0 => page
-                        .settings
-                        .and_then(|value| value.loaded().map(|days| days.archive_period)),
-                    1 => page
-                        .settings
-                        .and_then(|value| value.loaded().map(|days| days.file_retention)),
-                    2 => page
-                        .settings
+                    0 => settings.and_then(|value| value.loaded().map(|days| days.archive_period)),
+                    1 => settings.and_then(|value| value.loaded().map(|days| days.file_retention)),
+                    2 => settings
                         .and_then(|value| value.loaded().map(|days| days.recording_retention)),
-                    _ => page
-                        .direct_retention
+                    _ => server_page!(window, Server)
+                        .and_then(|page| page.direct_retention)
                         .and_then(|value| value.loaded().copied()),
                 };
                 idle(window) && value == Some(days) && !window.shows("days-field")
@@ -336,7 +337,9 @@ fn archive_and_retention_settings_are_saved_and_can_be_set_to_never(cx: &mut Tes
 }
 
 #[gpui::test]
-fn an_invite_grants_the_chosen_workspace_and_can_be_revoked_in_the_window(cx: &mut TestAppContext) {
+fn an_invite_grants_the_default_and_the_chosen_workspace_and_can_be_revoked_in_the_window(
+    cx: &mut TestAppContext,
+) {
     let world = World::new();
     let server = world.server("Harbor");
     let (_directory, mut window, owner) = owner_window(cx, &server);
@@ -348,6 +351,7 @@ fn an_invite_grants_the_chosen_workspace_and_can_be_revoked_in_the_window(cx: &m
     open_page(&mut window, "admin-nav-invites", |window| {
         server_page!(window, Invites).is_some()
     });
+    // The default workspace is in every invite: its switch is on and takes no press.
     click_in_page(&mut window, "invite-new");
     click_in_page(&mut window, sel("invite-workspace", default));
     click_in_page(&mut window, sel("invite-workspace", second.id));
@@ -401,17 +405,18 @@ fn an_invite_grants_the_chosen_workspace_and_can_be_revoked_in_the_window(cx: &m
             .find(|row| row.id == made.invite_id)
             .unwrap()
             .workspace_ids,
-        [second.id]
+        [default, second.id]
     );
     let (_device, member) = joined(&world, &server, &InviteCode::new(copied), "Mira");
     let workspaces = world.run(member.api().workspaces()).unwrap();
-    assert_eq!(
-        workspaces
-            .iter()
-            .map(|workspace| workspace.id)
-            .collect::<Vec<_>>(),
-        [second.id]
-    );
+    let mut joined_ids = workspaces
+        .iter()
+        .map(|workspace| workspace.id)
+        .collect::<Vec<_>>();
+    joined_ids.sort();
+    let mut expected = vec![default, second.id];
+    expected.sort();
+    assert_eq!(joined_ids, expected);
     click_in_page(&mut window, "invite-code-done");
     assert!(!window.shows("invite-code-copy"));
 
@@ -550,21 +555,17 @@ fn a_member_redeems_a_further_workspace_and_switches_with_its_row(cx: &mut TestA
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Mira");
     let id = window.own_account();
     assert_eq!(window.view().workspace().unwrap().id, default);
-    window.open_administration();
-    open_page(&mut window, "admin-nav-workspaces", |window| {
-        server_page!(window, Workspaces).is_some()
-    });
-    click_in_page(&mut window, "redeem-open");
-    type_field(&mut window, "redeem-code", code.expose());
-    click_in_page(&mut window, "admin-form-send");
+    // "Add server or workspace", tab Workspace: the code joins a further workspace of the
+    // selected server (ADR 0732).
+    window.click("add-server");
+    window.click("add-tab-workspace");
+    window.click("add-code-field");
+    crate::rehearsal::type_into(&mut window, "add-code-field", code.expose());
+    window.click("add-code-submit");
     window.until("the further workspace is joined", |window| {
-        window.shows("redeemed")
-            && server_page!(window, Workspaces).is_some_and(|page| {
-                page.rows
-                    .iter()
-                    .any(|row| row.id == second.id && row.member)
-            })
+        window.shows("redeemed-workspaces")
     });
+    window.click("redeem-done");
     assert!(
         world
             .run(admin.handle.api().workspace_members(second.id))
@@ -572,7 +573,6 @@ fn a_member_redeems_a_further_workspace_and_switches_with_its_row(cx: &mut TestA
             .iter()
             .any(|row| row.account_id == id)
     );
-    window.click("admin-close");
     if window.shows("expand-server-book") {
         window.click("expand-server-book");
     }

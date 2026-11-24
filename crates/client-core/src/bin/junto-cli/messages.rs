@@ -378,6 +378,7 @@ async fn perform(server: &ServerHandle, action: Action) -> Result<Vec<String>, F
                 document: plain(&text),
                 reply_to,
                 attachments,
+                comment: None,
             };
             message_lines(&api.send_message(place, &message).await.map_err(failed)?)
         }

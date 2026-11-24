@@ -38,6 +38,6 @@ Move:
 - An invited or moved person can make a voice channel hold more people than its user limit.
 - A person without access to a channel cannot be invited into it. Access is given by a role or an override (ADR 0301).
 - During a move a client is connected to two LiveKit rooms for a short time.
-- A voice channel that hides who is inside shows no occupants, no level meters and no speaking marks to people outside it (ADR 0507).
+- A voice channel that hides who is inside shows no occupants to people outside it (ADR 0507).
 - Moves are written to the audit log (ADR 0303).
 - A person can be dragged between voice channels in the client. Each drag action also exists in a menu that the keyboard can reach (ADR 0703).

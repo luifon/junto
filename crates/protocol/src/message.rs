@@ -1,6 +1,16 @@
 //! Text messages and attachment uploads (ADR 0408).
 
+/// The header with which a client tells that it reads group conversations (ADR 0302).
 pub const GROUPS_HEADER: &str = "junto-group-conversations";
+/// The value of `GROUPS_HEADER` of a client that reads group conversations. A server of 0.2
+/// takes this value only, so every client sends it.
+pub const GROUPS_READ: &str = "1";
+/// The header with which a client tells that it reads a group without a name. A client
+/// without it receives a name for such a group, which the clients of 0.2 require. A server of
+/// 0.2 ignores the header and keeps the groups of the client.
+pub const GROUP_NAMES_HEADER: &str = "junto-group-names";
+/// The value of `GROUP_NAMES_HEADER` of a client that reads a group without a name.
+pub const GROUP_NAMES_OPTIONAL: &str = "optional";
 use crate::ids::{
     AccountId, AttachmentId, ChannelId, ConversationId, MessageId, RecordingId, WorkspaceId,
     WorkspaceRoleId,
@@ -113,6 +123,10 @@ pub const MAX_FORWARDED_BYTES: usize = 256 * 1024;
 pub const MAX_LIST_ITEMS: usize = 5_500;
 pub const DOCUMENT_REVISION: u32 = 9;
 pub const FORWARD_SNAPSHOT_REVISION: u32 = 10;
+/// The event revision from which a forward carries a comment of its own (ADR 0408).
+pub const FORWARD_COMMENT_REVISION: u32 = 25;
+/// The compact JSON bytes of the comment of a forward, as of an ordinary document.
+pub const MAX_COMMENT_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -273,6 +287,10 @@ pub struct Message {
     /// their first reply that is not deleted (ADR 0413).
     #[serde(default)]
     pub reply_authors: Vec<AccountId>,
+    /// The comment that the sender of a forward wrote with it, kept apart from the forwarded
+    /// content in `document` (ADR 0408). Absent for every other message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<Document>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -290,12 +308,20 @@ pub struct SendMessage {
     /// The completed uploads that the message holds. The message lists them in this order.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
+    /// The comment of a forward: only with a document that holds a forward origin
+    /// (ADR 0408).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<Document>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct EditMessage {
     pub document: Document,
+    /// The new comment of a forward. Absent: the comment stays; a document without blocks
+    /// removes it (ADR 0408).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<Document>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -463,6 +489,25 @@ pub struct FollowedThreads {
     pub more: bool,
     /// Pass as `before` to read the next page. Absent on the last page.
     pub next: Option<String>,
+}
+
+/// One page of the threads of a workspace that the caller follows, unread ones first
+/// (ADR 0413).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct WorkspaceThreads {
+    pub threads: Vec<WorkspaceThread>,
+    pub more: bool,
+    /// Pass as `before` to read the next page. Absent on the last page.
+    pub next: Option<String>,
+}
+
+/// One followed thread of a workspace, with its channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct WorkspaceThread {
+    pub channel_id: ChannelId,
+    pub state: ThreadState,
 }
 
 /// One page of threads with unread replies or mentions, newest first.

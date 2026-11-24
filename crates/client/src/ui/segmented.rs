@@ -5,6 +5,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 
+use super::OwnPress as _;
 use super::{StyleExt, focus_ring_inside};
 use crate::theme::{theme, u};
 
@@ -67,6 +68,8 @@ impl Segmented {
                     icon: None,
                     disabled: self.selected == Some(index),
                     detail: None,
+                    shortcut: None,
+                    selector: None,
                     handler: Some(std::rc::Rc::new(move |_, window, cx| {
                         handler(index, window, cx)
                     })),
@@ -143,6 +146,7 @@ impl RenderOnce for Segmented {
                     segment.border_l_1().border_color(Hsla::from(colors.rule))
                 })
                 .cursor_pointer()
+                .own_press_focusing(&focus[index])
                 .track_focus(&focus[index])
                 .children(super::reveal::report(&focus[index], window))
                 .when(!on, |segment| {

@@ -40,9 +40,10 @@ use crate::state::feed::{
 use crate::state::view::{DraftFile, ServerLists, ShellView, Writing};
 use crate::text;
 use crate::theme::{Theme, theme, u};
+use crate::ui::OwnPress as _;
 use crate::ui::{
     Avatar, Button, ButtonKind, ContextMenuExt, Menu, MenuItem, Notice, StatePanel, StyleExt,
-    focus_ring_inside, icon, ledge, tooltip,
+    focus_ring_inside, icon, tooltip,
 };
 
 /// The side of a picture of an author in the thread line of a message, in pixels of the
@@ -400,7 +401,8 @@ pub(crate) struct MessageMenuOpen {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ComposerMenuOpen {
-    pub pane: Pane,
+    /// The composer or the editor of a row whose text the menu changes.
+    pub pen: super::Pen,
     pub server_id: ServerId,
     pub place: PlaceId,
     pub owner: junto_client_core::Owner,
@@ -500,7 +502,6 @@ struct Rich {
     people: Vec<(Range<usize>, super::account_menus::AccountTarget)>,
     channels: Vec<(Range<usize>, ChannelId)>,
     spoilers: Vec<(Range<usize>, Vec<usize>)>,
-    copy_targets: Vec<(Range<usize>, String)>,
     replacements: Vec<(Range<usize>, String)>,
     /// The stand-ins of the emoji that the fonts do not draw, with the tooltip of each.
     stand_ins: Vec<(Range<usize>, String)>,
@@ -545,7 +546,6 @@ impl Rich {
             people: Vec::new(),
             channels: Vec::new(),
             spoilers: Vec::new(),
-            copy_targets: Vec::new(),
             replacements: Vec::new(),
             stand_ins: Vec::new(),
         };
@@ -599,7 +599,6 @@ impl Rich {
                     let stand_ins = rich.push_shown(text, drawings);
                     rich.padding();
                     let range = start..rich.text.len();
-                    rich.copy_targets.push((range.clone(), text.clone()));
                     let style = HighlightStyle {
                         color: Some(colors.terracotta_deep.into()),
                         background_color: Some(colors.code_wash.into()),
@@ -631,7 +630,6 @@ impl Rich {
                         ..HighlightStyle::default()
                     };
                     rich.style(range.clone(), style, &stand_ins, theme);
-                    rich.copy_targets.push((range.clone(), link.to_string()));
                     rich.links.push((range, link));
                 }
                 Inline::Spoiler { content } => {
@@ -647,17 +645,6 @@ impl Rich {
                                 background_color: Some(colors.ink_3.into()),
                                 ..HighlightStyle::default()
                             },
-                        ));
-                        rich.copy_targets.push((
-                            range.clone(),
-                            crate::state::feed::copy_text(
-                                &Document {
-                                    blocks: vec![Block::Paragraph {
-                                        content: content.clone(),
-                                    }],
-                                },
-                                names,
-                            ),
                         ));
                         rich.spoilers.push((range, path));
                     }
@@ -1043,7 +1030,6 @@ impl RenderOnce for RichElement {
             people,
             channels,
             spoilers,
-            copy_targets,
             replacements,
             stand_ins,
         } = self.rich;
@@ -1116,7 +1102,6 @@ impl RenderOnce for RichElement {
         if targets.is_empty() && stand_ins.is_empty() {
             return menus.wrap(crate::selectable::SelectableText::rich(
                 styled,
-                copy_targets,
                 replacements,
             ));
         }
@@ -1152,7 +1137,7 @@ impl RenderOnce for RichElement {
             .tooltip(move |index, window, cx| {
                 hover_label(&hover, &stand_ins, index).map(|label| tooltip(label)(window, cx))
             });
-        let text = crate::selectable::SelectableText::rich(text, copy_targets, replacements);
+        let text = crate::selectable::SelectableText::rich(text, replacements);
         let Some((focus, selected)) = focus_state else {
             return menus.wrap(text);
         };
@@ -1461,14 +1446,12 @@ fn code_block(
                             Some(id) => format!("copy-code:{id}:{block_index}"),
                             None => format!("copy-code:{block_index}"),
                         })
-                        .child(
-                            Button::new(("copy-code", block_index))
-                                .label(text::COPY)
-                                .tooltip(text::COPY_TEXT)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.copy_text(copy.clone(), cx)
-                                })),
-                        ),
+                        .child(Shell::value_copy_button(
+                            ("copy-code", block_index),
+                            text::COPY_CODE,
+                            copy,
+                            cx,
+                        )),
                 ),
         )
         .child(crate::ui::code_text(code.to_owned().into(), colours))
@@ -1484,6 +1467,28 @@ impl Shell {
             Pane::Main => view.lists()?.feed.as_ref(),
             Pane::Thread => view.workspace()?.thread.as_ref()?.feed.as_ref(),
         }
+    }
+
+    /// The row of a message that a pane shows: a row of its list, or in the thread pane the
+    /// root of the thread, which stands above the list of its replies with its read actions
+    /// only (ADR 0740). The actions of a message, its edit and the question before its
+    /// deletion find it here, so the root offers no action that its menu does not show.
+    pub(crate) fn message_row_of(&self, pane: Pane, message_id: MessageId) -> Option<MessageRow> {
+        let listed = self.pane_feed(pane)?.rows.iter().find_map(|row| match row {
+            FeedRow::Message(row) if row.message.id == message_id => Some(row.clone()),
+            _ => None,
+        });
+        listed.or_else(|| {
+            let root = self
+                .view
+                .as_ref()?
+                .workspace()?
+                .thread
+                .as_ref()?
+                .root
+                .clone()?;
+            (pane == Pane::Thread && root.message.id == message_id).then(|| root.read_only())
+        })
     }
 
     /// Takes a new view: each list gets the rows of its feed, and the read position
@@ -1505,6 +1510,7 @@ impl Shell {
             self.thread_feed.drawn = false;
         }
         self.composer_follows(view, window, cx);
+        self.members_follow(view, cx);
         self.keep_pictures_of_present_owners(cx);
         let at_end = self.feed.at_end();
         self.feed_seen(Pane::Main, main, at_end, window, cx);
@@ -1655,6 +1661,19 @@ impl Shell {
             }
         });
         self.feed_seen(pane, Some(&feed), following, window, cx);
+    }
+
+    /// Scrolls the list of a pane as little as needed to show the row of a message: the
+    /// editor of a row is drawn in that row (ADR 0740).
+    pub(crate) fn reveal_feed_message(&self, pane: Pane, message_id: MessageId) {
+        let list = self.list(pane);
+        let index = list
+            .rows
+            .iter()
+            .position(|row| matches!(row, FeedRow::Message(row) if row.message.id == message_id));
+        if let Some(index) = index {
+            list.list.scroll_to_reveal_item(index);
+        }
     }
 
     /// Moves the list of a pane to one of its rows. The tool that measures the time of a
@@ -2347,7 +2366,7 @@ impl Shell {
                 .register();
                 if !matches!(&quote.text, QuoteText::Deleted) {
                     crate::ui::RowAction::new(
-                        text::COPY_TARGET_LINK,
+                        text::COPY_MESSAGE_LINK,
                         cx.listener(move |this, _, _, cx| {
                             let state = this.state.read(cx);
                             let link = state
@@ -2811,6 +2830,7 @@ impl Shell {
         feed: &Feed,
         row: &MessageRow,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let message = &row.message;
@@ -2824,20 +2844,6 @@ impl Shell {
         let colors = theme.colors;
         let (server_id, message_id) = (feed.server_id, message.id);
         let drawings = Drawings::of(cx);
-        let first_key = message.reactions.first().and_then(|reaction| {
-            self.reactor_key(
-                server_id,
-                PlaceId::of_message(message),
-                message_id,
-                reaction.emoji.clone(),
-                cx,
-            )
-        });
-        let emojis: Vec<String> = message
-            .reactions
-            .iter()
-            .map(|reaction| reaction.emoji.clone())
-            .collect();
         let chips: Vec<_> = message
             .reactions
             .iter()
@@ -2903,9 +2909,16 @@ impl Shell {
                         chip.aria_description(reason).cursor_not_allowed()
                     })
                     .when(acts, |chip| {
+                        // A press on the chip is its own: it starts no text selection of the
+                        // message (ADR 0731).
+                        let focus = crate::ui::row_focus(
+                            SharedString::from(format!("reaction-focus:{message_id}:{index}")),
+                            window,
+                            cx,
+                        );
                         chip.cursor_pointer()
-                            .focusable()
-                            .tab_stop(true)
+                            .own_press_focusing(&focus)
+                            .track_focus(&focus)
                             .focus_visible(move |style| style.shadow(ring))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let emoji = sent.clone();
@@ -2939,55 +2952,11 @@ impl Shell {
                 .gap(u(5.0))
                 .mt(u(4.0))
                 .children(chips)
-                .when(can_react && !may_add, |row| {
-                    let refused = text::not_permitted(WorkspacePermission::AddReactions);
-                    row.child(
-                        div()
-                            .id("add-reaction-refused")
-                            .role(Role::Button)
-                            .aria_label(text::REACT)
-                            .aria_description(refused)
-                            .debug_selector(move || format!("add-reaction-refused:{message_id}"))
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .h(u(23.0))
-                            .px(u(5.0))
-                            .rounded(u(theme.metrics.radius))
-                            .border_1()
-                            .border_color(Hsla::from(colors.rule_soft))
-                            .cursor_not_allowed()
-                            .tooltip(tooltip(refused))
-                            .child(icon(Icon::SmilePlus, 14.0, colors.ink_3)),
-                    )
-                })
-                .when_some(first_key, |row, key| {
-                    row.child(
-                        div()
-                            .debug_selector(move || format!("reaction-people:{message_id}"))
-                            .child(
-                                Button::new("reaction-people")
-                                    .kind(ButtonKind::Ghost)
-                                    .h(u(23.0))
-                                    .px(u(5.0))
-                                    .icon(Icon::People)
-                                    .tooltip(text::WHO_REACTED)
-                                    .accessible_label(text::WHO_REACTED)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_reaction_people(
-                                            key.clone(),
-                                            emojis.clone(),
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                            ),
-                    )
-                })
                 .when(may_add, |row| {
                     row.child(
                         div()
                             .id("add-reaction")
+                            .debug_selector(move || format!("add-reaction:{message_id}"))
                             .role(Role::Button)
                             .aria_label(text::REACT)
                             .flex()
@@ -3614,261 +3583,33 @@ impl Shell {
                 } else {
                     None
                 };
-                row.child(
-                    div()
-                        .id(("download-failed", index))
-                        .tooltip(tooltip(sentence))
-                        .child(icon(Icon::Warning, 14.0, colors.cinnabar)),
-                )
-                .children(permission)
-                .child(forget("retry-download", text::TRY_AGAIN, cx))
-                .into_any_element()
+                // The reason is a text beside the warning, and "Try again" downloads again.
+                let attachment = attachment.clone();
+                row.child(icon(Icon::Warning, 14.0, colors.cinnabar))
+                    .child(
+                        div()
+                            .id(("download-failed", index))
+                            .tooltip(tooltip(sentence.clone()))
+                            .child(small(sentence.into(), colors.cinnabar_ink)),
+                    )
+                    .children(permission)
+                    .child(named(
+                        "retry-download",
+                        Button::new(("retry-download", index))
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::Retry)
+                            .tooltip(text::TRY_AGAIN)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.forget_download(server_id, attachment_id, cx);
+                                    state.download(server_id, &attachment, cx);
+                                });
+                            })),
+                    ))
+                    .into_any_element()
             }
             Some((DownloadStage::Cancelled, _)) => row.child(start(cx)).into_any_element(),
         }
-    }
-
-    /// The actions of a message at the pointer: react, reply, edit and delete.
-    fn action_bar(
-        &mut self,
-        feed: &Feed,
-        row: &MessageRow,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme.colors;
-        let message_id = row.message.id;
-        let server_id = feed.server_id;
-        let pane = Pane::of(feed.place);
-        let pinned = row.message.pinned;
-        let channel_id = crate::state::feed::channel_of(feed.place);
-        let owner = self.state.read(cx).owner(server_id);
-        let drawings = Drawings::of(cx);
-        let recent: Vec<_> = self
-            .state
-            .read(cx)
-            .recent_emoji()
-            .iter()
-            .filter_map(|value| emojis::get(value))
-            .filter(|emoji| drawings.drawing(emoji) != crate::emoji::Drawing::Broken)
-            .take(3)
-            .collect();
-        let quick: Vec<_> = if row.can_react && !row.react_refused {
-            recent
-                .into_iter()
-                .enumerate()
-                .map(|(index, emoji)| {
-                    let sign = emoji.as_str();
-                    div()
-                        .flex_none()
-                        .debug_selector(move || format!("quick-emoji:{message_id}:{sign}"))
-                        .child(
-                            Button::new(("quick-emoji", index))
-                                .kind(ButtonKind::Ghost)
-                                .label(sign)
-                                .tooltip(emoji.name())
-                                .h(u(22.0))
-                                .min_w(u(26.0))
-                                .px(u(1.0))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if this.state.read(cx).owner(server_id) == owner {
-                                        this.state.update(cx, |state, cx| {
-                                            state.react(
-                                                server_id,
-                                                message_id,
-                                                sign.to_owned(),
-                                                true,
-                                                cx,
-                                            )
-                                        });
-                                    }
-                                })),
-                        )
-                        .into_any_element()
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let action = |id: &'static str, shown: Icon, label: &'static str| {
-            div()
-                .id(id)
-                .debug_selector(move || format!("{id}:{message_id}"))
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(u(26.0))
-                .h(u(22.0))
-                .rounded(u(theme.metrics.radius_small))
-                .cursor_pointer()
-                .hover(move |style| style.bg(Hsla::from(colors.plaster)))
-                .tooltip(tooltip(label))
-                .child(icon(shown, 15.0, colors.ink_2))
-        };
-        // An action that the permissions of the channel do not allow: drawn without its
-        // act, with the reason (ADR 0790).
-        let refused = |id: &'static str, shown: Icon, label: &'static str, reason: &'static str| {
-            div()
-                .id(id)
-                .role(Role::Button)
-                .aria_label(label)
-                .aria_description(reason)
-                .debug_selector(move || format!("{id}-refused:{message_id}"))
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(u(26.0))
-                .h(u(22.0))
-                .rounded(u(theme.metrics.radius_small))
-                .cursor_not_allowed()
-                .tooltip(tooltip(reason))
-                .child(icon(shown, 15.0, colors.ink_3))
-        };
-        div()
-            .debug_selector(move || format!("message-actions:{message_id}"))
-            .absolute()
-            .top(u(-10.0))
-            .right(u(18.0))
-            .flex()
-            .flex_wrap()
-            .max_w_full()
-            .justify_end()
-            .items_center()
-            .gap(u(1.0))
-            .px(u(3.0))
-            .py(u(2.0))
-            .rounded(u(theme.metrics.radius))
-            .border_1()
-            .border_color(Hsla::from(colors.rule))
-            .bg(Hsla::from(colors.travertine_hi))
-            .shadow(ledge(colors.rule))
-            .when_some(row.message.document.as_ref(), |bar, document| {
-                let copied = self.copied_document(document, &feed.names, cx);
-                bar.child(
-                    div()
-                        .debug_selector(move || format!("copy-message:{message_id}"))
-                        .child(
-                            Button::new("copy-message")
-                                .kind(ButtonKind::Ghost)
-                                .label(text::COPY_TEXT)
-                                .h(u(22.0))
-                                .px(u(6.0))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.copy_text(copied.clone(), cx)
-                                })),
-                        ),
-                )
-            })
-            .when(row.can_react && row.react_refused, |bar| {
-                bar.child(refused(
-                    "react",
-                    Icon::SmilePlus,
-                    text::REACT,
-                    text::not_permitted(WorkspacePermission::AddReactions),
-                ))
-            })
-            .when(row.can_react && !row.react_refused, |bar| {
-                bar.child(
-                    action("react", Icon::SmilePlus, text::REACT).on_click(cx.listener(
-                        move |this, _, window, cx| {
-                            this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
-                        },
-                    )),
-                )
-            })
-            .children(quick)
-            .when(row.can_reply, |bar| {
-                bar.child(
-                    action("reply", Icon::Reply, text::REPLY).on_click(cx.listener(
-                        move |this, _, window, cx| {
-                            this.reply_to_message(pane, message_id, window, cx);
-                        },
-                    )),
-                )
-            })
-            .when_some(
-                row.thread_refused
-                    .filter(|_| row.can_thread && pane == Pane::Main),
-                |bar, permission| {
-                    bar.child(refused(
-                        "thread",
-                        Icon::Chat,
-                        text::REPLY_IN_THREAD,
-                        text::not_permitted(permission),
-                    ))
-                },
-            )
-            .when_some(
-                channel_id.filter(|_| {
-                    row.can_thread && row.thread_refused.is_none() && pane == Pane::Main
-                }),
-                |bar, channel_id| {
-                    bar.child(
-                        action("thread", Icon::Chat, text::REPLY_IN_THREAD).on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.open_thread(server_id, channel_id, message_id, window, cx);
-                            },
-                        )),
-                    )
-                },
-            )
-            .when(row.can_pin, |bar| {
-                bar.child(
-                    action(
-                        "pin",
-                        Icon::Pin,
-                        if pinned { text::UNPIN } else { text::PIN },
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.state.update(cx, |state, cx| {
-                            state.set_pinned(server_id, message_id, !pinned, cx);
-                        });
-                    })),
-                )
-            })
-            .when(row.can_edit, |bar| {
-                bar.child(action("edit", Icon::Edit, text::EDIT).on_click(cx.listener(
-                    move |this, _, window, cx| this.edit_message(pane, message_id, window, cx),
-                )))
-            })
-            .when(row.can_delete, |bar| {
-                bar.child(
-                    action("delete", Icon::Trash, text::DELETE).on_click(cx.listener(
-                        move |this, _, window, cx| {
-                            this.open_layer(Layer::ConfirmDelete(message_id), window, cx);
-                        },
-                    )),
-                )
-            })
-            // A permanent message has no edit, and no delete for anybody but an
-            // administrator (ADR 0402).
-            .when(row.message.permanent && !row.message.deleted, |bar| {
-                bar.child(
-                    div()
-                        .id("no-edit")
-                        .debug_selector(move || format!("no-edit:{message_id}"))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(u(5.0))
-                        .h(u(22.0))
-                        .ml(u(3.0))
-                        .pl(u(7.0))
-                        .pr(u(5.0))
-                        .border_l_1()
-                        .border_color(Hsla::from(colors.rule_soft))
-                        .text_size(u(12.5))
-                        .ink(colors.ink_2)
-                        .whitespace_nowrap()
-                        .child(icon(Icon::EditOff, 14.0, colors.ink_2))
-                        .child(if row.can_delete {
-                            text::NO_EDIT
-                        } else {
-                            text::NO_EDIT_OR_DELETE
-                        }),
-                )
-            })
-            .into_any_element()
     }
 
     /// The line above a pinned message.
@@ -4049,24 +3790,31 @@ impl Shell {
                         .pr(u(9.0))
                         .rounded(u(theme.metrics.radius))
                         .border_1()
-                        .border_color(Hsla::from(colors.rule))
-                        .bg(Hsla::from(colors.travertine_hi))
+                        // The chip of the thread that the side panel shows is drawn in the
+                        // selected style, as a selected row is (ADR 0741).
+                        .border_color(Hsla::from(if mark.open {
+                            colors.terracotta_deep
+                        } else {
+                            colors.rule
+                        }))
+                        .bg(Hsla::from(if mark.open {
+                            colors.limestone_lo
+                        } else {
+                            colors.travertine_hi
+                        }))
                         .text_size(u(13.0))
-                        // A thread whose replies the person may not read is shown without
-                        // its act, with the reason (ADR 0790).
-                        .when_some(
-                            row.thread_refused.filter(|_| row.can_thread),
-                            |chip, permission| {
-                                let reason = text::not_permitted(permission);
-                                chip.aria_description(reason)
-                                    .cursor_not_allowed()
-                                    .tooltip(tooltip(reason))
-                            },
-                        )
+                        // A thread whose replies the person may not read shows its count
+                        // without an act (ADR 0790).
                         .when(row.can_thread && row.thread_refused.is_none(), |chip| {
+                            // A press on the chip is its own (ADR 0731).
+                            let focus = crate::ui::row_focus(
+                                SharedString::from(format!("thread-chip-focus:{message_id}")),
+                                window,
+                                cx,
+                            );
                             chip.cursor_pointer()
-                                .focusable()
-                                .tab_stop(true)
+                                .own_press_focusing(&focus)
+                                .track_focus(&focus)
                                 .hover(move |style| style.bg(Hsla::from(colors.plaster)))
                                 .focus_visible(move |style| {
                                     style.shadow(focus_ring_inside(
@@ -4176,16 +3924,6 @@ impl Shell {
                                     .child(SharedString::from(unread)),
                             )
                         })
-                        .when(mark.open, |chip| {
-                            chip.child(
-                                div()
-                                    .flex_none()
-                                    .text_size(u(12.5))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .ink(colors.terracotta_deep)
-                                    .child(text::SHOWN_IN_PANEL),
-                            )
-                        })
                         .map(|chip| self.thread_chip_menu(chip, feed, row, window, cx)),
                 )
                 .into_any_element(),
@@ -4207,6 +3945,7 @@ impl Shell {
         let colors = theme.colors;
         let message = &row.message;
         let message_id = message.id;
+        let pane = Pane::of(feed.place);
         let side = if compact { 14.0 } else { 16.0 };
         let seed = message
             .author_id
@@ -4226,6 +3965,39 @@ impl Shell {
                     name: row.author.clone(),
                     departed: feed.names.departed.contains_key(&account_id),
                 });
+        // The message that the person edits shows the editor of its row in place of its
+        // text (ADR 0740).
+        let edited = !bare
+            && self
+                .pen(super::Pen::Edit(pane))
+                .editing
+                .as_ref()
+                .is_some_and(|editing| editing.message_id == message_id);
+        // The editor stands where the edited text is: in place of the comment of a forward,
+        // whose forwarded content stays under it (ADR 0408), and in place of the text of
+        // another message, whose files and reactions stay.
+        let forward = message
+            .document
+            .as_ref()
+            .is_some_and(|document| document.forward_origins() > 0);
+        let mut editor = edited.then(|| {
+            div()
+                .debug_selector(move || format!("message-editor:{message_id}"))
+                .mt(u(2.0))
+                .mb(u(4.0))
+                .child(self.render_composer(
+                    super::Pen::Edit(pane),
+                    &[],
+                    super::composer::Mode {
+                        compact: true,
+                        permanent: false,
+                        writing: Writing::OPEN,
+                    },
+                    window,
+                    cx,
+                ))
+                .into_any_element()
+        });
         let body: Vec<AnyElement> = if message.deleted {
             vec![
                 div()
@@ -4234,17 +4006,44 @@ impl Shell {
                     .into_any_element(),
             ]
         } else {
-            let mut body = match &message.document {
-                Some(document) => self.document(
+            // The comment of a forward stands above the forwarded content, in the same row
+            // (ADR 0408).
+            let mut body: Vec<AnyElement> = Vec::new();
+            if forward {
+                body.extend(editor.take());
+            }
+            body.extend(
+                message
+                    .comment
+                    .as_ref()
+                    .filter(|_| !(edited && forward))
+                    .map(|comment| {
+                        div()
+                            .debug_selector(move || format!("forward-comment:{message_id}"))
+                            .mb(u(4.0))
+                            .children(self.document(
+                                (Some(feed.server_id), None),
+                                comment,
+                                Some((feed, message, false)),
+                                &feed.names,
+                                &theme,
+                                cx,
+                            ))
+                            .into_any_element()
+                    }),
+            );
+            if let Some(editor) = editor.take() {
+                body.push(editor);
+            } else if let Some(document) = &message.document {
+                body.extend(self.document(
                     (Some(feed.server_id), None),
                     document,
                     Some((feed, message, row.can_edit)),
                     &feed.names,
                     &theme,
                     cx,
-                ),
-                None => Vec::new(),
-            };
+                ));
+            }
             body.extend(self.attachments(
                 (feed.server_id, feed.place),
                 message,
@@ -4271,7 +4070,7 @@ impl Shell {
                         .into_any_element(),
                 );
             }
-            body.extend(self.reactions(feed, row, &theme, cx));
+            body.extend(self.reactions(feed, row, &theme, window, cx));
             if !bare {
                 body.extend(self.thread_chip(feed, row, &theme, window, cx));
             }
@@ -4341,26 +4140,31 @@ impl Shell {
         let open_menu = matches!(&self.layer, Layer::MessageMenu(open)
                 if open.message_id == message_id && open.pane == pane && open.read_only == bare);
         let menu = open_menu.then(|| {
-            let mut shown = row.clone();
-            if bare {
-                shown.can_react = false;
-                shown.can_reply = false;
-                shown.can_thread = false;
-                shown.can_pin = false;
-                shown.can_edit = false;
-                shown.can_delete = false;
-            }
+            let shown = if bare {
+                row.clone().read_only()
+            } else {
+                row.clone()
+            };
             self.render_message_menu(&shown, feed, window, cx)
         });
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         // A message without an action has no bar and no menu: a permanent one still has the
         // bar, which states that it cannot be changed.
         let offers = row.has_actions() || row.message.permanent;
+        // The bar, with its menu button, is drawn while the pointer is over the message and
+        // while the message holds the keyboard focus (ADR 0731).
+        let focus = crate::ui::row_focus(
+            SharedString::from(format!("message-focus:{}:{message_id}", pane.id("feed"))),
+            window,
+            cx,
+        );
+        let focused = focus.is_focused(window);
         let actions = (offers
             && !message.deleted
             && !bare
-            && self.hovered_message == Some((pane, message_id)))
-        .then(|| self.action_bar(feed, row, &theme, cx));
+            && !edited
+            && (self.hovered_message == Some((pane, message_id)) || focused))
+            .then(|| self.action_bar(feed, row, &theme, cx));
         let label: SharedString = format!(
             "{}, {}: {}",
             row.author,
@@ -4400,8 +4204,7 @@ impl Shell {
             .when(!message.deleted, |frame| {
                 let has_actions = row.has_actions();
                 frame
-                    .focusable()
-                    .tab_stop(true)
+                    .track_focus(&focus)
                     .focus_visible(move |style| style.shadow(ring))
                     .when(!bare, |frame| {
                         frame.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -4589,7 +4392,21 @@ impl Shell {
                 }
             })
             .collect();
-        let body = self.document(
+        let mut body: Vec<AnyElement> = Vec::new();
+        if let Some(comment) = &pending.comment {
+            body.extend(self.document(
+                (
+                    Some(feed.server_id),
+                    Some(DocumentSource::Pending(pending.id)),
+                ),
+                comment,
+                None,
+                &feed.names,
+                &theme,
+                cx,
+            ));
+        }
+        body.extend(self.document(
             (
                 Some(feed.server_id),
                 Some(DocumentSource::Pending(pending.id)),
@@ -4599,7 +4416,7 @@ impl Shell {
             &feed.names,
             &theme,
             cx,
-        );
+        ));
         let frame = div()
             .id(("waiting", pending.id))
             .focusable()
@@ -4778,9 +4595,20 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.members_open = false;
-        self.state.update(cx, |state, cx| {
-            state.open_thread(server_id, channel_id, root_id, cx);
-        });
+        if self.detached {
+            // The call window opens the thread in its own panel (ADR 0741).
+            self.show_call_tab(super::call::CallTab::Chat, cx);
+            self.state.update(cx, |state, cx| {
+                state.open_in_call_window(
+                    crate::state::call_window::CallWindowShows::Thread(root_id),
+                    cx,
+                )
+            });
+        } else {
+            self.state.update(cx, |state, cx| {
+                state.open_thread(server_id, channel_id, root_id, cx);
+            });
+        }
         self.focus_composer(Pane::Thread, window, cx);
         cx.notify();
     }
@@ -4797,6 +4625,17 @@ impl Shell {
 
     /// The pointer entered or left the row of a message: the bar of actions moves to the
     /// row under the pointer.
+    /// Shows the actions of a message as the pointer over it does, for the screen tool.
+    #[cfg(feature = "test-support")]
+    pub fn hover_message_fixture(
+        &mut self,
+        pane: Pane,
+        message_id: MessageId,
+        cx: &mut Context<Self>,
+    ) {
+        self.message_hovered(pane, message_id, true, cx);
+    }
+
     fn message_hovered(
         &mut self,
         pane: Pane,
@@ -4831,6 +4670,11 @@ impl Shell {
         self.text_selection.painted_text()
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn selected_readonly_text(&self) -> String {
+        self.text_selection.selected_text()
+    }
+
     /// True while the list shows the end of its rows.
     pub fn feed_is_at_end(&self, pane: Pane) -> bool {
         self.list(pane).at_end()
@@ -4859,284 +4703,6 @@ impl Shell {
         list.drawn.then(|| list.list.viewport_bounds())
     }
 
-    /// The menu of a message: the actions of its bar for the keyboard.
-    fn render_message_menu(
-        &mut self,
-        row: &MessageRow,
-        feed: &Feed,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let message_id = row.message.id;
-        let server_id = feed.server_id;
-        let pane = Pane::of(feed.place);
-        let pinned = row.message.pinned;
-        let mut items = Vec::new();
-        if let Some(document) = &row.message.document {
-            let copied = self.copied_document(document, &feed.names, cx);
-            items.push(
-                MenuItem::new("message-copy-text", text::COPY_TEXT)
-                    .selector("message-copy-text")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.copy_text(copied.clone(), cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-        if !row.message.deleted {
-            items.push(
-                MenuItem::new("message-copy-link", text::COPY_MESSAGE_LINK)
-                    .selector("message-copy-link")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let link = this.state.read(cx).message_link(server_id, message_id);
-                        this.close_layer(window, cx);
-                        if let Some(link) = link {
-                            this.copy_text(link, cx);
-                        }
-                    }))
-                    .into_any_element(),
-            );
-        }
-        if row.message.document.is_some() && !row.message.deleted {
-            items.push(
-                MenuItem::new("message-forward", text::FORWARD_MESSAGE)
-                    .selector("message-forward")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.open_forward(server_id, message_id, window, cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-        if !row.message.deleted && row.message.position > 0 {
-            let place = PlaceId::of_message(&row.message);
-            items.push(
-                MenuItem::new("message-mark-unread", text::MARK_UNREAD)
-                    .selector("message-mark-unread")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.state.update(cx, |state, cx| {
-                            state.mark_message_unread(server_id, message_id, place, cx)
-                        });
-                    }))
-                    .into_any_element(),
-            );
-        }
-        // The item stays while the message has no reaction, disabled: the first reaction that
-        // arrives while the menu is open would otherwise insert it and move every item under
-        // it, also the one under the pointer (ADR 0730).
-        if !row.message.deleted && self.state.read(cx).owner(server_id).is_some() {
-            let key = row.message.reactions.first().and_then(|reaction| {
-                self.reactor_key(
-                    server_id,
-                    PlaceId::of_message(&row.message),
-                    message_id,
-                    reaction.emoji.clone(),
-                    cx,
-                )
-            });
-            let emojis = row
-                .message
-                .reactions
-                .iter()
-                .map(|reaction| reaction.emoji.clone())
-                .collect::<Vec<_>>();
-            items.push(
-                MenuItem::new("message-reaction-people", text::WHO_REACTED)
-                    .selector("message-reaction-people")
-                    .disabled(key.is_none())
-                    // The second line is there in both states, so the item keeps its height
-                    // when the first reaction arrives.
-                    .detail(if key.is_none() {
-                        text::NO_REACTIONS_YET.to_owned()
-                    } else {
-                        text::reaction_total(
-                            row.message
-                                .reactions
-                                .iter()
-                                .map(|reaction| u64::from(reaction.count))
-                                .sum(),
-                        )
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if let Some(key) = &key {
-                            this.close_layer(window, cx);
-                            this.open_reaction_people(key.clone(), emojis.clone(), window, cx);
-                        }
-                    }))
-                    .into_any_element(),
-            );
-        }
-        // The item stays while nothing is unread, disabled, as in the menu of a notice: an
-        // unread count that arrives while the menu is open would otherwise insert it and move
-        // every item under it, also the one under the pointer (ADR 0730).
-        {
-            let place = PlaceId::of_message(&row.message);
-            items.push(
-                MenuItem::new("message-mark-read", text::MARK_AS_READ)
-                    .selector("message-mark-read")
-                    .disabled(feed.unread == 0)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.state
-                            .update(cx, |state, _| state.mark_place_as_read(server_id, place));
-                    }))
-                    .into_any_element(),
-            );
-        }
-        if row.can_react && row.react_refused {
-            items.push(
-                MenuItem::new("message-react", text::REACT)
-                    .icon(Icon::SmilePlus)
-                    .selector("message-react-refused")
-                    .disabled(true)
-                    .detail(text::not_permitted(WorkspacePermission::AddReactions))
-                    .into_any_element(),
-            );
-        } else if row.can_react {
-            let drawings = Drawings::of(cx);
-            let recent: Vec<_> = self
-                .state
-                .read(cx)
-                .recent_emoji()
-                .iter()
-                .filter_map(|value| emojis::get(value))
-                .filter(|emoji| drawings.drawing(emoji) != crate::emoji::Drawing::Broken)
-                .take(3)
-                .collect();
-            let owner = self.state.read(cx).owner(server_id);
-            for (index, emoji) in recent.into_iter().enumerate() {
-                items.push(
-                    MenuItem::new(
-                        ("message-quick-emoji", index),
-                        format!("{} {}", emoji.as_str(), emoji.name()),
-                    )
-                    .selector(
-                        [
-                            "message-quick-emoji-0",
-                            "message-quick-emoji-1",
-                            "message-quick-emoji-2",
-                        ][index],
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        if this.state.read(cx).owner(server_id) == owner {
-                            this.state.update(cx, |state, cx| {
-                                state.react(
-                                    server_id,
-                                    message_id,
-                                    emoji.as_str().to_owned(),
-                                    true,
-                                    cx,
-                                )
-                            });
-                        }
-                    }))
-                    .into_any_element(),
-                );
-            }
-            items.push(
-                MenuItem::new("message-react", text::REACT)
-                    .icon(Icon::SmilePlus)
-                    .selector("message-react")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-        if row.can_reply {
-            items.push(
-                MenuItem::new("message-reply", text::REPLY)
-                    .icon(Icon::Reply)
-                    .selector("message-reply")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.reply_to_message(pane, message_id, window, cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-        if let Some(permission) = row
-            .thread_refused
-            .filter(|_| row.can_thread && pane == Pane::Main)
-        {
-            items.push(
-                MenuItem::new("message-thread", text::REPLY_IN_THREAD)
-                    .icon(Icon::Chat)
-                    .selector("message-thread-refused")
-                    .disabled(true)
-                    .detail(text::not_permitted(permission))
-                    .into_any_element(),
-            );
-        } else if let Some(channel_id) = crate::state::feed::channel_of(feed.place)
-            .filter(|_| row.can_thread && pane == Pane::Main)
-        {
-            items.push(
-                MenuItem::new("message-thread", text::REPLY_IN_THREAD)
-                    .icon(Icon::Chat)
-                    .selector("message-thread")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.open_thread(server_id, channel_id, message_id, window, cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-        if row.can_pin {
-            items.push(
-                MenuItem::new("message-pin", if pinned { text::UNPIN } else { text::PIN })
-                    .icon(Icon::Pin)
-                    .selector("message-pin")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.state.update(cx, |state, cx| {
-                            state.set_pinned(server_id, message_id, !pinned, cx);
-                        });
-                    }))
-                    .into_any_element(),
-            );
-        }
-        if row.can_edit {
-            items.push(
-                MenuItem::new("message-edit", text::EDIT)
-                    .icon(Icon::Edit)
-                    .selector("message-edit")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.edit_message(pane, message_id, window, cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-        if row.can_delete {
-            items.push(
-                MenuItem::new("message-delete", text::DELETE)
-                    .icon(Icon::Trash)
-                    .selector("message-delete")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_layer(Layer::ConfirmDelete(message_id), window, cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-        Menu::new("message-menu", text::MESSAGE_ACTIONS, self.layer_focus())
-            .selector("message-menu")
-            .on_close(Self::handler(cx, |this, window, cx| {
-                this.close_layer(window, cx);
-            }))
-            .children(items)
-            .popup_stable(
-                point(
-                    u(44.0).to_pixels(window.rem_size()),
-                    u(4.0).to_pixels(window.rem_size()),
-                ),
-                self.message_menu_placement.clone(),
-            )
-    }
-
     /// The question before a message is deleted: the deletion cannot be undone
     /// (ADR 0401).
     pub(crate) fn render_confirm_delete(
@@ -5148,14 +4714,10 @@ impl Shell {
         let theme = theme(cx);
         let server_id = self.pane_feed(Pane::Main).map(|feed| feed.server_id);
         // The deletion of a permanent message is stated with what stays of it (ADR 0402).
-        let permanent = [Pane::Main, Pane::Thread]
-            .into_iter()
-            .filter_map(|pane| self.pane_feed(pane))
-            .flat_map(|feed| feed.rows.iter())
-            .any(|row| {
-                matches!(row, FeedRow::Message(row)
-                    if row.message.id == message_id && row.message.permanent)
-            });
+        let permanent = [Pane::Main, Pane::Thread].into_iter().any(|pane| {
+            self.message_row_of(pane, message_id)
+                .is_some_and(|row| row.message.permanent)
+        });
         let (title, sentence) = if permanent {
             (text::DELETE_PERMANENT_TITLE, text::DELETE_PERMANENT_CONFIRM)
         } else {
@@ -5316,7 +4878,6 @@ fn system_line(
                                 people: Vec::new(),
                                 channels: Vec::new(),
                                 spoilers: Vec::new(),
-                                copy_targets: Vec::new(),
                                 replacements,
                                 stand_ins: Vec::new(),
                             }
@@ -5330,10 +4891,11 @@ fn system_line(
 impl Shell {
     pub(crate) fn open_composer_menu(
         &mut self,
-        pane: Pane,
+        pen: super::Pen,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let pane = pen.pane();
         let Some(feed) = self.pane_feed(pane) else {
             return;
         };
@@ -5346,10 +4908,10 @@ impl Shell {
         else {
             return;
         };
-        self.focus_composer(pane, window, cx);
+        self.focus_composer(pen, window, cx);
         self.open_layer(
             Layer::ComposerMenu(ComposerMenuOpen {
-                pane,
+                pen,
                 server_id,
                 place,
                 owner,
@@ -5365,7 +4927,11 @@ impl Shell {
         view: &ShellView,
         cx: &gpui::App,
     ) -> bool {
-        let feed = match open.pane {
+        // The menu of the editor of a row ends with the edit.
+        if open.pen.edits() && self.pen(open.pen).editing.is_none() {
+            return false;
+        }
+        let feed = match open.pen.pane() {
             Pane::Main => view.lists().and_then(|lists| lists.feed.as_ref()),
             Pane::Thread => view
                 .workspace()
@@ -5383,16 +4949,16 @@ impl Shell {
 
     pub(crate) fn render_composer_menu(
         &self,
-        pane: Pane,
+        pen: super::Pen,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let Layer::ComposerMenu(open) = self.layer else {
             return None;
         };
-        if open.pane != pane {
+        if open.pen != pen {
             return None;
         }
-        let input = self.pen(pane).input.read(cx);
+        let input = self.pen(pen).input.read(cx);
         let capabilities = input.context_menu_capabilities();
         let copy = !capabilities.is_disabled() && capabilities.is_copyable();
         let edit = capabilities.is_editable();
@@ -5431,8 +4997,15 @@ impl Shell {
                     this.close_layer(window, cx)
                 }))
                 .children(actions.into_iter().map(|(id, label, action, enabled)| {
+                    let letter = match id {
+                        "composer-cut" => 'X',
+                        "composer-copy" => 'C',
+                        "composer-paste" => 'V',
+                        _ => 'A',
+                    };
                     MenuItem::new(id, label)
                         .selector(id)
+                        .keys(text::editing_keys(letter))
                         .disabled(!enabled)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             let current = this
@@ -5443,8 +5016,8 @@ impl Shell {
                             if !current {
                                 return;
                             }
-                            this.focus_composer(pane, window, cx);
-                            let focus = this.pen(pane).input.read(cx).focus_handle(cx);
+                            this.focus_composer(pen, window, cx);
+                            let focus = this.pen(pen).input.read(cx).focus_handle(cx);
                             let shell = cx.entity().downgrade();
                             let action = action.boxed_clone();
                             window.defer(cx, move |window, cx| {
@@ -5846,12 +5419,6 @@ mod rich_integration {
         assert!(!concealed.text.contains("Ivo"));
         assert!(!concealed.text.contains("plans"));
         assert_eq!(concealed.spoilers.len(), 1);
-        assert!(
-            concealed
-                .copy_targets
-                .iter()
-                .any(|(_, text)| text == "run()")
-        );
         let revealed = Rich::shown(&content, &names, style, &HashSet::from([vec![3]]));
         assert_eq!(
             revealed

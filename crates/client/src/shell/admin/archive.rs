@@ -4,10 +4,9 @@
 use super::list::Row;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
-    Window, div,
+    Window, div, prelude::FluentBuilder,
 };
 use junto_client_core::model::AdminPart;
-use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 use junto_client_core::protocol::structure::ChannelKind;
 
@@ -122,38 +121,67 @@ impl Shell {
             .into_any_element()
     }
 
-    /// Opens the settings of the channel that the main area shows.
-    pub(crate) fn open_shown_channel_settings(
+    /// Asks for an export of a direct or group conversation, and opens the page of the
+    /// exports, which shows its state (ADR 0411).
+    pub(crate) fn export_conversation(
         &mut self,
+        server_id: ServerId,
+        conversation_id: junto_client_core::protocol::ids::ConversationId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let target = self.view.as_ref().and_then(|view| {
-            let workspace = view.workspace()?;
-            Some((workspace.id, workspace.channel.as_ref()?.id))
-        });
-        if let Some((workspace_id, channel_id)) = target {
-            self.open_channel_settings(workspace_id, channel_id, ChannelPage::Overview, window, cx);
+        if self
+            .view
+            .as_ref()
+            .and_then(|view| view.selected.as_ref())
+            .map(|server| server.id)
+            != Some(server_id)
+        {
+            return;
         }
+        self.open_server_admin(AdminPage::Exports, window, cx);
+        self.state.update(cx, |state, cx| {
+            state.export_conversation(server_id, conversation_id, cx);
+        });
     }
 
-    /// Asks for an export of the direct conversation that the main area shows, and opens
-    /// the page of the exports, which shows its state.
-    pub(crate) fn export_shown_conversation(
+    /// The question before the export of a conversation: what the file holds and where it
+    /// will be.
+    pub(crate) fn render_confirm_export(
         &mut self,
-        window: &mut Window,
+        server_id: ServerId,
+        conversation_id: junto_client_core::protocol::ids::ConversationId,
         cx: &mut Context<Self>,
-    ) {
-        let target = self.view.as_ref().and_then(|view| {
-            let server_id = view.selected.as_ref()?.id;
-            Some((server_id, view.lists()?.conversation.as_ref()?.id))
-        });
-        if let Some((server_id, conversation_id)) = target {
-            self.open_server_admin(AdminPage::Exports, window, cx);
-            self.state.update(cx, |state, cx| {
-                state.export_conversation(server_id, conversation_id, cx);
-            });
-        }
+    ) -> gpui::AnyElement {
+        let theme = crate::theme::theme(cx);
+        crate::ui::Dialog::new(text::conversations::EXPORT_TITLE, self.layer_focus())
+            .selector("confirm-export")
+            .on_close(Self::handler(cx, |this, window, cx| {
+                this.close_layer(window, cx)
+            }))
+            .child(
+                div()
+                    .typeface(theme.types.notice, &theme)
+                    .ink(theme.colors.ink_2)
+                    .child(text::conversations::EXPORT_ABOUT),
+            )
+            .child(crate::ui::dialog_footer([
+                Button::new("cancel-export")
+                    .label(text::CANCEL)
+                    .selector("cancel-export")
+                    .on_click(cx.listener(|this, _, window, cx| this.close_layer(window, cx)))
+                    .into_any_element(),
+                Button::new("start-export")
+                    .kind(crate::ui::ButtonKind::Primary)
+                    .label(text::conversations::EXPORT_START)
+                    .selector("start-export")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.export_conversation(server_id, conversation_id, window, cx);
+                    }))
+                    .into_any_element(),
+            ]))
+            .into_any_element()
     }
 
     fn send_days(
@@ -327,21 +355,20 @@ impl Shell {
                             this.close_layer(window, cx);
                         }),
                     ))
-                    .child(row_action(
-                        ("archived-restore", number),
-                        text::admin::RESTORE,
-                        format!("archived-restore-{channel_id}"),
-                        (!page.may_manage)
-                            .then_some(text::MANAGE_NO_PERMISSION)
-                            .or(view
-                                .sending(AskKind::RestoreChannel(channel_id))
-                                .then_some(text::admin::SENDING)),
-                        cx.listener(move |this, _, _, cx| {
-                            this.state.update(cx, |state, cx| {
-                                state.restore_channel(server_id, channel_id, cx);
-                            });
-                        }),
-                    ))
+                    .when(page.may_manage, |line| {
+                        line.child(row_action(
+                            ("archived-restore", number),
+                            text::admin::RESTORE,
+                            format!("archived-restore-{channel_id}"),
+                            view.sending(AskKind::RestoreChannel(channel_id))
+                                .then_some(text::admin::SENDING),
+                            cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.restore_channel(server_id, channel_id, cx);
+                                });
+                            }),
+                        ))
+                    })
                     .child(row_action(
                         ("archived-settings", number),
                         text::admin::SETTINGS,
@@ -387,11 +414,7 @@ impl Shell {
             "archive-footer",
             page.settings
                 .as_ref()
-                .is_some_and(|days| !matches!(days, Listed::Loading))
-                || page
-                    .direct_retention
-                    .as_ref()
-                    .is_some_and(|days| !matches!(days, Listed::Loading)),
+                .is_some_and(|days| !matches!(days, Listed::Loading)),
         )))
         .collect();
         self.admin.list.take(Some(view), list, window, cx);
@@ -479,29 +502,37 @@ impl Shell {
                 }
             }
         }
-        if let Some(direct) = &page.direct_retention {
-            let part = AdminPart::DirectRetention;
-            column = match direct {
-                Listed::Loading => {
-                    column.child(self.render_reading(server_id, part, None, &theme, cx))
-                }
-                Listed::Failed(failure) => {
-                    column.child(self.render_reading(server_id, part, Some(*failure), &theme, cx))
-                }
-                Listed::Loaded(value) => column.child(self.render_days(
-                    view,
-                    None,
-                    AskKind::DirectRetention,
-                    text::admin::DIRECT_RETENTION,
-                    text::admin::DIRECT_RETENTION_HELP,
-                    "days-direct-retention",
-                    *value,
-                    &theme,
-                    cx,
-                )),
-            };
-        }
         column.into_any_element()
+    }
+
+    /// The retention of the files of direct messages, which holds for the whole server
+    /// (ADR 0406): a row of the overview of the server.
+    pub(super) fn render_direct_retention(
+        &mut self,
+        view: &AdminView,
+        direct: &Listed<Option<u32>>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let server_id = view.server_id;
+        let part = AdminPart::DirectRetention;
+        match direct {
+            Listed::Loading => self.render_reading(server_id, part, None, &theme, cx),
+            Listed::Failed(failure) => {
+                self.render_reading(server_id, part, Some(*failure), &theme, cx)
+            }
+            Listed::Loaded(value) => self.render_days(
+                view,
+                None,
+                AskKind::DirectRetention,
+                text::admin::DIRECT_RETENTION,
+                text::admin::DIRECT_RETENTION_HELP,
+                "days-direct-retention",
+                *value,
+                &theme,
+                cx,
+            ),
+        }
     }
 
     fn render_archive_header(
@@ -557,11 +588,9 @@ impl Shell {
         let (server_id, channel_id) = (view.server_id, settings.channel_id);
         // The list of an archived channel is read by itself: until it arrives nothing is
         // offered, and the reason is that read, not a missing permission.
-        let manage = if settings.permissions_read {
-            (!settings.may_manage).then_some(text::MANAGE_NO_PERMISSION)
-        } else {
-            Some(text::admin::READING)
-        };
+        let manage = (!settings.permissions_read).then_some(text::admin::READING);
+        // An action that the permissions of the channel do not allow is absent (ADR 0790).
+        let manages = !settings.permissions_read || settings.may_manage;
         let mut column = div().flex().flex_col().child(page_title(
             text::admin::channel_page_name(ChannelPage::Archive),
             text::admin::CHANNEL_ARCHIVE_HELP,
@@ -569,6 +598,7 @@ impl Shell {
         ));
         // Archive or restore.
         column = match page.archived {
+            _ if !manages => column,
             Some((archived_at, deletes_at)) => column
                 .child(
                     div().flex_none().mb(u(6.0)).child(
@@ -653,31 +683,28 @@ impl Shell {
             "channel-archive-refused",
         ));
         // The export.
-        let export_needs = page.export_needs.map(|permission| match permission {
-            WorkspacePermission::ExportChannel => text::admin::EXPORT_NEEDS,
-            other => text::not_permitted(other),
+        column = column.when(page.export_needs.is_none(), |column| {
+            column.child(
+                line(&theme)
+                    .child(line_text(
+                        text::admin::EXPORT,
+                        Some(text::admin::EXPORT_HELP.into()),
+                        &theme,
+                    ))
+                    .child(row_action(
+                        "channel-export",
+                        text::admin::EXPORT,
+                        "channel-export".to_owned(),
+                        view.sending(AskKind::RequestExport)
+                            .then_some(text::admin::SENDING),
+                        cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.export_channel(server_id, channel_id, cx);
+                            });
+                        }),
+                    )),
+            )
         });
-        column = column.child(
-            line(&theme)
-                .child(line_text(
-                    text::admin::EXPORT,
-                    detail_or(export_needs, text::admin::EXPORT_HELP),
-                    &theme,
-                ))
-                .child(row_action(
-                    "channel-export",
-                    text::admin::EXPORT,
-                    "channel-export".to_owned(),
-                    export_needs.or(view
-                        .sending(AskKind::RequestExport)
-                        .then_some(text::admin::SENDING)),
-                    cx.listener(move |this, _, _, cx| {
-                        this.state.update(cx, |state, cx| {
-                            state.export_channel(server_id, channel_id, cx);
-                        });
-                    }),
-                )),
-        );
         let mut result = crate::ui::notice_slot("channel-export-result-slot");
         if view.made.iter().any(|made| matches!(made, Made::Export(_))) {
             result = result.child(
@@ -702,8 +729,10 @@ impl Shell {
             view.refused(AskKind::RequestExport),
             "channel-export-refused",
         ));
-        // The deletion.
-        let owner_only = (page.permanent && !page.is_owner).then_some(text::admin::OWNER_DELETES);
+        // The deletion. Only the owner deletes a channel with permanent messages.
+        if !manages || (page.permanent && !page.is_owner) {
+            return column.into_any_element();
+        }
         let delete_line = match self.admin.mode {
             Some(Mode::DeleteChannel(id)) if id == channel_id => line(&theme).child(
                 self.render_row_question(
@@ -731,14 +760,14 @@ impl Shell {
             _ => line(&theme)
                 .child(line_text(
                     text::admin::DELETE_CHANNEL,
-                    detail_or(manage.or(owner_only), text::admin::DELETE_CHANNEL_HELP),
+                    detail_or(manage, text::admin::DELETE_CHANNEL_HELP),
                     &theme,
                 ))
                 .child(row_action(
                     "channel-delete",
                     text::admin::DELETE,
                     "channel-delete".to_owned(),
-                    manage.or(owner_only),
+                    manage,
                     cx.listener(move |this, _, window, cx| {
                         this.set_admin_mode(Some(Mode::DeleteChannel(channel_id)), "", window, cx);
                     }),

@@ -10,7 +10,7 @@ use junto_client::app::{self, WindowStart};
 use junto_client::shell::Shell;
 use junto_client::state::view::{ChannelRow, Members, ServerStatus, ShellView};
 use junto_client::state::{AppState, Timing};
-use junto_client_core::protocol::ids::MessageId;
+use junto_client_core::protocol::ids::{ChannelId, MessageId};
 use junto_client_core::protocol::invite::CreateInvite;
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::version::SupportedVersions;
@@ -840,36 +840,6 @@ impl Window {
     }
 
     /// True when an element with this name is drawn now.
-    /// The nodes of the accessibility tree with this label, as JSON (`Window::debug_a11y_tree_json`
-    /// of gpui), after a frame of a window whose accessibility a screen reader activated.
-    pub fn a11y_nodes(&mut self, label: &str) -> Vec<serde_json::Value> {
-        let tree = self.a11y_tree();
-        tree["nodes"]
-            .as_object()
-            .into_iter()
-            .flat_map(|nodes| nodes.values())
-            .filter(|node| node["aria"]["label"] == label)
-            .cloned()
-            .collect()
-    }
-
-    /// The accessibility node that has the focus of the window.
-    pub fn a11y_focused(&mut self) -> serde_json::Value {
-        let tree = self.a11y_tree();
-        let focus = tree["gpui_focus"].as_str().unwrap_or_default().to_owned();
-        tree["nodes"][focus].clone()
-    }
-
-    fn a11y_tree(&mut self) -> serde_json::Value {
-        let handle = self.cx.update(|window, _| window.window_handle());
-        self.cx.cx.test_window(handle).simulate_a11y_activation();
-        self.cx.update(|window, _| window.refresh());
-        self.settle();
-        let json = self.cx.update(|window, _| window.debug_a11y_tree_json());
-        json.and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
-            .unwrap_or_default()
-    }
-
     pub fn shows(&mut self, selector: &'static str) -> bool {
         self.settle();
         self.cx.debug_bounds(selector).is_some()
@@ -908,6 +878,8 @@ impl Window {
     /// Clicks the middle of the element with this name.
     #[track_caller]
     pub fn click(&mut self, selector: &'static str) {
+        self.reveal_nav_row(selector);
+        self.open_arrange_for(selector);
         self.settle();
         let bounds = self.cx.debug_bounds(selector).unwrap_or_else(|| {
             let mut names = vec![
@@ -970,9 +942,112 @@ impl Window {
         self.click(selector);
     }
 
+    /// The accessible label of the drawn control with this name.
+    pub fn control_label(&mut self, name: &str) -> Option<String> {
+        self.settle();
+        junto_client::ui::record_controls();
+        self.in_shell(|_, window, _| window.refresh());
+        self.settle();
+        junto_client::ui::take_controls()
+            .into_iter()
+            .find(|control| control.name.as_ref() == name)
+            .and_then(|control| control.label.map(|label| label.to_string()))
+    }
+
+    /// True when the drawn "Record" takes a press: its control is drawn for every person,
+    /// and is disabled without "record calls" (ADR 0790). It reads the drawn control.
+    pub fn may_record(&mut self) -> bool {
+        self.settle();
+        junto_client::ui::record_controls();
+        self.in_shell(|_, window, _| window.refresh());
+        self.settle();
+        junto_client::ui::take_controls()
+            .into_iter()
+            .any(|control| control.name.as_ref() == "start-recording" && !control.disabled)
+    }
+
+    /// Presses a control placed on a row or on another clickable element, as a person does
+    /// with a small move of the pointer between the press and the release, and checks that
+    /// the press did only the control's own action (ADR 0731): the shown server, workspace
+    /// and place stay, no drag starts, and no text is selected.
+    #[track_caller]
+    pub fn press_alone(&mut self, control: &'static str) {
+        fn shown(view: &ShellView) -> String {
+            format!(
+                "{:?} {:?} {:?}",
+                view.selected.as_ref().map(|server| server.id),
+                view.workspace().map(|workspace| workspace.id),
+                view.lists()
+                    .and_then(|lists| lists.feed.as_ref())
+                    .map(|feed| feed.place),
+            )
+        }
+        let before = shown(&self.view());
+        let bounds = self
+            .cx
+            .debug_bounds(control)
+            .unwrap_or_else(|| panic!("{control} is not drawn"));
+        let start = bounds.center();
+        let moved = start + gpui::point(gpui::px(4.0), gpui::px(0.0));
+        self.press_down_at(start, gpui::MouseButton::Left);
+        self.move_pointer_pressed(moved, gpui::MouseButton::Left);
+        let dragging = self.cx.update(|_, cx| cx.has_active_drag());
+        self.release_at(moved, gpui::MouseButton::Left);
+        self.settle();
+        assert!(!dragging, "a press on {control} started a drag of its row");
+        assert_eq!(
+            shown(&self.view()),
+            before,
+            "a press on {control} changed the shown place"
+        );
+        let selected = self
+            .shell
+            .read_with(&self.cx, |shell, _| shell.selected_readonly_text());
+        assert!(
+            selected.is_empty(),
+            "a press on {control} selected text: {selected:?}"
+        );
+        // The keyboard focus is on the control or in the menu that it opened, not on the row:
+        // a focusable control reports where it is drawn while it holds the focus.
+        if let (Some(focused), Some(pressed)) = (
+            self.cx.debug_bounds("focus-report"),
+            self.cx.debug_bounds(control),
+        ) {
+            assert!(
+                pressed.contains(&focused.center()) || self.has_focused_menu(),
+                "a press on {control} moved the focus to {focused:?}"
+            );
+        }
+    }
+
+    /// True while a menu of the window holds the keyboard focus.
+    pub fn has_focused_menu(&mut self) -> bool {
+        self.cx
+            .update(|window, cx| junto_client::ui::window_has_focused_menu(window, cx))
+    }
+
     /// Clicks the element with this name when it is drawn now. A test uses it for an
     /// element that a reload of the state takes away for a moment.
+    /// Opens the devices from the row of own controls of a call: its button, or its item
+    /// in "⋮" where a narrow stage moved it there (ADR 0735).
+    /// Opens the devices from the row of own controls, or from its "⋮" on a narrow stage. In
+    /// a narrow call window an open panel lies over the call: the first press closes it, and
+    /// the stage that it leaves can be wide enough for the row to hold the control.
+    pub fn open_call_devices(&mut self) {
+        for _ in 0..3 {
+            if self.click_if_shown("own-devices") {
+                return;
+            }
+            if self.click_if_shown("more-devices") {
+                return;
+            }
+            self.click("own-more");
+        }
+        self.click("more-devices");
+    }
+
     pub fn click_if_shown(&mut self, selector: &'static str) -> bool {
+        self.reveal_nav_row(selector);
         self.settle();
         let Some(bounds) = self.cx.debug_bounds(selector) else {
             return false;
@@ -993,6 +1068,22 @@ impl Window {
         self.click(selector(name));
     }
 
+    /// Opens the menu of the selected server as a secondary press on its row, or on its icon
+    /// in the collapsed server book, opens it.
+    #[track_caller]
+    pub fn open_server_menu(&mut self) {
+        if !self.shows("server-menu") {
+            let index = self
+                .view()
+                .servers
+                .iter()
+                .position(|row| row.selected)
+                .expect("a server is selected");
+            self.right_click_named(format!("server-{index}"));
+        }
+        assert!(self.shows("server-menu"));
+    }
+
     /// Presses the right button of the pointer in the middle of the element with this
     /// name, and releases it.
     #[track_caller]
@@ -1005,6 +1096,81 @@ impl Window {
             .unwrap_or_else(|| panic!("{name} is not drawn"));
         self.press_on(Some(name), bounds.center(), gpui::MouseButton::Right, 1);
         self.settle();
+    }
+
+    /// Presses the right button near the start of the first line of a row of a list, in the
+    /// margin of the row, away from the controls and the parts open under its first line.
+    #[track_caller]
+    pub fn right_click_row(&mut self, name: &'static str) {
+        self.settle();
+        let bounds = self
+            .cx
+            .debug_bounds(name)
+            .unwrap_or_else(|| panic!("{name} is not drawn"));
+        let down = gpui::px(14.0).min(bounds.size.height / 2.0);
+        self.press_at(
+            gpui::point(bounds.left() + gpui::px(4.0), bounds.top() + down),
+            gpui::MouseButton::Right,
+        );
+        self.settle();
+    }
+
+    /// Marks the place of the main area as read, as the key of "Mark as read" does.
+    pub fn mark_shown_as_read(&mut self) {
+        self.in_shell(|shell, _, cx| shell.mark_shown_as_read(cx));
+        self.settle();
+    }
+
+    /// Presses an item of the menu of the thread in the header of the thread panel.
+    #[track_caller]
+    pub fn thread_menu_action(&mut self, item: &str) {
+        self.click("thread-more");
+        self.click(selector(format!("context-action:{item}")));
+    }
+
+    /// Presses an item of the menu of the follow control of the thread panel.
+    #[track_caller]
+    pub fn follow_menu_action(&mut self, item: &str) {
+        self.click("thread-follow-button");
+        self.click(selector(format!("context-action:{item}")));
+    }
+
+    /// True when the menu of the follow control of the thread panel offers this item. The
+    /// menu is closed again.
+    pub fn follow_menu_offers(&mut self, item: &str) -> bool {
+        self.click("thread-follow-button");
+        let offered = self.shows(selector(format!("context-action:{item}")));
+        self.press("escape");
+        offered
+    }
+
+    /// Opens "Who reacted" of a message from the menu of the message, once the menu offers it:
+    /// the message holds a reaction that the window shows.
+    #[track_caller]
+    pub fn open_who_reacted(&mut self, message_id: MessageId) {
+        self.until("the menu of the message offers Who reacted", |window| {
+            window.right_click_message(message_id);
+            if window.shows("message-reaction-people") {
+                window.click("message-reaction-people");
+                return true;
+            }
+            window.press("escape");
+            false
+        });
+    }
+
+    /// Opens the menu of a channel row and presses its "Channel settings" item when the menu
+    /// offers it; otherwise closes the menu. Returns whether it pressed the item.
+    #[track_caller]
+    pub fn open_settings_from_channel_menu(&mut self, channel: ChannelId) -> bool {
+        self.right_click_named(format!("channel-row:{channel}"));
+        if self.click_if_shown("channel-settings") {
+            return true;
+        }
+        if self.shows("channel-menu") {
+            self.press("escape");
+        }
+        false
     }
 
     /// Opens a message menu outside its account, link and attachment targets.
@@ -1074,6 +1240,58 @@ impl Window {
     #[track_caller]
     pub fn wheel_up_to(&mut self, list: &'static str, target: &'static str) {
         self.wheel_until(list, target, 300.0);
+    }
+
+    /// The moves of a server and of a workspace are items of the submenu "Arrange" of their
+    /// menu (ADR 0780): a press on one opens that submenu first, as a person does.
+    fn open_arrange_for(&mut self, selector: &'static str) {
+        const ARRANGE: [&str; 5] = [
+            "menu-move-up",
+            "menu-move-down",
+            "menu-server-group",
+            "workspace-move-up",
+            "workspace-move-down",
+        ];
+        if !ARRANGE.contains(&selector) || self.shows(selector) {
+            return;
+        }
+        for opener in ["menu-arrange", "menu-workspace-arrange"] {
+            if self.shows(opener) {
+                self.click(opener);
+                return;
+            }
+        }
+    }
+
+    /// Brings a row of the list of pages of Server settings into the visible part of that
+    /// list, which scrolls when the window is lower than the list, as a person does with the
+    /// wheel. Other names are left alone.
+    pub fn reveal_nav_row(&mut self, selector: &'static str) {
+        use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+        if !selector.starts_with("admin-nav-") && !selector.starts_with("account-nav-") {
+            return;
+        }
+        for _ in 0..20 {
+            self.settle();
+            let (Some(nav), Some(row)) = (
+                self.cx.debug_bounds("admin-nav"),
+                self.cx.debug_bounds(selector),
+            ) else {
+                return;
+            };
+            let by = if row.bottom() > nav.bottom() {
+                nav.bottom() - row.bottom() - px(8.0)
+            } else if row.top() < nav.top() {
+                nav.top() - row.top() + px(8.0)
+            } else {
+                return;
+            };
+            self.dispatch(ScrollWheelEvent {
+                position: nav.center(),
+                delta: ScrollDelta::Pixels(point(px(0.0), by)),
+                ..Default::default()
+            });
+        }
     }
 
     /// Turns the wheel once over the element with the name `list` by `by` pixels: negative
@@ -1303,10 +1521,13 @@ impl Window {
         self.click("continue");
     }
 
-    /// Types an address into the server book and sends it.
+    /// Opens the window that adds a server, types an address into it and sends it.
     pub fn enter_address(&mut self, address: &str) {
+        if !self.shows("add-window") {
+            self.click("add-server");
+        }
         self.in_shell(|shell, window, cx| shell.type_address(address, window, cx));
-        self.click("add-server");
+        self.click("add-server-submit");
     }
 
     /// Types an address and waits for the dialog of the server that answered.

@@ -35,7 +35,7 @@ pub async fn get_card(
         let ids: Vec<_> = workspaces.iter().map(|(id,_)| *id).collect();
         let joined = memberships_among(connection, access.account_id, &ids).await?;
         let workspaces: Vec<_> = workspaces.into_iter().filter(|(id,_)| {
-            let scope = WorkspaceScope { membership: if joined.contains(id) { Membership::Member } else { Membership::NotMember }, everyone: WorkspacePermissions::EMPTY, roles: Vec::new(), person_override: Default::default() };
+            let scope = WorkspaceScope { membership: if joined.contains(id) { Membership::Member } else { Membership::NotMember }, everyone: WorkspacePermissions::EMPTY, roles: Vec::new() };
             access.allows(Request::ViewWorkspace(&scope))
         }).collect();
         let ids: Vec<_> = workspaces.iter().map(|(id,_)| *id).collect();

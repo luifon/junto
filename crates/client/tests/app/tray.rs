@@ -275,6 +275,7 @@ fn the_unread_mentions_add_the_mark_and_keep_the_menu(cx: &mut TestAppContext) {
                 document: document("Are you free at three?"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

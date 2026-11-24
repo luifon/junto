@@ -5,6 +5,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use junto_protocol::account::Device;
+use junto_protocol::device_relay::Sealed;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::ids::AccountId;
 use junto_protocol::keys::PublicKey;
@@ -119,7 +120,18 @@ pub(crate) async fn device_with_key(
 /// answer and after a code that the server no longer knows, the list of devices says
 /// whether the key was added.
 pub(crate) async fn approve(api: &ServerApi, code: LinkCode, public_key: PublicKey) -> Approval {
-    let error = match api.approve_device_link(code, public_key).await {
+    approve_with(api, code, public_key, None).await
+}
+
+/// Like [`approve`], with the offer that the first server keeps in the relay of the link
+/// (ADR 0104).
+pub(crate) async fn approve_with(
+    api: &ServerApi,
+    code: LinkCode,
+    public_key: PublicKey,
+    relay: Option<Sealed>,
+) -> Approval {
+    let error = match api.approve_device_link_with(code, public_key, relay).await {
         Ok(device) => return Approval::Approved(Box::new(device)),
         Err(error) => error,
     };

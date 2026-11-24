@@ -21,7 +21,7 @@ use crate::assets::Icon;
 use crate::shell::Shell;
 use crate::state::admin::view::overrides::{
     Candidate, CategoryPermissionsPage, Choice, PermissionLine, PermissionsPage, RuleList,
-    SubjectKind, SubjectLine, SyncLine,
+    SubjectKind, SubjectLine, SyncLine, Visibility, group_of,
 };
 use crate::state::admin::view::{AdminView, CategorySettings, ChannelSettings, Listed};
 use crate::state::admin::{AskKind, ChannelPage, RulesOf};
@@ -47,6 +47,13 @@ pub(crate) struct Ui {
     expanded: Expanded,
     /// The search for a role or a member to add is open.
     adding: bool,
+    /// The search of "Who can see this channel" is open: a choice allows "view channel".
+    adding_viewer: bool,
+    /// The full list of the rules of a channel ("Advanced permissions") is open.
+    advanced: bool,
+    /// A change of who sees a synced channel waits for the answer to the question whether
+    /// the channel stops taking the rules of its category (ADR 0761).
+    pending: Option<Pending>,
     pub(crate) search: Entity<InputState>,
 }
 
@@ -61,6 +68,9 @@ impl Ui {
         let ui = Self {
             expanded: Expanded::First,
             adding: false,
+            adding_viewer: false,
+            advanced: false,
+            pending: None,
             search,
         };
         (ui, vec![subscription])
@@ -114,6 +124,14 @@ impl Shown for ServerPermission {
     }
 }
 
+/// A change of who sees a channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pending {
+    Private(bool),
+    Allow(RuleSubject),
+    Remove(RuleSubject),
+}
+
 /// What a click on a choice sends.
 pub(crate) type OnChoose<P> = Rc<dyn Fn(&mut Shell, P, Choice, &mut Context<Shell>)>;
 
@@ -147,6 +165,9 @@ impl Shell {
     pub(crate) fn reset_overrides_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.admin.overrides.expanded = Expanded::First;
         self.admin.overrides.adding = false;
+        self.admin.overrides.adding_viewer = false;
+        self.admin.overrides.advanced = false;
+        self.admin.overrides.pending = None;
         self.admin
             .overrides
             .search
@@ -424,7 +445,16 @@ impl Shell {
                     });
                 });
             let mut permissions = div().flex().flex_col().flex_none().pl(u(14.0));
+            let mut group = None;
             for (index, permission) in subject.permissions.iter().enumerate() {
+                let of = group_of(permission.permission);
+                if of != group {
+                    group = of;
+                    if let Some(of) = of {
+                        permissions = permissions
+                            .child(group_label(text::admin::overrides::group_name(of), theme));
+                    }
+                }
                 permissions = permissions.child(self.render_rule_permission(
                     permission,
                     index,
@@ -573,12 +603,13 @@ impl Shell {
         &mut self,
         view: &AdminView,
         editor: Editor,
-        rules: &Listed<RuleList>,
+        (rules, folded): (&Listed<RuleList>, bool),
         header: impl Fn(&mut Self, &mut Window, &mut Context<Self>) -> AnyElement + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let list = rules.loaded().cloned();
+        // A folded list of rules shows its header alone ("Advanced permissions").
+        let list = rules.loaded().cloned().filter(|_| !folded);
         let subjects = list
             .as_ref()
             .map(|list| list.subjects.clone())
@@ -659,22 +690,309 @@ impl Shell {
         let archived = settings.archived;
         let sync = page.sync.clone();
         let header_view = view.clone();
+        let visibility = page
+            .rules
+            .loaded()
+            .map(crate::state::admin::view::overrides::visibility);
+        let list = page.rules.loaded().cloned();
+        let settings = settings.clone();
+        let folded = !self.admin.overrides.advanced;
         self.render_rules(
             view,
             editor,
-            &page.rules,
+            (&page.rules, folded),
             move |this, _, cx| {
-                this.render_permissions_header(
-                    &header_view,
-                    channel_id,
-                    archived,
-                    sync.as_ref(),
-                    cx,
-                )
+                let theme = theme(cx);
+                let mut column = div()
+                    .flex()
+                    .flex_col()
+                    .child(this.render_permissions_header(
+                        &header_view,
+                        channel_id,
+                        archived,
+                        sync.as_ref(),
+                        cx,
+                    ));
+                if let (Some(visibility), Some(list)) = (&visibility, &list) {
+                    column = column.child(this.render_visibility(
+                        &header_view,
+                        &settings,
+                        sync.as_ref(),
+                        (visibility, list),
+                        &theme,
+                        cx,
+                    ));
+                }
+                let open = this.admin.overrides.advanced;
+                column
+                    .child(
+                        div().flex().flex_none().mt(u(14.0)).child(named(
+                            if open {
+                                "rules-advanced-open".to_owned()
+                            } else {
+                                "rules-advanced".to_owned()
+                            },
+                            Button::new("rules-advanced")
+                                .kind(crate::ui::ButtonKind::Ghost)
+                                .icon(if open {
+                                    Icon::ChevronDown
+                                } else {
+                                    Icon::ChevronRight
+                                })
+                                .label(text::admin::overrides::ADVANCED)
+                                .h(u(28.0))
+                                .px(u(6.0))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.admin.overrides.advanced = !open;
+                                    cx.notify();
+                                })),
+                        )),
+                    )
+                    .into_any_element()
             },
             window,
             cx,
         )
+    }
+
+    /// "Private channel" and, while it is on, "Who can see this channel": the roles and the
+    /// people with an allow of "view channel", each with "Remove", and the search that adds
+    /// one; a person whom a rule under "Advanced permissions" denies it is marked
+    /// (ADR 0761). A change writes one permission of one rule (ADR 0304).
+    fn render_visibility(
+        &mut self,
+        view: &AdminView,
+        settings: &ChannelSettings,
+        sync: Option<&SyncLine>,
+        (visibility, list): (&Visibility, &RuleList),
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (server_id, channel_id) = (view.server_id, settings.channel_id);
+        let at = RulesOf::Channel(channel_id);
+        let synced = sync.is_some_and(|sync| sync.synced);
+        let settings_sync = sync.map(|sync| sync.category_name.clone());
+        let private = visibility.private;
+        let waiting = view.asks.iter().any(|ask| {
+            matches!(ask.what, AskKind::SetRule(of, _) if of == at)
+                && matches!(ask.state, crate::state::admin::AskState::Sending)
+        });
+        let held = (!settings.may_manage)
+            .then_some(text::admin::CHANNEL_MANAGE_NEEDS)
+            .or(waiting.then_some(text::admin::SENDING));
+        let mut column = div().flex().flex_col().flex_none().mt(u(10.0)).child(
+            line(theme)
+                .child(line_text(
+                    text::admin::PRIVATE_CHANNEL.to_owned(),
+                    Some(text::admin::PRIVATE_CHANNEL_HELP.into()),
+                    theme,
+                ))
+                .child(named(
+                    "channel-private".to_owned(),
+                    crate::ui::Toggle::new(
+                        "channel-private",
+                        text::admin::PRIVATE_CHANNEL,
+                        private,
+                        (text::ON, text::OFF),
+                    )
+                    .held(held)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.change_visibility(
+                            (server_id, channel_id),
+                            synced,
+                            Pending::Private(!private),
+                            cx,
+                        );
+                    })),
+                )),
+        );
+        // A refused change of who sees the channel is told here: the rows of the advanced
+        // permissions, which tell it too, can be folded (ADR 0761).
+        let refused = view.asks.iter().find_map(|ask| match ask.what {
+            AskKind::SetRule(of, _) if of == at => view.refused(ask.what),
+            _ => None,
+        });
+        column =
+            column.children(refused.and_then(|reason| refusal(Some(reason), "visibility-refused")));
+        if let Some(pending) = self.admin.overrides.pending {
+            let category = settings_sync.clone().unwrap_or_default();
+            column = column.child(
+                self.render_row_question_with(
+                    Question {
+                        sentence: text::admin::overrides::stop_sync_question(&category).into(),
+                        confirm: text::admin::overrides::STOP_SYNC_CONFIRM,
+                        confirm_selector: "visibility-confirm",
+                        cancel_selector: "visibility-cancel",
+                        sending: waiting,
+                    },
+                    theme,
+                    cx,
+                    (
+                        move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                            this.admin.overrides.pending = None;
+                            this.send_visibility((server_id, channel_id), pending, cx);
+                        },
+                        // Cancel puts the question away and sends nothing.
+                        |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                            this.admin.overrides.pending = None;
+                            cx.notify();
+                        },
+                    ),
+                )
+                .debug_selector(|| "visibility-question".to_owned()),
+            );
+        }
+        if !private {
+            return column.into_any_element();
+        }
+        let adding = self.admin.overrides.adding_viewer;
+        column = column.child(
+            div()
+                .flex()
+                .flex_none()
+                .items_end()
+                .gap(u(8.0))
+                .child(
+                    group_label(text::admin::overrides::WHO_SEES, theme)
+                        .flex_1()
+                        .min_w_0(),
+                )
+                .when(settings.may_manage, |row| {
+                    row.child(named(
+                        "viewers-add".to_owned(),
+                        Button::new("viewers-add")
+                            .icon(if adding { Icon::X } else { Icon::Plus })
+                            .label(if adding {
+                                text::CANCEL
+                            } else {
+                                text::admin::overrides::ADD_VIEWER
+                            })
+                            .h(u(28.0))
+                            .px(u(10.0))
+                            .mb(u(4.0))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.admin.overrides.adding_viewer = !adding;
+                                this.admin.overrides.adding = false;
+                                this.admin
+                                    .overrides
+                                    .search
+                                    .update(cx, |field, cx| field.set_value("", window, cx));
+                                if !adding {
+                                    this.focus_field(
+                                        &this.admin.overrides.search.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                                cx.notify();
+                            })),
+                    ))
+                }),
+        );
+        if adding {
+            column = column.child(
+                div().flex_none().pt(u(4.0)).child(
+                    Field::new(&self.admin.overrides.search, text::admin::overrides::SEARCH)
+                        .selector("viewers-search"),
+                ),
+            );
+            let typed = self
+                .admin
+                .overrides
+                .search
+                .read(cx)
+                .value()
+                .trim()
+                .to_owned();
+            let shown: Vec<RuleSubject> = visibility
+                .viewers
+                .iter()
+                .map(|viewer| viewer.subject)
+                .collect();
+            let candidates: Vec<(RuleSubject, String)> = list
+                .subjects
+                .iter()
+                .filter(|line| line.kind != SubjectKind::Everyone)
+                .map(|line| (line.subject, line.name.clone()))
+                .chain(
+                    list.candidates
+                        .iter()
+                        .map(|candidate| (candidate.subject, candidate.name.clone())),
+                )
+                .filter(|(subject, _)| !shown.contains(subject))
+                .filter(|(_, name)| {
+                    junto_client_core::model::comparable_name(name)
+                        .contains(&junto_client_core::model::comparable_name(&typed))
+                })
+                .collect();
+            for (subject, name) in candidates.iter().take(MOST_MATCHES) {
+                let subject = *subject;
+                let number = subject_id(subject).as_u128() as u64;
+                column = column.child(
+                    line(theme)
+                        .child(line_text(name.clone(), None, theme))
+                        .child(named(
+                            format!("viewers-add-{}", subject_name(subject)),
+                            Button::new(("viewers-add-subject", number))
+                                .label(text::admin::overrides::ADD_ONE)
+                                .h(u(28.0))
+                                .px(u(10.0))
+                                .disabled(held.is_some())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.admin.overrides.adding_viewer = false;
+                                    this.change_visibility(
+                                        (server_id, channel_id),
+                                        synced,
+                                        Pending::Allow(subject),
+                                        cx,
+                                    );
+                                })),
+                        )),
+                );
+            }
+            if candidates.is_empty() {
+                column = column.child(sentence(text::admin::overrides::NO_MATCH, theme).py(u(6.0)));
+            }
+        }
+        if visibility.viewers.is_empty() {
+            column = column.child(
+                sentence(text::admin::overrides::ONLY_ADMINISTRATORS_SEE, theme)
+                    .debug_selector(|| "viewers-none".to_owned()),
+            );
+        }
+        for viewer in &visibility.viewers {
+            let subject = viewer.subject;
+            let mut row = line(theme)
+                .debug_selector({
+                    let key = subject_name(subject);
+                    move || format!("viewer-{key}")
+                })
+                .child(line_text(
+                    viewer.name.clone(),
+                    Some(text::admin::overrides::kind(viewer.kind).into()),
+                    theme,
+                ));
+            if viewer.denied {
+                row = row.child(Chip::new(text::admin::overrides::DENIED_BY_ADVANCED));
+            } else if settings.may_manage {
+                row = row.child(super::row_action(
+                    ("viewer-remove", subject_id(subject).as_u128() as u64),
+                    text::admin::overrides::REMOVE_VIEWER,
+                    format!("viewer-remove-{}", subject_name(subject)),
+                    held,
+                    cx.listener(move |this, _, _, cx| {
+                        this.change_visibility(
+                            (server_id, channel_id),
+                            synced,
+                            Pending::Remove(subject),
+                            cx,
+                        );
+                    }),
+                ));
+            }
+            column = column.child(row);
+        }
+        column.into_any_element()
     }
 
     fn render_permissions_header(
@@ -813,20 +1131,24 @@ impl Shell {
             part: AdminPart::CategoryRules(workspace_id, category_id),
         };
         let synced = page.synced;
+        let name = settings.name.clone();
+        let header_view = view.clone();
         self.render_rules(
             view,
             editor,
-            &page.rules,
-            move |_, _, cx| {
+            (&page.rules, false),
+            move |this, _, cx| {
                 let theme = theme(cx);
                 div()
                     .flex()
                     .flex_col()
                     .child(page_title(
-                        text::admin::overrides::PERMISSIONS,
+                        text::admin::overrides::CATEGORY_SETTINGS,
                         text::admin::overrides::CATEGORY_HELP,
                         &theme,
                     ))
+                    .child(this.render_category_name(&header_view, category_id, &name, &theme, cx))
+                    .child(group_label(text::admin::overrides::PERMISSIONS, &theme))
                     .child(sentence(text::admin::overrides::ORDER, &theme))
                     .child(
                         sentence(text::admin::overrides::synced_count(synced), &theme)
@@ -840,5 +1162,116 @@ impl Shell {
             window,
             cx,
         )
+    }
+
+    /// The name of a category with "Rename", on the page of the category, which holds its
+    /// name and its permissions together (ADR 0761).
+    fn render_category_name(
+        &mut self,
+        view: &AdminView,
+        category_id: junto_client_core::protocol::ids::CategoryId,
+        name: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let what = AskKind::UpdateCategory(category_id);
+        let content: AnyElement = if self.admin.mode == Some(Mode::RenameCategory(category_id)) {
+            self.render_form(
+                super::Form {
+                    field: super::FormField::Name,
+                    label: text::admin::CATEGORY_NAME,
+                    field_selector: "category-name",
+                    send: text::SAVE,
+                    sending: view.sending(what),
+                    help: None,
+                    held: None,
+                    extra: Vec::new(),
+                },
+                theme,
+                cx,
+            )
+            .into_any_element()
+        } else {
+            let shown = name.to_owned();
+            line(theme)
+                .child(line_text(name.to_owned(), None, theme))
+                .child(super::row_action(
+                    (
+                        "category-page-rename",
+                        category_id.as_uuid().as_u128() as u64,
+                    ),
+                    text::admin::RENAME,
+                    "category-page-rename".to_owned(),
+                    None,
+                    cx.listener(move |this, _, window, cx| {
+                        this.set_admin_mode(
+                            Some(Mode::RenameCategory(category_id)),
+                            &shown,
+                            window,
+                            cx,
+                        );
+                    }),
+                ))
+                .into_any_element()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .child(group_label(text::admin::CATEGORY_NAME, theme))
+            .child(self.mode_row(&[Mode::RenameCategory(category_id)], content))
+            .children(refusal(view.refused(what), "category-page-refused"))
+            .into_any_element()
+    }
+
+    /// A change of who sees a channel: sent at once, or, for a channel that takes the rules
+    /// of its category, after the question whether it stops taking them (ADR 0761).
+    fn change_visibility(
+        &mut self,
+        place: (ServerId, ChannelId),
+        synced: bool,
+        change: Pending,
+        cx: &mut Context<Self>,
+    ) {
+        if synced {
+            self.admin.overrides.pending = Some(change);
+            cx.notify();
+            return;
+        }
+        self.send_visibility(place, change, cx);
+    }
+
+    fn send_visibility(
+        &mut self,
+        (server_id, channel_id): (ServerId, ChannelId),
+        change: Pending,
+        cx: &mut Context<Self>,
+    ) {
+        let at = RulesOf::Channel(channel_id);
+        self.state.update(cx, |state, cx| match change {
+            Pending::Private(private) => state.set_private(server_id, channel_id, private, cx),
+            Pending::Allow(subject) => state.set_rule_choice(
+                server_id,
+                (at, subject),
+                WorkspacePermission::ViewChannel,
+                Choice::Allow,
+                cx,
+            ),
+            Pending::Remove(subject) => state.set_rule_choice(
+                server_id,
+                (at, subject),
+                WorkspacePermission::ViewChannel,
+                Choice::Neutral,
+                cx,
+            ),
+        });
+    }
+}
+
+impl Shell {
+    /// Shows or folds the advanced permissions of the page of a channel.
+    pub fn show_advanced_permissions(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.admin.overrides.advanced = open;
+        cx.notify();
     }
 }

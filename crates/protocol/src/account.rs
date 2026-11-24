@@ -232,6 +232,11 @@ pub struct PendingDeviceLink {
 pub struct ApproveDeviceLink {
     pub code: LinkCode,
     pub public_key: PublicKey,
+    /// The offer for the new device: the server keeps it in a relay of the link, which the
+    /// two devices read and answer until it ends (ADR 0104). Only for a server that states
+    /// `capabilities.device_link_relay`; an older server ignores the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<crate::device_relay::Sealed>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,6 +284,10 @@ pub struct ListedAccount {
     pub account: AccountSummary,
     #[serde(default)]
     pub may_unban: bool,
+    /// The workspaces of the account that the caller sees, in the order of their
+    /// identifiers. A server before release 0.3.0 states none.
+    #[serde(default)]
+    pub workspace_ids: Vec<WorkspaceId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

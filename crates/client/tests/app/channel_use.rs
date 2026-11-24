@@ -54,6 +54,7 @@ fn reply(world: &World, admin: &Admin, channel_id: ChannelId, root_id: MessageId
         document: document(text),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(admin.handle.api().send_message(
@@ -223,8 +224,9 @@ fn attach_react_and_create_threads_are_refused_with_their_reason(cx: &mut TestAp
             WorkspacePermission::CreateThreads,
         ],
     );
-    window.until("the attach control is not available", |window| {
-        window.shows("attach-file-refused") && !window.shows("attach-file")
+    // Without the permission the control is absent (ADR 0790).
+    window.until("the attach control is absent", |window| {
+        !window.shows("attach-file") && window.shows("composer")
     });
 
     // A dropped file and a pasted picture are refused with the same reason.
@@ -245,11 +247,10 @@ fn attach_react_and_create_threads_are_refused_with_their_reason(cx: &mut TestAp
     assert_eq!(window.problem(Pane::Main).as_deref(), Some(NO_ATTACH));
     assert_eq!(window.draft_len(), 0);
 
-    // Reacting is not available; the own reaction can still be removed.
+    // Reacting is absent; the own reaction can still be removed.
     window.hover_message(reacted);
-    assert!(window.shows_named(format!("react-refused:{reacted}")));
     assert!(!window.shows_named(format!("react:{reacted}")));
-    assert!(window.shows_named(format!("add-reaction-refused:{reacted}")));
+    assert!(!window.shows_named(format!("add-reaction:{reacted}")));
     window.click_named(format!("reaction:{reacted}:1"));
     window.settle();
     assert!(!window.row(reacted).message.reactions[1].own);
@@ -260,7 +261,6 @@ fn attach_react_and_create_threads_are_refused_with_their_reason(cx: &mut TestAp
 
     // A thread is not created; an existing thread opens.
     window.hover_message(plain);
-    assert!(window.shows_named(format!("thread-refused:{plain}")));
     assert!(!window.shows_named(format!("thread:{plain}")));
     window.click_named(format!("thread-chip:{threaded}"));
     window.until("the existing thread takes a reply", |window| {
@@ -394,5 +394,60 @@ fn mention_suggestions_offer_only_what_the_person_may_mention(cx: &mut TestAppCo
                 && !offered.iter().any(|name| name == "Editors")
                 && offered.iter().any(|name| name == "Ada")
         },
+    );
+}
+
+/// The mention picker shows at most five candidates and scrolls the others, so that it
+/// covers less of the end of the message list; the chosen candidate stays in view.
+#[gpui::test]
+fn the_mention_picker_shows_five_candidates_and_scrolls_to_the_chosen_one(cx: &mut TestAppContext) {
+    let (scene, _directory, mut window) = scene(cx, "Emil");
+    let Scene {
+        world,
+        admin,
+        workspace_id,
+        ..
+    } = &scene;
+    for name in ["Art", "Build", "Copy", "Design", "Edit", "Film", "Games"] {
+        let role = CreateWorkspaceRole {
+            color: None,
+            hoist: false,
+            name: name.to_owned(),
+            permissions: Vec::new(),
+        };
+        world
+            .run(
+                admin
+                    .handle
+                    .api()
+                    .create_workspace_role(*workspace_id, &role),
+            )
+            .unwrap();
+    }
+    window.until("the roles are in the workspace", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.roles.len() >= 7)
+    });
+    window.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "@", window, cx);
+        shell.focus_composer(Pane::Main, window, cx);
+    });
+    window.until("the picker holds more than five candidates", |window| {
+        window.shows("candidate:6")
+    });
+    let picker = window.cx.debug_bounds("mention-picker").unwrap();
+    assert!(
+        picker.size.height <= gpui::px(5.0 * 30.0 + 10.0),
+        "{picker:?}"
+    );
+    for _ in 0..6 {
+        window.press("down");
+    }
+    let chosen = window.cx.debug_bounds("candidate:6").unwrap();
+    assert!(
+        chosen.top() >= picker.top() && chosen.bottom() <= picker.bottom(),
+        "{chosen:?} {picker:?}"
     );
 }

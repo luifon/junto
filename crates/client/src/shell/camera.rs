@@ -15,7 +15,7 @@ use crate::ui::StyleExt;
 const OWN_PREVIEW_PIXELS: (u32, u32) = (640, 360);
 
 pub(crate) fn default_name() -> &'static str {
-    "First available camera"
+    crate::text::FIRST_CAMERA
 }
 
 /// The people whose tiles the stage leaves out: with "Hide people without video" on, every
@@ -292,6 +292,24 @@ impl super::Shell {
 impl super::Shell {
     pub fn drawn_camera_count(&self) -> usize {
         self.cameras.len()
+    }
+
+    /// Opens a menu or window of the controls of a call for the screens: "view", "more",
+    /// "room-settings" or "record-language".
+    pub fn open_call_layer_fixture(
+        &mut self,
+        name: &str,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let layer = match name {
+            "view" => super::Layer::ViewMenu,
+            "more" => super::Layer::OwnControlsMore,
+            "room-settings" => super::Layer::RoomSettings,
+            "record-language" => super::Layer::RecordLanguage,
+            _ => return,
+        };
+        self.open_layer(layer, window, cx);
     }
 
     pub fn show_cameras_fixture(

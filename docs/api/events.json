@@ -597,36 +597,6 @@
       ],
       "type": "object"
     },
-    "call_speaking": {
-      "description": "The people in a voice channel who speak now, as the clients inside report it. The\nlist replaces the one before. It is not sent for a channel that hides who is inside.",
-      "properties": {
-        "account_ids": {
-          "items": {
-            "$ref": "#/components/schemas/AccountId"
-          },
-          "type": "array"
-        },
-        "call_id": {
-          "$ref": "#/components/schemas/CallId"
-        },
-        "place": {
-          "$ref": "#/components/schemas/CallPlace"
-        },
-        "type": {
-          "enum": [
-            "call_speaking"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "call_id",
-        "place",
-        "account_ids",
-        "type"
-      ],
-      "type": "object"
-    },
     "call_started": {
       "description": "The first person is in the room of a call: the voice channel is in use, or the\ndirect-message call has begun.",
       "properties": {
@@ -964,6 +934,25 @@
         "public_key",
         "origin",
         "created_at",
+        "type"
+      ],
+      "type": "object"
+    },
+    "device_link_relay_changed": {
+      "description": "The relay of the link of the new device `device_id` was created or answered: its two\ndevices read it again (revision 23, ADR 0104).",
+      "properties": {
+        "device_id": {
+          "$ref": "#/components/schemas/DeviceId"
+        },
+        "type": {
+          "enum": [
+            "device_link_relay_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id",
         "type"
       ],
       "type": "object"
@@ -3301,6 +3290,25 @@
             "type": "object"
           },
           {
+            "description": "The relay of the link of the new device `device_id` was created or answered: its two\ndevices read it again (revision 23, ADR 0104).",
+            "properties": {
+              "device_id": {
+                "$ref": "#/components/schemas/DeviceId"
+              },
+              "type": {
+                "enum": [
+                  "device_link_relay_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "device_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
             "properties": {
               "device_id": {
                 "$ref": "#/components/schemas/DeviceId"
@@ -4301,36 +4309,6 @@
               "call_id",
               "place",
               "reason",
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "The people in a voice channel who speak now, as the clients inside report it. The\nlist replaces the one before. It is not sent for a channel that hides who is inside.",
-            "properties": {
-              "account_ids": {
-                "items": {
-                  "$ref": "#/components/schemas/AccountId"
-                },
-                "type": "array"
-              },
-              "call_id": {
-                "$ref": "#/components/schemas/CallId"
-              },
-              "place": {
-                "$ref": "#/components/schemas/CallPlace"
-              },
-              "type": {
-                "enum": [
-                  "call_speaking"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "call_id",
-              "place",
-              "account_ids",
               "type"
             ],
             "type": "object"

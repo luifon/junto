@@ -370,3 +370,90 @@ async fn the_list_of_followed_threads_is_read_by_an_index() {
     assert_eq!(page.threads.len(), 50);
     assert!(page.more);
 }
+
+async fn workspace_followed(
+    server: &TestServer,
+    member: &Member,
+    workspace: WorkspaceId,
+    query: &str,
+) -> WorkspaceThreads {
+    server
+        .get(
+            member,
+            &format!("/api/v1/workspaces/{workspace}/threads{query}"),
+        )
+        .await
+        .ok(StatusCode::OK)
+}
+
+/// The followed threads of every channel of a workspace that the caller reads: unread ones
+/// first, each group with the newest reply first, in pages (ADR 0413).
+#[tokio::test]
+async fn the_followed_threads_of_a_workspace_list_unread_ones_first() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let member = server.join(&owner, "Member").await;
+    let workspace = server.default_workspace(&owner).await;
+    let plans = server.channel(&owner, workspace.id, "plans").await;
+    let notes = server.channel(&owner, workspace.id, "notes").await;
+    let hidden = server.channel(&owner, workspace.id, "hidden").await;
+    let mut roots = Vec::new();
+    for (channel, words) in [(&plans, "first"), (&notes, "second"), (&hidden, "third")] {
+        let root = send(&server, &owner, channel, words).await;
+        reply(&server, &member, root.id, "the member writes").await;
+        roots.push(root.id);
+    }
+    // The owner replies in the first thread: it is unread for the member.
+    reply(&server, &owner, roots[0], "news for the member").await;
+    let everyone = server.everyone_role(&owner, workspace.id).await;
+    server
+        .put(
+            &owner,
+            &format!("/api/v1/channels/{}/rules/roles/{}", hidden.id, everyone.id),
+            &json!({ "deny": ["read_message_history"] }),
+        )
+        .await
+        .ok::<Value>(StatusCode::OK);
+
+    let listed = workspace_followed(&server, &member, workspace.id, "").await;
+    let order: Vec<MessageId> = listed
+        .threads
+        .iter()
+        .map(|thread| thread.state.root_id)
+        .collect();
+    assert_eq!(order, [roots[0], roots[1]]);
+    assert_eq!(listed.threads[0].channel_id, plans.id);
+    assert_eq!(listed.threads[1].channel_id, notes.id);
+    assert!(listed.threads[0].state.unread > 0);
+    assert_eq!(listed.threads[1].state.unread, 0);
+
+    let first = workspace_followed(&server, &member, workspace.id, "?limit=1").await;
+    assert!(first.more);
+    let next = first.next.unwrap();
+    let second = workspace_followed(
+        &server,
+        &member,
+        workspace.id,
+        &format!("?limit=1&before={next}"),
+    )
+    .await;
+    assert_eq!(second.threads[0].state.root_id, roots[1]);
+    assert!(!second.more);
+
+    for query in ["?limit=0", "?before=x", "?before=2:x:y"] {
+        server
+            .get(
+                &member,
+                &format!("/api/v1/workspaces/{}/threads{query}", workspace.id),
+            )
+            .await
+            .error(ErrorCode::InvalidRequest);
+    }
+    server
+        .get(
+            &member,
+            &format!("/api/v1/workspaces/{}/threads", WorkspaceId::generate()),
+        )
+        .await
+        .error(ErrorCode::NotFound);
+}

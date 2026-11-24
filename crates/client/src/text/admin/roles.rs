@@ -12,8 +12,7 @@ pub const SERVER_HELP: &str = "The server roles hold the permissions that act on
      the list stands above the roles below it.";
 pub const ORDER_HELP: &str = "A person changes, moves, gives and takes only the roles below the highest role that \
      the person holds. The server owner stands above every role.";
-pub const DRAG_HELP: &str =
-    "Drag a role by its handle onto another role to move it there, or use “Up” and “Down”.";
+pub const DRAG_HELP: &str = "Drag a role by its handle onto another role to move it there, or use “Move up” and “Move down” in the menu of its row.";
 pub const NEW_ROLE: &str = "New role";
 pub const ROLE_NAME: &str = "Name of the role";
 pub const NEW_ROLE_HELP: &str = "A new role has no permission and is the lowest role. Give it permissions and move it \
@@ -330,6 +329,32 @@ pub const COLOR_PRESETS: &[(&str, &str)] = &[
     ("Purple", "#8855AA"),
     ("Orange", "#BB6622"),
 ];
+
+// The tabs of a role (ADR 0791).
+pub const ROLE_TABS: &str = "Tabs of the role";
+pub const MEMBERS: &str = "Members";
+pub const ADD_MEMBERS: &str = "Add members";
+pub const ADD_MEMBERS_HELP: &str = "Type a name";
+pub const ADD_MEMBER: &str = "Add";
+pub const NO_MEMBER_FOUND: &str = "Nobody without the role has this name.";
+pub const NO_HOLDER: &str = "Nobody holds the role.";
+pub const APPEARANCE_IN_ROW: &str =
+    "The name colour and the separate group of the role are set in its row above.";
+
+pub fn member_count(count: usize) -> String {
+    match count {
+        1 => "1 member".to_owned(),
+        _ => format!("{count} members"),
+    }
+}
+
+pub fn show_role(name: &str) -> String {
+    format!("Show the role “{name}”")
+}
+
+pub fn hide_role(name: &str) -> String {
+    format!("Hide the role “{name}”")
+}
 
 #[cfg(test)]
 mod tests {

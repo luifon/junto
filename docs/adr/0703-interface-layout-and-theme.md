@@ -15,7 +15,7 @@ Layout:
 - The layout has three columns: server book, channel list, content. This is the arrangement that Discord uses.
 - The server book collapses to icons with a hover menu. A press of the pointer on an icon selects the server and keeps its menu closed after the release, as in Discord, until the pointer left the icon and came back (`Shell::press_server_icon`). gpui does not count an element with a pending press as hovered, and counts the icon as hovered again at the next drawing or move after the release; so a press without a move to the icon before it (as the click of the window tests does), and a press during which the pointer moves, opened the menu again after the release, over the channel list. A menu that is drawn closes at the press itself, which lands outside it. Test: `book::a_press_on_a_server_icon_closes_its_hover_menu`, with both kinds of press, each of which opened the menu before the rule, and the menu again after a leave and a return. The pointer opens the menu of an icon, and the menu closes 220 ms after the pointer has left both the icon and the menu (`HOVER_MENU_LINGER`), so the pointer can move from the icon into the menu, which lies over the edge of the icon. The menu itself tells when the pointer enters and leaves it (`Menu::on_hover`): it blocks the pointer, so an element around it is never hovered while the pointer is over it. The shell keeps whether the icon and the menu are each under the pointer and starts the wait only when neither is: gpui tells the menu, which is drawn later, of the move that enters it before it tells the icon that the pointer left. Measured with `book::the_pointer_moves_from_a_server_icon_into_its_hover_menu_and_uses_it`, which moves the pointer from the icon to a workspace of the menu in twelve steps of 40 ms, rests longer than the wait and presses the workspace: before, the menu closed at the eighth step with the pointer in it; with the hover of the menu alone it closed too, and with the kept state alone the menu was never counted as hovered.
 - The state and the actions of a voice channel are in the call header.
-- The settings of the room of the call are in the settings of the application at "Call" (ADR 0739). The devices and the settings of a share and of the view are in the settings of the application at "Voice and video", which a settings button of the call header opens (ADR 0735).
+- The settings of the room of the call are in the window of "Room settings" on the call bar (ADR 0739). The devices and the settings of a share and of the view are in the settings of the application at "Voice and video", which the devices control of the row of own controls under the call opens, in the main window and in the call window (ADR 0735).
 - The user's own call controls are next to the profile strip.
 
 The title bar of the main window:
@@ -40,12 +40,45 @@ Visual design:
 
 Theme, scaling and language:
 
-- There are two themes: the light theme of the design (stone) and a dark theme with the colours of design 2 (broadcast) on the same layout, fonts and measures. All colours, fonts and spacing are in one theme file. The person chooses Light, Dark or System in the section "Interface" of the settings; System follows the light or dark appearance of the system and changes with it. A new installation, and the settings file of a client without themes, have Light, so an installation keeps its look until the person chooses.
+- There are two themes: the light theme of the design (stone) and a dark theme with the colours of design 2 (broadcast) on the same layout, fonts and measures. All colours, fonts and spacing are in one theme file. The person chooses Light, Dark or System in the section "Appearance" of the settings; System follows the light or dark appearance of the system and changes with it. A new installation, and the settings file of a client without themes, have Light, so an installation keeps its look until the person chooses.
 - Text has a contrast of at least 4.5 to 1 with its ground in both themes (WCAG AA). A unit test of the theme holds it for the pairs of text and ground colours that the screens use.
-- The settings of the application are a layer of the size of the administration (ADR 0761): a list of sections at the left (Profile, Picture, Interface, Voice and video, Call, Keybinds, Quiet times, Notifications, Sounds, Devices, Permissions, About) and one section at the right, as Discord, Slack and Teams show their settings. The settings open at Profile. "About" holds the data directory and the version of the build with its update check (ADR 0704); the update notice opens the settings at About.
+- The settings of the application are a layer of the size of the administration (ADR 0761): a list of sections at the left (Profile, Picture, Appearance, Voice and video, Call, Sounds, Notifications, Keyboard shortcuts, Linked devices, Permissions, About) and one section at the right, as Discord, Slack and Teams show their settings. "Appearance" holds the theme, the scale and the time format, and at its end the group "Start and close" with "Start Junto at login" and "Keep Junto running after closing the window", each with its title above its switch. The daily quiet time is part of Notifications. The settings open at the section that was open last in the window, and at the first section after a start. "About" holds the data directory and the version of the build with its update check (ADR 0704); the update notice opens the settings at About.
 - The interface scales from 90% to 150%. The scale changes the rem size of the window, and text and controls of the component library follow it.
 - The client gives its own sizes in rems. A size that is given in pixels does not scale: a dialog with a width in pixels kept that width at 150% while its text grew.
 - The interface language is English. All interface text is in one catalog.
+- One word for each action, in bars, menus, the tray, the key bindings and tooltips. The glossary below is part of the catalog: a new text of an action takes its word.
+
+Glossary:
+
+| Thing or action | Word |
+|---|---|
+| Write to a person | "Message"; the row that starts a conversation is "New message" |
+| Call a person | "Call"; the state of a direct call names the state ("Calling…") |
+| The settings of the application | "Settings" ("Settings…" in the application menu, as the system names it) |
+| Key bindings | "Keyboard shortcuts" |
+| Quit | "Quit Junto" |
+| Installations of the account | "Linked devices"; "device" is the hardware (microphone, camera, speakers) |
+| Check of the hardware before a call | "Test microphone and camera" |
+| The value compared when a device is linked | "Device code" |
+| Leave a call | "Leave call" |
+| Join a call | "Join call"; a ringing direct call is "Accept" |
+| Invite to a call | "Invite"; "Cancel invitation" |
+| The call of a voice channel | "call" everywhere, also for its rules ("Lock call", "the call is locked") |
+| Hand | "Lower hand", "Allow to speak" |
+| Moderation | the item words only, without a permission line |
+| Open the referenced message | "Go to message" |
+| Copy a link | "Copy link to message", "Copy link to file", "Copy link address" |
+| Copy a file name | "Copy file name" |
+| Try again | "Try again"; "Check again" only where the person waits for someone (an approval, a link) |
+| The newest messages | "Go to newest messages" |
+| Share | "Share", "Stop sharing", "Stop all shares" |
+| Record | "Record", "Stop recording" |
+| Channel settings | "Channel settings" |
+| Archive pages | "Archive" |
+| Change a value | "Rename" for a name, "Edit" for a text (topic, voice status), "Change" for another value (picture, keys, level) |
+| Voice status | "Voice status" |
+
+Reason: one action under several names ("Direct call" and "Call"; "Leave", "Leave call" and "Leave the call"; "Devices" for both installations and microphones) made a person look for two actions where there was one.
 
 Drag and drop:
 
@@ -67,5 +100,5 @@ Drag and drop:
 - The close button of the strip is red under the pointer, an exception to the use of red that follows the convention of Windows.
 - On Windows and on a Wayland compositor without server decorations the columns are 32 pixels lower. The strip of the server book where macOS draws its window buttons stays 10 pixels high there.
 - On Linux the band of an edge lies over the content: a press at the outermost 4 pixels of a scroll bar at the right edge resizes the window.
-- The window tests draw the strip on every system with a global of the tests (`DrawnFrameInTests`, which also states the tiled edges and the maximized state on Linux) and read what the title bar asks of the system (`TitleBarRequests`: move, double press, minimize, zoom, resize from an edge, window menu), because the test window of gpui carries out no such request: the strip and its buttons at their places above the columns; the buttons, the double press, the move and the right press of the strip handled by the window, also while a dialog is open; a press in each band and corner, no band at a tiled edge and none when maximized; the headers that act as the title bar only in a window whose content reaches it, a double press and a move there, a press on the button of the server menu that stays the button's, a dialog header that makes no request, and the band over an open dialog that moves the window without closing the dialog. On Windows the main window draws the strip without that global. The check of the Windows package tests the answer of the real window to the hit test, its borders, its buttons and its maximized rectangle (ADR 0755). The action of the system setting at a double press on macOS and the strip on GNOME are checked by a person.
+- The window tests draw the strip on every system with a global of the tests (`DrawnFrameInTests`, which also states the tiled edges and the maximized state on Linux) and read what the title bar asks of the system (`TitleBarRequests`: move, double press, minimize, zoom, resize from an edge, window menu), because the test window of gpui carries out no such request: the strip and its buttons at their places above the columns; the buttons, the double press, the move and the right press of the strip handled by the window, also while a dialog is open; a press in each band and corner, no band at a tiled edge and none when maximized; the headers that act as the title bar only in a window whose content reaches it, a double press and a move there, a press on the arrow of the menu of the workspace that stays the button's, a dialog header that makes no request, and the band over an open dialog that moves the window without closing the dialog. On Windows the main window draws the strip without that global. The check of the Windows package tests the answer of the real window to the hit test, its borders, its buttons and its maximized rectangle (ADR 0755). The action of the system setting at a double press on macOS and the strip on GNOME are checked by a person.
 - On macOS the native test `native_macos_windows` (ADR 0757) opens the main window through `open_main_window` and checks the native window: `open_main_window` asks gpui for a transparent title bar, for the window buttons at `MAIN_WINDOW_CONTROLS` (12, 13) and for the move of the window by the application (`main_window_options`; with `test-support` it records the options that it gave gpui in the global `OpenedTitleBar`, which the test reads); the native window has a content view of its full size (`NSWindowStyleMask::FullSizeContentView`), a transparent title bar, a content view higher than its layout area, its close button at 12 pixels from the left and 13 from the bottom of its title bar container, and the client treats its headers as the title bar (`title_bar::reaches_title_bar`). That the content view takes the presses of the title bar is answered by a private method of AppKit that only unsafe code can call, so the test reads that setting in the options of the window. With the call of `content_reaches_title_bar` removed, the test fails with "the client does not treat the headers of the main window as its title bar".

@@ -69,6 +69,7 @@ fn the_archived_list_opens_the_channel_and_shows_its_seven_day_warning(cx: &mut 
                 document: document("The archived plan"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -148,6 +149,7 @@ fn a_direct_conversation_is_exported_from_its_header_and_saved(cx: &mut TestAppC
                 document: document("A private plan"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -158,7 +160,11 @@ fn a_direct_conversation_is_exported_from_its_header_and_saved(cx: &mut TestAppC
     });
     window.click(row);
     window.until_message("A private plan");
-    window.click("export-conversation");
+    // The export is in the menu of the conversation and asks first (ADR 0411).
+    window.right_click_named(format!("direct-row:{}", conversation.id));
+    window.click("direct-export");
+    assert!(window.shows("confirm-export"));
+    window.click("start-export");
     let export = awaited(&mut window, "the direct export is listed", |window| {
         server_page!(window, Exports)?
             .exports
@@ -367,6 +373,7 @@ fn a_saved_channel_export_contains_messages_threads_files_recordings_and_transcr
                 document: document("The plan <draft>"),
                 reply_to: None,
                 attachments: vec![attachment],
+                comment: None,
             },
         ))
         .unwrap();
@@ -377,6 +384,7 @@ fn a_saved_channel_export_contains_messages_threads_files_recordings_and_transcr
                 document: document("Details in the thread"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -498,113 +506,5 @@ fn a_saved_channel_export_contains_messages_threads_files_recordings_and_transcr
         ))
         .unwrap()
         .contains("The recorded plan.")
-    );
-}
-
-#[gpui::test]
-fn the_recordings_page_shows_rows_loads_older_and_refreshes_after_an_event(
-    cx: &mut TestAppContext,
-) {
-    use junto_client::state::admin::view::recordings::RecordingsRead;
-    use junto_client_core::protocol::recording::RecordingState;
-    let world = World::new();
-    let server = world.run(RecordingServer::start("Harbor"));
-    let (_directory, mut window, owner) = recording_owner(cx, &server);
-    let workspace = default_workspace(&world, &owner);
-    let channel = world
-        .run(owner.api().create_channel(
-            workspace,
-            &CreateChannel {
-                topic: String::new(),
-                name: "Daily".to_owned(),
-                kind: ChannelKind::Voice,
-                category_id: None,
-                position: None,
-            },
-        ))
-        .unwrap();
-    let account = logged_in(&owner);
-    world.run(server.on(move |state| async move {
-        sqlx::query(
-            "insert into recordings
-            (id, workspace_id, channel_id, call_id, room_name, state, started_by, language,
-             requested_at, ended_at, failure)
-            select gen_random_uuid(), $1, $2, gen_random_uuid(),
-                   'jr-000000000000-00000000000000000000000000000000', 'failed', $3, 'auto',
-                   $4, $4, 'nothing_recorded' from generate_series(1, 51)",
-        )
-        .bind(workspace.as_uuid())
-        .bind(channel.id.as_uuid())
-        .bind(account.as_uuid())
-        .bind(state.now())
-        .execute(state.database.pool())
-        .await
-        .unwrap();
-    }));
-    let stored = world
-        .run(owner.api().recordings(workspace, None, Some(100)))
-        .unwrap()
-        .recordings;
-    assert_eq!(stored.len(), 51);
-    window.open_administration();
-    open_page(&mut window, "admin-nav-recordings", |window| {
-        server_page!(window, Recordings).is_some()
-    });
-    let page = awaited(
-        &mut window,
-        "the first page of recordings is shown",
-        |window| {
-            server_page!(window, Recordings)
-                .filter(|page| page.state == RecordingsRead::Loaded && page.rows.len() == 50)
-        },
-    );
-    assert!(page.older);
-    assert_eq!(
-        page.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
-        stored[..50].iter().map(|row| row.id).collect::<Vec<_>>()
-    );
-    assert!(
-        page.rows
-            .iter()
-            .all(|row| row.channel.as_deref() == Some("Daily")
-                && row.state == RecordingState::Failed)
-    );
-    assert!(window.shows(sel("recording-row", stored[0].id)));
-    click_in_page(&mut window, "recordings-older");
-    let page = awaited(&mut window, "the older recording is shown", |window| {
-        server_page!(window, Recordings)
-            .filter(|page| page.state == RecordingsRead::Loaded && page.rows.len() == 51)
-    });
-    assert!(!page.older);
-    assert_eq!(
-        page.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
-        stored.iter().map(|row| row.id).collect::<Vec<_>>()
-    );
-    reveal_in_page(&mut window, sel("recording-row", stored[50].id));
-    reveal_in_page(&mut window, sel("recording-row", stored[0].id));
-    assert!(window.shows(sel("recording-row", stored[0].id)));
-    world
-        .run(owner.api().remove_recording(stored[0].id))
-        .unwrap();
-    let mut clock = std::time::Instant::now();
-    window.until("the removal event refreshes the first page", |window| {
-        let now = std::time::Instant::now();
-        window.cx.executor().advance_clock(now - clock);
-        clock = now;
-        server_page!(window, Recordings).is_some_and(|page| {
-            page.state == RecordingsRead::Loaded
-                && page.rows.len() == 50
-                && page.rows.iter().all(|row| row.id != stored[0].id)
-        })
-    });
-    reveal_in_page(&mut window, sel("recording-row", stored[1].id));
-    assert!(!window.shows(sel("recording-row", stored[0].id)));
-    assert_eq!(
-        world
-            .run(owner.api().recordings(workspace, None, Some(100)))
-            .unwrap()
-            .recordings
-            .len(),
-        50
     );
 }

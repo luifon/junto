@@ -164,7 +164,7 @@ fn push_to_talk_follows_both_windows(cx: &mut TestAppContext) {
     turn_processing_off(&mut window);
     window.state.update(&mut window.cx, |state, cx| {
         state.set_input_mode(junto_client_core::voice::InputMode::PushToTalk, cx);
-        state.set_talk_key(junto_client_core::voice::TalkKey::Control, cx);
+        state.set_talk_keys(junto_client_core::voice::TalkKey::Control.combo(), cx);
     });
     let voice = room(&mut window);
     enter(
@@ -208,7 +208,7 @@ fn push_to_talk_follows_both_windows(cx: &mut TestAppContext) {
     let mut detached = window.window_of(handle);
     detached.simulate(|cx| cx.update(|window, _| window.activate_window()));
     detached.run_tasks();
-    assert!(detached.cx.debug_bounds("detached-microphone").is_some());
+    assert!(detached.cx.debug_bounds("own-microphone").is_some());
     detached.simulate(|cx| cx.simulate_modifiers_change(held));
     window.until("detached key sends", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
@@ -221,24 +221,26 @@ fn push_to_talk_follows_both_windows(cx: &mut TestAppContext) {
         state.calls().view().call.unwrap().identity
     });
     detached.run_tasks();
-    let fullscreen = detached.cx.debug_bounds("call-fullscreen").unwrap();
-    detached.simulate(|cx| cx.simulate_click(fullscreen.center(), Modifiers::none()));
+    // The window controls are in "⋮" of the row of own controls (ADR 0772).
+    detached.click("own-more");
+    detached.click("more-fullscreen");
     assert!(detached.cx.update(|window, _| window.is_fullscreen()));
     // The choice "keep on top" is drawn only where the system can keep a window above the
     // others (ADR 0507).
+    detached.click("own-more");
     if detached
         .cx
         .update(|_, cx| junto_client::window_level::offered(cx))
     {
-        let top = detached.cx.debug_bounds("call-on-top").unwrap();
-        detached.simulate(|cx| cx.simulate_click(top.center(), Modifiers::none()));
+        detached.click("more-on-top");
         window.until("topmost changes without leaving", |window| {
             window.state.read_with(&window.cx, |state, _| {
                 state.is_call_detached() && state.call_window_settings().keep_on_top
             })
         });
     } else {
-        assert!(detached.cx.debug_bounds("call-on-top").is_none());
+        assert!(!detached.shows("more-on-top"));
+        detached.press("escape");
     }
     assert_eq!(
         identity,
@@ -549,7 +551,7 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
 
     // The recording control changes when the person may record: the header keeps its
     // height, and the panel under it does not move (ADR 0730).
-    assert!(call.shows("no-record-permission"));
+    assert!(call.shows("start-recording") && !call.may_record());
     let before = (
         call.cx.debug_bounds("call-panel").unwrap(),
         call.cx.debug_bounds("close-call-panel").unwrap(),
@@ -572,7 +574,7 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
         ))
         .unwrap();
     call.until("the person may record", |call| {
-        !call.shows("no-record-permission") && call.shows("start-recording")
+        call.may_record() && call.shows("start-recording")
     });
     assert_eq!(
         before,
@@ -594,10 +596,29 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     call.write("Hello from the call window");
     call.until_message("Hello from the call window");
 
+    // The pins of the channel of the call open in the panel of the call window and stay
+    // there while the main window shows another channel: the call window has its own
+    // scope (ADR 0741). The main window opens no pin list.
+    call.click("call-pins");
+    call.until("the pins open over the chat of the call window", |call| {
+        call.shows("pins-panel") && call.shows("call-back-to-chat")
+    });
+    window.click_channel("Daily");
+    window.click_channel("general");
+    assert!(call.shows("pins-panel"));
+    assert!(window.view().workspace().unwrap().pins.is_none());
+    call.click("call-back-to-chat");
+    call.until("the chat of the call window returns", |call| {
+        call.shows("call-chat") && !call.shows("pins-panel")
+    });
+
     // The volume of Ada.
     call.click("call-tab-members");
-    let slider = crate::harness::selector(format!("volume:{ada}"));
-    call.until("the volume control is drawn", |call| call.shows(slider));
+    call.until("Ada is listed", |call| {
+        call.shows_named(format!("call-member:{ada}"))
+    });
+    call.right_click_named(format!("call-member:{ada}"));
+    let slider = "call-menu-volume";
     call.click(slider);
     call.press(&["left"; 20].join(" "));
     call.until("Ada is not played", |call| {
@@ -606,12 +627,20 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
             .any(|person| person.account_id == ada && person.volume == 0)
             && heard(&call.sound, ADMIN_TONE_HZ) < ABSENT_DBFS
     });
+    call.press("escape");
 
     // The devices: the call window has no settings and no Settings tab. Its settings
     // button opens the settings of the application at "Voice and video" in the main window,
     // which comes to the front (ADR 0772); a device chosen there is used by the call.
     assert!(!call.shows("call-tab-settings"));
-    call.click("open-call-settings");
+    // In the narrow call window the panel lies over the call and its row of controls. The
+    // panel closes with its button, which is inside the window.
+    let close = call.cx.debug_bounds("close-call-panel").unwrap();
+    let width = call.cx.update(|window, _| window.viewport_size().width);
+    assert!(close.right() <= width, "{close:?} beyond {width:?}");
+    call.click("close-call-panel");
+    assert!(!call.shows("call-panel"));
+    call.open_call_devices();
     window.until("the main window shows the devices", |window| {
         window.shows("settings-page-settings-section-voice-and-video")
             && window.shows("input-device")
@@ -626,13 +655,6 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
             .is_some_and(|panel| panel.audio.inputs[1].selected)
     });
     window.press("escape");
-
-    // The panel closes with its button, which is inside the window.
-    let close = call.cx.debug_bounds("close-call-panel").unwrap();
-    let width = call.cx.update(|window, _| window.viewport_size().width);
-    assert!(close.right() <= width, "{close:?} beyond {width:?}");
-    call.click("close-call-panel");
-    assert!(!call.shows("call-panel"));
 
     // Text that the composer of the call window holds is in the composer of the main
     // window after the call window closed.
@@ -779,9 +801,9 @@ fn the_call_window_of_a_direct_call_has_its_conversation(cx: &mut TestAppContext
         state.open_conversation(server_id, other, cx)
     });
     window.until("conversation shown", |window| {
-        window.shows("start-direct-call")
+        window.shows("conversation-call")
     });
-    window.click("start-direct-call");
+    window.click("conversation-call");
     window.until("the other account receives a ring", |_| {
         admin
             .handle
@@ -838,8 +860,8 @@ fn the_call_window_of_a_direct_call_has_its_conversation(cx: &mut TestAppContext
     call.write("From the call window");
     call.until_message("From the call window");
     call.click("call-tab-members");
-    call.until("the volume of the other person is drawn", |call| {
-        call.shows_named(format!("volume:{other}"))
+    call.until("the other person is listed", |call| {
+        call.shows_named(format!("call-member:{other}"))
     });
     call.click("leave-call");
     window.until("the call has ended", |window| window.view().call.is_none());

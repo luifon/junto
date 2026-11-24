@@ -169,6 +169,7 @@ fn channel_files_include_thread_files_and_offer_copy_download_and_the_message(
                     document: document("The thread notes"),
                     reply_to: None,
                     attachments: vec![id],
+                    comment: None,
                 },
             )
             .await
@@ -303,9 +304,9 @@ fn direct_files_work_after_the_last_workspace_membership_is_removed(cx: &mut Tes
     window.search_for("direct");
     let searched = window.until_searched();
     assert!(searched.messages().iter().any(|row| row.target == junto_client::state::search::ResultTarget::Message(message.id)));
-    window.click("search-direct");
+    window.toggle_search_filter("search-direct");
     assert_eq!(window.until_searched().messages().len(), 1);
-    window.click("search-has-file");
+    window.toggle_search_filter("search-has-file");
     assert_eq!(window.until_searched().messages().len(), 1);
     let author = message.author_id.unwrap();
     window.until(

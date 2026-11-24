@@ -90,7 +90,7 @@ fn a_member_leaves_a_workspace_then_the_server_and_returns_with_a_code(
     // the shown workspace. It is not the last one: the question says what stays and that
     // the account stays.
     let shown = window.view().workspace().unwrap().id;
-    window.click("server-menu-button");
+    window.click("workspace-menu-button");
     window.click("menu-leave-workspace");
     let view = window.account().unwrap();
     assert_eq!(view.selected, AccountPage::Departure);
@@ -164,6 +164,7 @@ fn deleting_the_account_removes_the_server_and_others_see_a_deleted_author(
         document: crate::messages::document("A direct line"),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(api.send_message(PlaceId::Direct(conversation.id), &line))
@@ -254,7 +255,7 @@ fn deletion_during_renewal(cx: &mut TestAppContext, close_page: bool) {
                 .any(|seen| seen.answer.is_none())
     });
     if close_page {
-        window.click("account-close");
+        window.click("admin-close");
         assert!(window.account().is_none());
     }
     // Release the deletion answer, but keep the renewal holding the flow lock.
@@ -317,7 +318,7 @@ fn ordinary_server_removal_waits_for_session_renewal(cx: &mut TestAppContext) {
                 .iter()
                 .any(|seen| seen.answer.is_none())
     });
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.click("menu-remove-server");
     window.click("confirm");
     window.until("the ordinary removal was requested", |window| {

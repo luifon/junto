@@ -60,6 +60,29 @@ impl Zone {
         crate::moment::in_offset(at, offset)
     }
 
+    /// The moment that the clock of the zone shows as `minute` of `date`. Absent for a time
+    /// that the clock skips; the earlier of two moments for a time that it shows twice.
+    pub fn at(self, date: Date, minute: u16) -> Option<OffsetDateTime> {
+        let (hour, minute) = (
+            u8::try_from(minute / 60).ok()?,
+            u8::try_from(minute % 60).ok()?,
+        );
+        match self {
+            Self::Fixed(offset) => Some(date.with_hms(hour, minute, 0).ok()?.assume_offset(offset)),
+            Self::Named(zone) => {
+                use chrono::TimeZone as _;
+                let local = chrono::NaiveDate::from_ymd_opt(
+                    date.year(),
+                    u32::from(u8::from(date.month())),
+                    u32::from(date.day()),
+                )?
+                .and_hms_opt(u32::from(hour), u32::from(minute), 0)?;
+                let first = zone.from_local_datetime(&local).earliest()?;
+                OffsetDateTime::from_unix_timestamp(first.timestamp()).ok()
+            }
+        }
+    }
+
     /// The first moment of a date on the clock of the zone. On a date whose clock skips
     /// midnight, the first hour that the clock shows.
     pub fn start_of(self, date: Date) -> OffsetDateTime {
@@ -273,6 +296,18 @@ impl PartialEq for MessageRow {
 impl Eq for MessageRow {}
 
 impl MessageRow {
+    /// The row as a bare message shows it, with its read actions only: the root of the
+    /// thread of the side panel and a message of the pin list (ADR 0740).
+    pub fn read_only(mut self) -> Self {
+        self.can_react = false;
+        self.can_reply = false;
+        self.can_thread = false;
+        self.can_pin = false;
+        self.can_edit = false;
+        self.can_delete = false;
+        self
+    }
+
     /// The message offers at least one action: its bar and its menu have an entry.
     pub fn has_actions(&self) -> bool {
         (!self.message.deleted && self.message.document.is_some())
@@ -1147,7 +1182,22 @@ pub fn derive(source: &Source<'_>) -> Feed {
             .first()
             .is_some_and(|first| first.position > read)
     });
+    // Where the list draws cards, the card of a recording stands for the line that stated
+    // its stop (ADR 0744).
+    let carded: HashSet<RecordingId> = timeline
+        .messages
+        .iter()
+        .filter_map(|message| message.system.as_ref())
+        .filter(|system| source.cards.is_some() && system.action == "recording_ready")
+        .filter_map(|system| system.recording_id)
+        .collect();
     for message in &timeline.messages {
+        if let (None, Some(system)) = (message.author_id, &message.system)
+            && system.action == "recording_stopped"
+            && system.recording_id.is_some_and(|id| carded.contains(&id))
+        {
+            continue;
+        }
         let local = source.zone.local(message.created_at);
         if day != Some(local.date()) {
             day = Some(local.date());
@@ -1512,6 +1562,7 @@ mod tests {
                 reply_count: 0,
                 last_reply: None,
                 reply_authors: Vec::new(),
+                comment: None,
                 pinned: false,
                 files_removed_by_retention: false,
             }
@@ -2216,10 +2267,13 @@ mod tests {
         let mut started = post.clone();
         started.id = MessageId::generate();
         started.system.as_mut().unwrap().action = "recording_started".to_owned();
-        let timeline = scene.timeline(vec![started, post]);
+        let mut stopped = post.clone();
+        stopped.id = MessageId::generate();
+        stopped.system.as_mut().unwrap().action = "recording_stopped".to_owned();
+        let timeline = scene.timeline(vec![started, stopped, post]);
         // A list without cards, such as the chat of the call of this device, shows the
-        // line.
-        assert_eq!(shape(&scene.feed(&timeline, false)), "SDss");
+        // lines.
+        assert_eq!(shape(&scene.feed(&timeline, false)), "SDsss");
 
         let (downloads, texts) = (HashMap::new(), HashMap::new());
         let (removing, refused) = (HashSet::new(), HashMap::new());
@@ -2252,7 +2306,8 @@ mod tests {
             today: None,
             cards: Some(&cards),
         });
-        // The line of the start stays a line, and the post of the files is the card.
+        // The line of the start stays a line, the post of the files is the card, and the
+        // card stands for the line of the stop.
         assert_eq!(shape(&feed), "SDsR");
         let FeedRow::Recording(row) = &feed.rows[3] else {
             panic!("the post is a card");

@@ -821,24 +821,19 @@ impl Shell {
         let new = div().flex().flex_col().children(secret);
         let new = if open.is_some() {
             new.child(self.render_token_form(view, &theme, cx))
-        } else {
-            let held = (!page.may_create).then_some(txt::TOKEN_NEEDS);
+        } else if page.may_create {
             let button = Button::new("token-new")
                 .icon(crate::assets::Icon::Plus)
                 .label(txt::NEW_TOKEN)
                 .selector("token-new")
-                .disabled(held.is_some())
                 .h(u(30.0))
                 .px(u(12.0))
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.set_token_form(true, window, cx);
                 }));
             new.child(div().flex().flex_none().child(button))
-                .children(held.map(|reason| {
-                    sentence(reason, &theme)
-                        .mt(u(5.0))
-                        .debug_selector(|| "token-new-held".to_owned())
-                }))
+        } else {
+            new
         };
         column = column.child(self.admin.records.space.row(open, &[Open::NewToken], new));
         column = column.children(refusal(

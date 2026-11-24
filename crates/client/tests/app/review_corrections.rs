@@ -38,6 +38,7 @@ fn an_api_document_cannot_poison_desktop_history_with_empty_list_items(cx: &mut 
             document: excessive_list(),
             reply_to: None,
             attachments: vec![],
+            comment: None,
         },
     ));
     assert_eq!(
@@ -177,6 +178,7 @@ fn a_new_client_refuses_new_document_writes_to_an_old_server(cx: &mut TestAppCon
                         document: body.clone(),
                         reply_to: None,
                         attachments: vec![],
+                        comment: None,
                     },
                 )
                 .await

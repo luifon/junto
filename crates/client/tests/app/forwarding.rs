@@ -172,6 +172,7 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
                     document: source_body,
                     reply_to: None,
                     attachments: vec![attachment],
+                    comment: None,
                 },
             )
             .await
@@ -227,8 +228,11 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
     });
     assert!(drawn(&mut window).contains("a protected source"));
     let shown = drawn(&mut window);
-    assert!(shown.contains("Not verified"), "{shown}");
-    assert!(!shown.contains("Forwarded message · Ada"), "{shown}");
+    // The caption names the other server; the information mark states that this server does
+    // not confirm the copy.
+    assert!(shown.contains("Forwarded from "), "{shown}");
+    assert!(!shown.contains("· Ada"), "{shown}");
+    assert!(window.shows_named(format!("forward-about:{}", source.id)));
     assert!(!window.shows_named(format!("forward-author-profile:{}", source.id)));
     window.until("the server stored the copied body", |window| {
         window.messages().iter().any(|row| {
@@ -336,7 +340,7 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
 }
 
 #[gpui::test]
-fn a_thread_link_can_choose_a_destination_outside_the_thread_list(cx: &mut TestAppContext) {
+fn a_pasted_thread_link_chooses_a_destination_outside_the_thread_list(cx: &mut TestAppContext) {
     use junto_client::state::feed::FeedRow;
     use junto_client_core::protocol::message::Block;
     let world = World::new();
@@ -357,8 +361,7 @@ fn a_thread_link_can_choose_a_destination_outside_the_thread_list(cx: &mut TestA
     window.right_click_message(source.id);
     window.click("message-forward");
     window.type_into("forward-find", &link);
-    window.click("forward-thread-link");
-    window.until("the thread is selected", |window| {
+    window.until("the pasted link selects the thread", |window| {
         window.shows_named(format!(
             "forward-destination:{server_id}:thread:{}",
             root.id
@@ -411,6 +414,7 @@ fn a_forward_keeps_code_whitespace_and_downloads_the_sources_file(cx: &mut TestA
                     },
                     reply_to: None,
                     attachments: vec![attachment],
+                    comment: None,
                 },
             )
             .await
@@ -518,13 +522,6 @@ fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_i
         window.shows_named(format!("forward-author-profile:{}", source.id)),
         "a verified local forward author has a profile control"
     );
-    window.hover_named(format!("forward-author-profile:{}", source.id));
-    window.click("copy-text-value");
-    let address = window.cx.read_from_clipboard().unwrap().text().unwrap();
-    assert!(matches!(
-        junto_client_core::links::parse(&address),
-        Some(junto_client_core::links::AppLink::Message { id, .. }) if id == source.id
-    ));
     window.click_named(format!("forward-author-profile:{}", source.id));
     window.until("the source author's profile is read", |window| {
         window
@@ -545,36 +542,17 @@ fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_i
         author.to_string()
     );
     let copied = window.messages().into_iter().find(|row| row.message.document.as_ref().is_some_and(|document| document.blocks.iter().any(|block| matches!(block, junto_client_core::protocol::message::Block::Forward { message_id, .. } if *message_id == source.id)))).unwrap().message.id;
+    // The edit of a forward changes its comment: the forwarded content stays under the
+    // editor of the row with its verified author, also in the preview (ADR 0408).
     window.right_click_message(copied);
     window.click("message-edit");
-    window.click("composer-view-1");
-    window.until(
-        "an unchanged edit preview retains verified attribution",
-        |window| window.shows_named(format!("forward-preview-author-profile:{}", source.id)),
-    );
-    window.click_named(format!("forward-preview-author-profile:{}", source.id));
-    window.until("the preview author opens the same profile", |window| {
-        window
-            .state
-            .read_with(&window.cx, |state, _| {
-                state.profile_view(window.shell.entity_id())
-            })
-            .is_some_and(|view| {
-                view.account == author && matches!(view.read, ProfileRead::Shown(_))
-            })
-    });
+    assert!(window.shows_named(format!("message-editor:{copied}")));
+    window.type_into("edit-composer-input", "about the plan");
+    window.click("edit-composer-view-1");
+    assert!(window.shows_named(format!("forward-author-profile:{}", source.id)));
+    window.click("edit-composer-view-0");
     window.press("escape");
-    window.press("menu");
-    assert!(window.shows_named(format!("account-copy-id:{author}")));
-    window.press("escape");
-    window.click("composer-view-0");
-    window.type_into("composer-input", " revised");
-    window.click("composer-view-1");
-    window.until(
-        "an edited unverified preview loses its author target",
-        |window| !window.shows_named(format!("forward-preview-author-profile:{}", source.id)),
-    );
-    window.click("cancel-compose-state");
+    assert!(!window.shows_named(format!("message-editor:{copied}")));
     window.right_click_named(format!("forward-author-profile:{}", source.id));
     assert!(window.shows("account-menu"));
     world
@@ -586,4 +564,169 @@ fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_i
             && !window.shows("account-menu")
     });
     assert!(drawn(&mut window).contains("a shared plan"));
+}
+
+#[gpui::test]
+fn a_forward_carries_a_comment_above_the_forwarded_content(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let source_channel = window.selected_channel();
+    let source = admin.send(&world, source_channel, document("the quarterly plan"));
+    let target = admin.text_channel(&world, &mut window, "delivery");
+    let server_id = window.view().selected.unwrap().id;
+    window.until_message("the quarterly plan");
+    window.right_click_message(source.id);
+    window.click("message-forward");
+    window.click_named(format!("forward-destination:{server_id}:channel:{target}"));
+    window.type_into("forward-comment", "please read this first");
+    window.click("forward-send");
+    window.until("the forward with its comment is shown", |window| {
+        window.selected_channel() == target
+            && window.messages().iter().any(|row| {
+                serde_json::to_string(&row.message.comment)
+                    .unwrap()
+                    .contains("please read this first")
+            })
+    });
+    let copy = window
+        .messages()
+        .into_iter()
+        .find(|row| row.message.comment.is_some())
+        .unwrap()
+        .message;
+    assert!(
+        !serde_json::to_string(&copy.document)
+            .unwrap()
+            .contains("please read this first")
+    );
+    let comment = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!(
+            "forward-comment:{}",
+            copy.id
+        )))
+        .unwrap();
+    let caption = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!(
+            "forward-message:{}",
+            source.id
+        )))
+        .unwrap();
+    assert!(comment.bottom() <= caption.top());
+    let shown = drawn(&mut window);
+    assert!(shown.contains("please read this first"), "{shown}");
+    assert!(shown.contains("the quarterly plan"), "{shown}");
+}
+
+/// The forward dialog offers the followed threads of the workspace in every channel, also
+/// a read one that the window never opened (ADR 0747).
+#[gpui::test]
+fn the_forward_dialog_offers_a_read_followed_thread_of_another_channel(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    let source = admin.send(&world, general, document("the plan to share"));
+    let mixing = admin.text_channel(&world, &mut window, "mixing");
+    let root = admin.send(&world, mixing, document("Which compressor?"));
+    let reply = admin.reply(&world, root.id, document("The second one."));
+    let api = window.handle().api();
+    world.run(api.set_thread_follow(root.id, true)).unwrap();
+    let position = world.run(api.message(reply)).unwrap().position;
+    world.run(api.mark_thread_read(root.id, position)).unwrap();
+    window.until_message("the plan to share");
+    window.right_click_message(source.id);
+    window.click("message-forward");
+    let server_id = window.view().selected.as_ref().unwrap().id;
+    window.until("the read followed thread is a destination", |window| {
+        window.shows_named(format!(
+            "forward-destination:{server_id}:thread:{}",
+            root.id
+        ))
+    });
+}
+
+/// The forward dialog offers the followed threads of every workspace of the server of the
+/// message, the first page of each; a workspace with more shows a row that reads the next
+/// page (ADR 0740).
+#[gpui::test]
+fn the_forward_dialog_offers_the_followed_threads_of_every_workspace_page_by_page(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::protocol::message::SendMessage;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = crate::admin_pages::owner_window(cx, &server);
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let general = window.selected_channel();
+    let studio = window.view().workspace().unwrap().id;
+    let lab = world
+        .run(owner.api().create_workspace("Lab".to_owned()))
+        .unwrap()
+        .id;
+    let notes = crate::admin_pages::text_channel(&world, &owner, lab, "lab-notes");
+    let followed_root = |channel, text: String| {
+        let root = world
+            .run(owner.api().send_message(
+                PlaceId::Channel(channel),
+                &SendMessage {
+                    document: document(&text),
+                    reply_to: None,
+                    attachments: Vec::new(),
+                    comment: None,
+                },
+            ))
+            .unwrap();
+        // A followed thread is listed once it has a reply; its writer follows it.
+        world
+            .run(owner.api().send_message(
+                PlaceId::Thread {
+                    channel_id: channel,
+                    root_id: root.id,
+                },
+                &SendMessage {
+                    document: document("A reply"),
+                    reply_to: None,
+                    attachments: Vec::new(),
+                    comment: None,
+                },
+            ))
+            .unwrap();
+        root.id
+    };
+    let topics: Vec<_> = (0..51)
+        .map(|index| followed_root(general, format!("Topic {index:02}")))
+        .collect();
+    let lab_topic = followed_root(notes, "Lab topic".to_owned());
+    let server_id = owner.id();
+    let destination = |root| format!("forward-destination:{server_id}:thread:{root}");
+
+    window.until_message("Topic 50");
+    window.right_click_message(topics[50]);
+    window.click("message-forward");
+    // The thread of the other workspace is offered.
+    window.type_into("forward-find", "Lab topic");
+    window.until("the thread of the other workspace is offered", |window| {
+        window.shows_named(destination(lab_topic))
+    });
+    // The first page of the shown workspace leaves one thread for its row of more.
+    window.click("forward-find");
+    window.press("secondary-a");
+    window.press("backspace");
+    window.type_into("forward-find", "Topic 00");
+    window.until("the row of more threads of the workspace", |window| {
+        window.shows_named(format!("forward-more-threads:{studio}"))
+    });
+    assert!(!window.shows_named(destination(topics[0])));
+    window.click_named(format!("forward-more-threads:{studio}"));
+    window.until("the next page is offered", |window| {
+        window.shows_named(destination(topics[0]))
+            && !window.shows_named(format!("forward-more-threads:{studio}"))
+    });
 }

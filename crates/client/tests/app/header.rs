@@ -70,19 +70,19 @@ fn the_header_keeps_its_controls_in_the_window_at_its_least_width_without_a_call
         "Daily stand-up of the whole studio",
     );
 
-    // A wide window shows the labels of the buttons.
+    // A header button is an icon with a tooltip, also in a wide window (ADR 0731).
     resize(&mut window, (1600.0, 900.0));
     assert_inside(&mut window, "wide, text channel");
     let members = width_of(&mut window, "members-button");
     assert!(
-        members > 40.0,
-        "the members button has its label: {members}"
+        members < 40.0,
+        "the members button shows a label: {members}"
     );
 
     for least in MAIN_SIZES {
         resize(&mut window, least);
         assert_inside(&mut window, &format!("{least:?}, text channel"));
-        for selector in ["members-button", "search-field", "channel-settings"] {
+        for selector in ["members-button", "search-field", "pins-button"] {
             assert!(
                 right_of(&mut window, selector) <= least.0,
                 "{selector} in {least:?}"
@@ -101,7 +101,7 @@ fn the_header_keeps_its_controls_in_the_window_at_its_least_width_without_a_call
         window.click_channel(&general);
     }
 
-    // The labels come back when the window is wide again.
+    // The button keeps its width when the window is wide again.
     resize(&mut window, (1600.0, 900.0));
     assert_inside(&mut window, "wide again");
     assert_eq!(width_of(&mut window, "members-button"), members);
@@ -141,7 +141,7 @@ fn the_header_of_a_call_keeps_its_controls_in_the_window_with_the_panel_open_and
             window.shows("open-call-chat")
         });
         assert_inside(&mut window, &format!("{least:?}, call, panel closed"));
-        for selector in ["open-call-chat", "open-call-members", "open-call-settings"] {
+        for selector in ["open-call-chat", "open-call-members"] {
             assert!(
                 right_of(&mut window, selector) <= least.0,
                 "{selector} in {least:?}"

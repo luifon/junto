@@ -26,6 +26,7 @@ use crate::threads::with_root;
 impl Window {
     /// The texts that the window paints inside the element with this name.
     fn drawn_texts(&mut self, selector: &'static str) -> Vec<String> {
+        self.reveal_nav_row(selector);
         let _record = junto_client::ui::record_painted_text();
         self.cx.update(|window, _| window.refresh());
         self.settle();
@@ -210,6 +211,7 @@ fn the_messages_for_the_person_are_counted_everywhere_and_a_read_takes_them_away
                     document: document(text),
                     reply_to: None,
                     attachments: Vec::new(),
+                    comment: None,
                 },
             ))
             .unwrap();
@@ -350,16 +352,15 @@ fn a_thread_row_counts_the_mentions_of_its_thread_and_a_read_takes_the_count_awa
         document: document("One per speaker."),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(window.handle().api().reply_in_thread(followed, &answer))
         .unwrap();
     let followed_row = selector(format!("thread-row:{followed}"));
-    window.until(
-        "the followed thread is listed under its channel",
-        |window| window.shows(followed_row),
-    );
-    assert!(window.drawn_mentions(followed_row).is_none());
+    // A read followed thread has no row under its channel (ADR 0796).
+    window.settle();
+    assert!(!window.shows(followed_row));
     let other = admin.send(&world, general, document("Mixdown when?")).id;
     let other_row = selector(format!("thread-row:{other}"));
     let channel_row = selector(format!("channel-row:{general}"));
@@ -387,8 +388,10 @@ fn a_thread_row_counts_the_mentions_of_its_thread_and_a_read_takes_the_count_awa
     window.until("the other thread is read", |window| {
         window.shows(other_row) && window.drawn_mentions(other_row).is_none()
     });
-    assert!(window.shows(followed_row));
-    assert!(window.drawn_mentions(followed_row).is_none());
+    // The followed thread is read and no longer open: it leaves the channel column.
+    window.until("the read followed thread leaves the column", |window| {
+        !window.shows(followed_row)
+    });
     window.until("the row of the channel counts no mention", |window| {
         window.drawn_mentions(channel_row).is_none()
     });
@@ -485,17 +488,17 @@ fn the_unread_notices_are_counted_on_their_row_and_on_the_bell_of_the_call_windo
     let (general, own) = (window.selected_channel(), window.own_account());
     let random = admin.text_channel(&world, &mut window, "random");
     voice_channel(&world, &admin, &mut window, "Daily");
-    assert!(window.drawn_number("notices-row").is_none());
+    assert!(window.drawn_number("activity").is_none());
 
     admin.mention(&world, random, "first, ", own);
     admin.mention(&world, random, "second, ", own);
     window.until("the row of the notices counts two", |window| {
-        window.drawn_number("notices-row").as_deref() == Some("2")
+        window.drawn_number("activity").as_deref() == Some("2")
     });
     window.open_notices();
     window.click("mark-all-read");
     window.until("the notices are read", |window| {
-        window.unread_notices() == 0 && window.drawn_number("notices-row").is_none()
+        window.unread_notices() == 0 && window.drawn_number("activity").is_none()
     });
     window.click("close-notices");
 
@@ -512,7 +515,7 @@ fn the_unread_notices_are_counted_on_their_row_and_on_the_bell_of_the_call_windo
         window.drawn_number("open-call-notices-count").as_deref() == Some("1")
     });
     window.until("the row of the notices counts the notice", |window| {
-        window.drawn_number("notices-row").as_deref() == Some("1")
+        window.drawn_number("activity").as_deref() == Some("1")
     });
     detached.click("open-call-notices");
     detached.until("the notices are listed in the call window", |window| {
@@ -525,7 +528,7 @@ fn the_unread_notices_are_counted_on_their_row_and_on_the_bell_of_the_call_windo
             && window.drawn_number("open-call-notices-count").is_none()
     });
     window.until("the row of the notices counts nothing", |window| {
-        window.drawn_number("notices-row").is_none()
+        window.drawn_number("activity").is_none()
     });
 }
 
@@ -707,7 +710,7 @@ fn the_buttons_of_the_panel_in_a_narrow_window_draw_the_counts_of_their_tabs(
         |window| window.shows("open-call-chat"),
     );
     let size = window.cx.update(|window, _| window.viewport_size());
-    for name in ["open-call-chat", "open-call-members", "open-call-settings"] {
+    for name in ["open-call-chat", "open-call-members"] {
         let bounds = window.cx.debug_bounds(name).unwrap();
         assert!(
             bounds.right() <= size.width,

@@ -62,6 +62,7 @@ impl Class {
             } => Self::General,
             Event::WorkspaceAfkChanged { .. }
             | Event::DeviceAdded { .. }
+            | Event::DeviceLinkRelayChanged { .. }
             | Event::JoinRequestCreated { .. }
             | Event::JoinRequestDecided { .. }
             | Event::JoinRequestWithdrawn { .. }
@@ -146,7 +147,6 @@ impl Class {
             | Event::CallLockChanged { .. }
             | Event::CallMeetingStarted { .. }
             | Event::CallMeetingEnded { .. }
-            | Event::CallSpeaking { .. }
             | Event::CallEntryRequested { .. }
             | Event::CallEntryResolved { .. }
             | Event::RecordingStarted { .. }
@@ -745,6 +745,7 @@ impl Audience {
                 None => permission(ServerPermission::Administrator),
             },
             Event::DeviceAdded { .. }
+            | Event::DeviceLinkRelayChanged { .. }
             | Event::DeviceRenamed { .. }
             | Event::DeviceRemoved { .. }
             | Event::DeviceLoggedIn { .. }
@@ -789,8 +790,7 @@ impl Audience {
             | Event::CallParticipantLeft { call_id, place, .. }
             | Event::CallLockChanged { call_id, place, .. }
             | Event::CallMeetingStarted { call_id, place, .. }
-            | Event::CallMeetingEnded { call_id, place, .. }
-            | Event::CallSpeaking { call_id, place, .. } => {
+            | Event::CallMeetingEnded { call_id, place, .. } => {
                 Some(of_call(place, Some((*call_id, CallReach::Occupancy))))
             }
             Event::AccountAdded { .. }
@@ -918,6 +918,7 @@ impl Audience {
             ) => workspace_id == w && channel_id == ch,
             (
                 Event::DeviceAdded { .. }
+                | Event::DeviceLinkRelayChanged { .. }
                 | Event::DeviceRenamed { .. }
                 | Event::DeviceRemoved { .. }
                 | Event::DeviceLoggedIn { .. }
@@ -1285,7 +1286,6 @@ pub fn receives<'a>(
         ),
         Audience::DeletedWorkspace { members, .. } => {
             let scope = WorkspaceScope {
-                person_override: Default::default(),
                 membership: if recipient.listed.contains(members) {
                     Membership::Member
                 } else {
@@ -1524,7 +1524,6 @@ mod tests {
         private: bool,
     ) -> WorkspaceStanding {
         let scope = WorkspaceScope {
-            person_override: Default::default(),
             membership,
             everyone: WorkspacePermissions::EVERYONE_DEFAULT,
             roles: if with_role {

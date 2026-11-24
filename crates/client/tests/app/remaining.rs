@@ -67,12 +67,13 @@ fn audit_page(window: &mut Window) -> Option<AuditPage> {
     }
 }
 
+/// The notification level of the overview of the workspace of the layer.
 fn notifications_page(window: &mut Window) -> Option<NotificationsPage> {
     match window.admin().map(|view| view.scope) {
         Some(Scope::Server {
-            page: ServerPage::Notifications(page),
+            page: ServerPage::WorkspaceOverview(page),
             ..
-        }) => Some(page),
+        }) => page.notifications,
         _ => None,
     }
 }
@@ -369,7 +370,7 @@ fn an_administrator_sets_the_notification_level_of_a_workspace_and_removes_it(
     };
 
     window.open_administration();
-    open_page(&mut window, "admin-nav-notifications", |window| {
+    open_page(&mut window, "admin-nav-workspace-overview", |window| {
         notifications_page(window).is_some()
     });
     // A workspace sets no level until an administrator stores one.
@@ -440,6 +441,7 @@ fn mention(text: &str, account_id: AccountId) -> SendMessage {
         },
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     }
 }
 

@@ -123,12 +123,8 @@ fn servers_are_grouped_by_dragging_and_by_their_menus_and_a_second_start_shows_t
     // The menu of the group from the secondary press: a name and a colour.
     window.right_click_named("group-0".to_owned());
     assert!(window.shows("group-menu"));
-    // A second line longer than the menu is wide wraps inside the menu.
-    let menu = window.cx.debug_bounds("group-menu").unwrap();
-    let long = window.cx.debug_bounds("dissolve-group-detail").unwrap();
-    let short = window.cx.debug_bounds("group-move-down-detail").unwrap();
-    assert!(long.right() <= menu.right(), "{long:?} {menu:?}");
-    assert!(long.size.height > short.size.height, "{long:?} {short:?}");
+    // Items whose label says enough have no second line (ADR 0775).
+    assert!(!window.shows("dissolve-group-detail") && !window.shows("rename-group-detail"));
     window.click("rename-group");
     assert!(window.shows("rename-group-dialog"));
     window.type_into("group-name", "Work");
@@ -209,6 +205,11 @@ fn servers_are_grouped_by_dragging_and_by_their_menus_and_a_second_start_shows_t
     window.until("Harbor is in the group again", |window| {
         window.groups()[0].3 == 3
     });
+    // The menu of a server opens at its row: the collapsed group is opened to show Harbor.
+    if window.groups()[0].2 {
+        window.click("group-0");
+        window.until("the group is open", |window| !window.groups()[0].2);
+    }
     window.open_server_menu();
     window.click("menu-server-group");
     window.click("remove-from-group");
@@ -225,7 +226,7 @@ fn servers_are_grouped_by_dragging_and_by_their_menus_and_a_second_start_shows_t
     assert_eq!(
         book.1,
         [
-            ("Work".to_owned(), GroupColour::Cypress, true, 2),
+            ("Work".to_owned(), GroupColour::Cypress, false, 2),
             ("Harbor".to_owned(), GroupColour::Bone, false, 1),
         ]
     );
@@ -347,13 +348,15 @@ fn the_workspaces_of_a_server_are_ordered_collapsed_and_marked_read_and_a_second
         "the head of the server shows the unread message",
         |window| window.shows("server-head-unread-0"),
     );
-    // The menu of the server expands them again.
+    // The control of the head of the server expands them again; the menu of the server has
+    // no such item.
     window.open_server_menu();
-    window.click("menu-server-workspaces");
+    assert!(!window.shows("menu-server-workspaces"));
+    window.press("escape");
+    window.click("workspaces-toggle-0");
     window.until("the workspaces are expanded", |window| {
         !window.view().servers[0].workspaces_collapsed
     });
-    window.press("escape");
     // Expanded, the head keeps the count of the messages for the person on the whole
     // server, as the collapsed server book and Discord draw it (ADR 0741).
     assert_eq!(
@@ -457,7 +460,8 @@ fn the_collapsed_server_book_orders_collapses_and_marks_the_workspaces_of_a_serv
     let row = window.workspace_row(&last);
     window.right_click_named(row);
     assert!(window.shows("workspace-menu"));
-    assert!(window.shows("mark-workspace-read"));
+    // Nothing is unread there, so the menu has no "Mark workspace as read" (ADR 0775).
+    assert!(!window.shows("mark-workspace-read"));
     window.click("workspace-move-down");
     window.until("the workspace moved one place down", |window| {
         window.workspaces_of_first()[1] == last
@@ -659,4 +663,121 @@ fn a_press_on_a_server_icon_closes_its_hover_menu(cx: &mut TestAppContext) {
     window.move_pointer(away);
     window.move_pointer(first);
     assert!(window.shows("server-hover-menu"));
+}
+
+/// The menu of a server holds the items of the server, and the menu of a workspace the items of
+/// the workspace (ADR 0780). The row of each server opens the menu of that server, also of a
+/// server that is not selected, and the menu acts on that server without selecting it. The
+/// arrow beside the name of the shown workspace opens the menu of the workspace, without the
+/// items that arrange it; the row of the workspace has them.
+#[gpui::test]
+fn the_server_menu_and_the_workspace_menu_each_hold_the_items_of_their_scope(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let (acme, harbor) = (world.server("Acme Studio"), world.server("Harbor"));
+    let (acme_admin, harbor_admin) = (world.owner(&acme), world.owner(&harbor));
+    let (_directory, mut window) = member(cx, &world, &acme.address(), &acme_admin, "Luca");
+    window.join_further(&world, &harbor, &harbor_admin);
+    window.click("server-0");
+    window.until_ready();
+    let acme_id = window.view().servers[0].id;
+    let harbor_id = window.view().servers[1].id;
+
+    // The menu button of the row of Acme Studio opens the menu of the server.
+    window.hover_named("server-0".to_owned());
+    window.press_alone(selector(format!("menu-button:server:{acme_id}")));
+    assert!(window.shows("server-menu"));
+    for item in [
+        "server-notifications",
+        "menu-join-with-invite",
+        "menu-administration",
+        "menu-account",
+        "menu-arrange",
+        "keep-connected",
+        "keep-connected-checked",
+        "menu-log-out",
+        "menu-remove-server",
+    ] {
+        assert!(window.shows(item), "the menu of the server has no {item}");
+    }
+    for item in [
+        "workspace-notifications",
+        "menu-workspace-settings",
+        "menu-leave-workspace",
+        "menu-server-workspaces",
+        "menu-forget-account",
+    ] {
+        assert!(!window.shows(item), "the menu of the server has {item}");
+    }
+    // "Arrange ›" shows the moves in the place of the menu, and returns from them.
+    window.click("menu-arrange");
+    for item in [
+        "menu-arrange-back",
+        "menu-move-up",
+        "menu-move-down",
+        "menu-server-group",
+    ] {
+        assert!(window.shows(item), "Arrange has no {item}");
+    }
+    assert!(!window.shows("menu-log-out"));
+    window.click("menu-arrange-back");
+    assert!(window.shows("menu-log-out") && !window.shows("menu-move-up"));
+    window.press("escape");
+    assert!(!window.shows("server-menu"));
+
+    // The arrow of the channel column opens the menu of the shown workspace.
+    window.click("workspace-menu-button");
+    assert!(window.shows("workspace-menu"));
+    for item in [
+        "workspace-notifications",
+        "menu-workspace-settings",
+        "menu-leave-workspace",
+    ] {
+        assert!(
+            window.shows(item),
+            "the menu of the workspace has no {item}"
+        );
+    }
+    for item in [
+        "server-notifications",
+        "keep-connected",
+        "menu-remove-server",
+        "workspace-move-up",
+        "menu-workspace-arrange",
+    ] {
+        assert!(!window.shows(item), "the menu of the workspace has {item}");
+    }
+    window.press("escape");
+    // The row of the workspace adds the items that arrange it.
+    let workspace = window.view().servers[0].workspaces[0].name.clone();
+    let row = window.workspace_row(&workspace);
+    window.right_click_named(row);
+    assert!(window.shows("workspace-menu"));
+    assert!(window.shows("menu-workspace-arrange") && window.shows("menu-workspace-settings"));
+    window.click("menu-workspace-arrange");
+    assert!(window.shows("workspace-move-up") && !window.shows("menu-workspace-settings"));
+    window.press("escape");
+
+    // The menu of Harbor, which is not selected, acts on Harbor and keeps Acme Studio shown.
+    window.right_click_named("server-1".to_owned());
+    assert!(window.shows("server-menu"));
+    window.click("keep-connected");
+    let harbor_handle = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers())
+        .into_iter()
+        .find(|handle| handle.id() == harbor_id)
+        .unwrap();
+    window.until("Harbor connects only while it is selected", |_| {
+        harbor_handle.entry().connection_mode
+            == junto_client_core::book::ConnectionMode::WhenSelected
+    });
+    assert!(!window.shows("keep-connected-checked"));
+    assert_eq!(
+        window.view().selected.map(|server| server.id),
+        Some(acme_id)
+    );
+    window.press("escape");
+    assert!(!window.shows("server-menu"));
 }

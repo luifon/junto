@@ -23,10 +23,14 @@ async fn a_workspace_has_an_afk_channel_and_only_a_manager_changes_its_settings(
         .await
         .ok(StatusCode::OK);
     assert_eq!(updated, body);
-    sqlx::query("insert into workspace_person_overrides(workspace_id,account_id,allow,deny) values($1,$2,$3,0)")
-        .bind(scene.workspace_id).bind(scene.ann.account_id)
-        .bind(1_i64 << junto_protocol::WorkspacePermission::ManageChannel as u8)
-        .execute(&server.db).await.unwrap();
+    server
+        .grant_workspace(
+            &scene.owner,
+            &scene.ann,
+            scene.workspace_id,
+            &[junto_protocol::WorkspacePermission::ManageChannel],
+        )
+        .await;
     assert_eq!(
         server
             .put(&scene.ann, &path, &body)
@@ -197,14 +201,6 @@ async fn an_idle_move_rechecks_the_seat_and_destination_and_refuses_every_publis
             &scene.ann,
             "/api/v1/call/screen-share",
             &json!({"audio":"none"}),
-        )
-        .await
-        .error(ErrorCode::Forbidden);
-    server
-        .put(
-            &scene.ann,
-            "/api/v1/call/speaking",
-            &json!({"speaking":true}),
         )
         .await
         .error(ErrorCode::Forbidden);

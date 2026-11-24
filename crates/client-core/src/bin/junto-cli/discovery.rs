@@ -382,6 +382,7 @@ async fn threads(
                     .map(|id| id.parse().map_err(|_| usage("--reply needs a message")))
                     .transpose()?,
                 attachments,
+                comment: None,
             };
             message_lines(
                 &api.reply_in_thread(root_id, &message)

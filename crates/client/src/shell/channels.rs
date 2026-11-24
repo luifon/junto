@@ -6,7 +6,6 @@ use gpui::{
     ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, div,
     prelude::FluentBuilder,
 };
-use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::ServerId;
 use junto_client_core::protocol::structure::ChannelKind;
 
@@ -30,10 +29,6 @@ use crate::ui::{
 /// height. More scroll in their list.
 const DIRECT_ROWS: f32 = 5.0;
 
-/// The lit segments of the meter of a person who speaks in a call that this device is not
-/// in. The server tells who speaks there and no level (ADR 0513).
-const SPEAKING_SEGMENTS: usize = 3;
-
 /// The states that the row of a voice channel shows at its right.
 pub(crate) fn channel_states(voice: &VoiceState) -> Vec<ChannelState> {
     let mut states = Vec::new();
@@ -50,6 +45,18 @@ pub(crate) fn channel_states(voice: &VoiceState) -> Vec<ChannelState> {
         states.push(ChannelState::Marked {
             icon: Icon::EyeOff,
             text: text::IN_USE.into(),
+            strong: false,
+        });
+    }
+    // A request to join that waits keeps a short mark on the row, whatever channel the
+    // window shows; its state and its actions are in the header of the channel.
+    if matches!(
+        voice.entry,
+        Some(crate::state::view::EntryState::Asking | crate::state::view::EntryState::Waiting)
+    ) {
+        states.push(ChannelState::Marked {
+            icon: Icon::Clock,
+            text: text::ENTRY_WAITING_MARK.into(),
             strong: false,
         });
     }
@@ -77,27 +84,30 @@ pub(crate) fn occupant_marks(occupant: &Occupant) -> Vec<OccupantMark> {
     if occupant.sound_off {
         marks.push(OccupantMark::SoundOff(text::SOUND_OFF.into()));
     }
-    marks.push(match (occupant.presence, occupant.microphone) {
-        (Presence::Connecting, _) => OccupantMark::Status(text::STATUS_CONNECTING.into()),
-        (Presence::Reconnecting, _) => OccupantMark::Status(text::STATUS_RECONNECTING.into()),
-        (Presence::Here, Microphone::Held(reason)) => {
-            OccupantMark::MicrophoneHeld(text::microphone_held(reason).into())
+    // The meter shows who speaks only in the call of this device, where the media engine
+    // measures the level; outside it an open microphone has no mark (ADR 0513).
+    let mark = match (occupant.presence, occupant.microphone, occupant.level) {
+        (Presence::Connecting, ..) => Some(OccupantMark::Status(text::STATUS_CONNECTING.into())),
+        (Presence::Reconnecting, ..) => {
+            Some(OccupantMark::Status(text::STATUS_RECONNECTING.into()))
         }
-        (Presence::Here, Microphone::Closed) => {
-            OccupantMark::MicrophoneOff(text::MICROPHONE_CLOSED.into())
+        (Presence::Here, Microphone::Held(reason), _) => Some(OccupantMark::MicrophoneHeld(
+            text::microphone_held(reason).into(),
+        )),
+        (Presence::Here, Microphone::Closed, _) => {
+            Some(OccupantMark::MicrophoneOff(text::MICROPHONE_CLOSED.into()))
         }
-        (Presence::Here, Microphone::Open { speaking }) => OccupantMark::Level {
-            // In the call of this device the media engine measures the level.
-            lit: occupant
-                .level
-                .unwrap_or(if speaking { SPEAKING_SEGMENTS } else { 0 }),
+        (Presence::Here, Microphone::Open { speaking }, Some(lit)) => Some(OccupantMark::Level {
+            lit,
             label: if speaking {
                 text::SPEAKING.into()
             } else {
                 text::MICROPHONE_OPEN.into()
             },
-        },
-    });
+        }),
+        (Presence::Here, Microphone::Open { .. }, None) => None,
+    };
+    marks.extend(mark);
     marks
 }
 
@@ -119,15 +129,13 @@ impl Shell {
         let theme = theme(cx);
         let colors = theme.colors;
         let workspace = view.workspace();
-        let (overline, title): (Option<SharedString>, SharedString) =
-            match (&view.selected, workspace) {
-                (Some(server), Some(workspace)) => (
-                    Some(server.name.clone().into()),
-                    workspace.name.clone().into(),
-                ),
-                (Some(server), None) => (None, server.name.clone().into()),
-                (None, _) => (None, SharedString::default()),
-            };
+        // The name of the server stands above its own lists, the notices and the direct
+        // messages, as a small heading (ADR 0730).
+        let title: SharedString = match (&view.selected, workspace) {
+            (Some(_), Some(workspace)) => workspace.name.clone().into(),
+            (Some(server), None) => server.name.clone().into(),
+            (None, _) => SharedString::default(),
+        };
         let header = super::title_bar::header_zone(div())
             .flex()
             .flex_none()
@@ -136,65 +144,37 @@ impl Shell {
             .pl(u(14.0))
             .pr(u(12.0))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .when_some(overline, |column, overline| {
-                        column.child(
-                            div()
-                                .id("server-title")
-                                .role(Role::Heading)
-                                .aria_level(2)
-                                .aria_label(overline.clone())
-                                .focus_visible({
-                                    let ring = crate::ui::focus_ring_inside(
-                                        colors.terracotta_deep,
-                                        theme.metrics.focus_ring,
-                                    );
-                                    move |style| style.shadow(ring)
-                                })
-                                .debug_selector(|| "server-title".to_owned())
-                                .typeface(theme.types.overline, &theme)
-                                .ink(colors.bronze)
-                                .truncate()
-                                .child(overline)
-                                .map(|frame| match view.selected.as_ref() {
-                                    Some(server) => self.bind_server_context(
-                                        frame,
-                                        "server-title",
-                                        server.id,
-                                        window,
-                                        cx,
-                                    ),
-                                    None => frame,
-                                }),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id("workspace-title")
-                            .role(Role::Heading)
-                            .aria_level(1)
-                            .aria_label(title.clone())
-                            .debug_selector(|| "workspace-title".to_owned())
-                            .typeface(theme.types.title, &theme)
-                            .ink(colors.ink)
-                            .truncate()
-                            .child(title)
-                            .map(|frame| {
-                                self.bind_workspace_title_context(frame, view, window, cx)
-                            }),
-                    ),
+                div().flex_1().min_w_0().child(
+                    div()
+                        .id("workspace-title")
+                        .role(Role::Heading)
+                        .aria_level(1)
+                        .aria_label(title.clone())
+                        .debug_selector(|| "workspace-title".to_owned())
+                        .typeface(theme.types.title, &theme)
+                        .ink(colors.ink)
+                        .truncate()
+                        .child(title)
+                        .map(|frame| self.bind_workspace_title_context(frame, view, window, cx)),
+                ),
             )
             .when(view.selected.is_some(), |header| {
+                // The arrow opens the menu of the shown workspace, and the menu of the server
+                // while the server shows no workspace (ADR 0780).
+                let (label, selector) = if view.workspace().is_some() {
+                    (text::book::WORKSPACE_MENU_BUTTON, "workspace-menu-button")
+                } else {
+                    (text::SERVER_MENU, "server-menu-button")
+                };
                 header.child(
-                    Button::new("server-menu")
+                    Button::new("header-menu")
                         .kind(ButtonKind::Ghost)
                         .icon(Icon::ChevronDown)
-                        .tooltip(text::SERVER_MENU)
-                        .selector("server-menu-button")
+                        .tooltip(label)
+                        .accessible_label(label)
+                        .selector(selector)
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_server_menu(window, cx);
+                            this.open_header_menu(window, cx);
                         })),
                 )
             });
@@ -272,7 +252,6 @@ impl Shell {
             .when_some(view.controls.warning.as_ref(), |column, warning| {
                 column.child(self.render_sound_warning(warning, &theme, cx))
             })
-            .children(self.render_update_notice(view, &theme, cx))
             .children(self.render_muted_speech(&view.controls, cx))
             .children(self.render_camera_notice(cx))
             .when_some(view.call.as_ref(), |column, strip| {
@@ -296,23 +275,19 @@ impl Shell {
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
         let workspace = lists.workspace.as_ref();
-        let in_call = lists.call.is_some();
-        let (channels, entries) = match workspace {
+        let channels = match workspace {
             Some(workspace) => self.channel_rows(view, workspace, theme, window, cx),
-            None => (
-                vec![
-                    div()
-                        .flex_none()
-                        .px(u(14.0))
-                        .pt(u(12.0))
-                        .typeface(theme.types.small, theme)
-                        .ink(colors.ink_2)
-                        .debug_selector(|| "no-workspace-note".to_owned())
-                        .child(text::NO_WORKSPACES)
-                        .into_any_element(),
-                ],
-                Vec::new(),
-            ),
+            None => vec![
+                div()
+                    .flex_none()
+                    .px(u(14.0))
+                    .pt(u(12.0))
+                    .typeface(theme.types.small, theme)
+                    .ink(colors.ink_2)
+                    .debug_selector(|| "no-workspace-note".to_owned())
+                    .child(text::NO_WORKSPACES)
+                    .into_any_element(),
+            ],
         };
         let label: SharedString = match workspace {
             Some(workspace) => workspace.name.clone().into(),
@@ -336,7 +311,19 @@ impl Shell {
             .pb(u(4.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule))
-            .child(self.render_notices_row(lists, in_call, cx))
+            // "Threads" belongs to a workspace. Without one its height stays, so that the
+            // direct part does not move when the last workspace goes (ADR 0730).
+            .child(match lists.workspace.as_ref() {
+                Some(workspace) => self.render_threads_row(workspace, cx),
+                None => div().flex_none().h(u(row)).into_any_element(),
+            })
+            .child(self.render_server_heading(
+                server.id,
+                server.name.clone().into(),
+                theme,
+                window,
+                cx,
+            ))
             .children(self.direct_rows(server.id, lists, theme, cx));
         let list = div().flex().flex_col().flex_1().min_h(u(row)).child(
             ScrollArea::new("channel-list", &self.channels_scroll, label)
@@ -351,19 +338,6 @@ impl Shell {
             .min_h_0()
             .child(server_part)
             .child(list)
-            // The entry boxes take their height from the end of the channel list, whose rows
-            // stay in place. They scroll only when the column has no room for them, so the
-            // action of a box stays in view at every width of the column (ADR 0739).
-            .child(
-                div()
-                    .id("channel-entry-notices")
-                    .debug_selector(|| "channel-entry-notices".to_owned())
-                    .flex_grow_0()
-                    .flex_shrink_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .children(entries),
-            )
     }
 
     fn open_channel_creation(
@@ -394,13 +368,28 @@ impl Shell {
         {
             return;
         }
+        // The page of the channels holds the form in the group of the category; a person who
+        // manages the category and not the workspace has no such page, and gets the form in
+        // the settings of the category, whose scope decides the creation (ADR 0761).
+        let manages_workspace = self
+            .state
+            .read(cx)
+            .client()
+            .server(owner.entry.server_id)
+            .and_then(|server| server.live().view().model)
+            .and_then(|model| {
+                model.workspace(workspace).map(|held| {
+                    held.holds(junto_client_core::protocol::WorkspacePermission::ManageChannel)
+                })
+            })
+            .unwrap_or(false);
         let open = match category {
-            Some(category_id) => crate::state::admin::AdminOpen::Category {
+            Some(category_id) if !manages_workspace => crate::state::admin::AdminOpen::Category {
                 server_id: owner.entry.server_id,
                 workspace_id: workspace,
                 category_id,
             },
-            None => crate::state::admin::AdminOpen::Server {
+            _ => crate::state::admin::AdminOpen::Server {
                 server_id: owner.entry.server_id,
                 page: crate::state::admin::AdminPage::Channels,
             },
@@ -459,7 +448,7 @@ impl Shell {
         theme: &Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (Vec<AnyElement>, Vec<AnyElement>) {
+    ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let workspace_id = workspace.id;
         let server_id = view.selected.as_ref().map(|server| server.id);
@@ -478,7 +467,6 @@ impl Shell {
             _ => None,
         };
         let mut rows: Vec<AnyElement> = Vec::new();
-        let mut entries = Vec::new();
         let mut channel_index = 0usize;
         for (position, section) in workspace.sections.iter().enumerate() {
             let title: SharedString = match &section.title {
@@ -866,7 +854,6 @@ impl Shell {
                         )
                         .selected(entry.open)
                         .unread(sign)
-                        .unavailable((!entry.available).then_some(text::THREAD_IN_CALL))
                         .open(matches!(&self.layer, Layer::ThreadMenu(open) if open.followed() && open.root_id == root_id))
                         .when_some(account_owner, |row, owner| row.on_menu(Self::handler(cx, move |this, window, cx| {
                             this.open_thread_menu(owner, workspace_id, channel_id, root_id, window, cx);
@@ -946,26 +933,6 @@ impl Shell {
                             .into_any_element(),
                     );
                 }
-                // The further threads of the shown channel that the person follows.
-                if let Some(more) = channel.more_followed {
-                    let row = ChannelRow::new(
-                        ("followed-more", index),
-                        Icon::ChevronDown,
-                        text::followed::show_more(more.count),
-                    )
-                    .nested()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state
-                            .update(cx, |state, cx| state.show_more_followed(cx));
-                    }));
-                    rows.push(
-                        div()
-                            .flex_none()
-                            .debug_selector(move || format!("followed-more:{channel_id}"))
-                            .child(row)
-                            .into_any_element(),
-                    );
-                }
                 let occupants = channel
                     .voice
                     .as_ref()
@@ -979,7 +946,18 @@ impl Shell {
                     let faces = faces.clone();
                     let open_menu = open_menu.clone();
                     let shell = cx.weak_entity();
-                    let heights = vec![theme.metrics.occupant_row_height; occupants.len()];
+                    // A person with a status text has a second line (ADR 0401).
+                    let heights = occupants
+                        .iter()
+                        .map(|occupant| {
+                            theme.metrics.occupant_row_height
+                                + if faces.status_text(occupant.account_id).is_some() {
+                                    crate::ui::OCCUPANT_STATUS_LINE
+                                } else {
+                                    0.0
+                                }
+                        })
+                        .collect();
                     rows.push(
                         crate::ui::in_view::in_view(
                             ("occupants", index),
@@ -1012,11 +990,6 @@ impl Shell {
                         )
                         .into_any_element(),
                     );
-                }
-                if let (Some(server_id), Some(voice)) = (server_id, channel.voice.as_ref())
-                    && let Some(entry) = self.render_entry_box(server_id, channel, voice, theme, cx)
-                {
-                    entries.push(entry);
                 }
             }
         }
@@ -1071,7 +1044,7 @@ impl Shell {
                 );
             }
         }
-        (rows, entries)
+        rows
     }
 
     /// The row of a person in a voice channel of the channel list, at the place `seat` of
@@ -1103,6 +1076,12 @@ impl Shell {
         )
         .picture(faces.image(account_id))
         .presence(faces.presence(account_id))
+        .status_text(
+            faces
+                .status_text(account_id)
+                .map(|status| text::label(status).into()),
+            format!("occupant-status-text:{account_id}"),
+        )
         .name_color(faces.color(account_id))
         .when_some(faces.server_id(), |row, server| {
             row.profile(crate::ui::OpenProfile {
@@ -1159,6 +1138,40 @@ impl Shell {
                 row.into_any_element()
             })
             .children(menu)
+            .into_any_element()
+    }
+
+    /// The name of the server as a small heading above its direct messages: the lists under
+    /// it belong to the server, and the channel list below to the shown workspace. Its menu is
+    /// the menu of the server (ADR 0780).
+    fn render_server_heading(
+        &mut self,
+        server_id: ServerId,
+        name: SharedString,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme.colors;
+        let heading = div()
+            .id("server-title")
+            .role(Role::Heading)
+            .aria_level(2)
+            .aria_label(name.clone())
+            .focus_visible({
+                let ring =
+                    crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+                move |style| style.shadow(ring)
+            })
+            .debug_selector(|| "server-title".to_owned())
+            .mx(u(14.0))
+            .mt(u(8.0))
+            .mb(u(2.0))
+            .typeface(theme.types.overline, theme)
+            .ink(colors.bronze)
+            .truncate()
+            .child(name);
+        self.bind_server_context(heading, "server-title", server_id, window, cx)
             .into_any_element()
     }
 
@@ -1288,6 +1301,26 @@ impl Shell {
                 .on_menu(Self::handler(cx, move |this, window, cx| {
                     this.open_direct_menu(conversation_id, window, cx);
                 }))
+                // A press on the X hides the conversation (ADR 0741).
+                .when_some(owner, |row, owner| {
+                    row.on_dismiss(
+                        text::conversations::HIDE,
+                        format!("hide-direct:{conversation_id}"),
+                        Self::handler(cx, move |this, _, cx| {
+                            if this
+                                .state
+                                .read(cx)
+                                .server(server_id)
+                                .and_then(|server| server.owner())
+                                == Some(owner)
+                            {
+                                this.state.update(cx, |state, cx| {
+                                    state.hide_conversation(owner, conversation_id, cx)
+                                });
+                            }
+                        }),
+                    )
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {
                         state.select_conversation(server_id, conversation_id, cx);
@@ -1364,72 +1397,72 @@ impl Shell {
             Some(account_id) => self.shown_faces().image(account_id),
             None => view.preset_picture.clone(),
         };
+        // The own menu of the status and the status text (ADR 0401), for an account on a
+        // server that tells presence.
+        // The presence of a server is held for the current account of this device only.
+        let menu_owner = view.selected.as_ref().and_then(|server| {
+            self.state
+                .read(cx)
+                .presence_server(server.id)
+                .map(crate::state::presence::ServerPresence::owner)
+        });
+        let status_line: Option<SharedString> = menu_owner.map(|owner| {
+            let state = self.state.read(cx);
+            let server = owner.entry.server_id;
+            match state.status_text(server, owner.account_id) {
+                Some(status) => state.status_text_words(status).into(),
+                None => text::presence::label(state.presence(server, owner.account_id)).into(),
+            }
+        });
         let identity = div()
             .id("profile-identity")
+            .debug_selector(|| "profile-identity".to_owned())
             .flex()
             .flex_1()
             .min_w_0()
             .items_center()
             .gap(u(9.0))
-            .child(Avatar::new(seed, 30.0).image(picture).when_some(
-                view.person.account_id,
-                |avatar, account| {
-                    avatar
-                        .presence(self.shown_faces().presence(account))
-                        .when_some(self.shown_faces().server_id(), |avatar, server| {
-                            avatar.profile(crate::ui::OpenProfile { server, account })
-                        })
-                },
-            ))
+            .child(
+                Avatar::new(seed, 30.0)
+                    .image(picture)
+                    .when_some(view.person.account_id, |avatar, account| {
+                        avatar.presence(self.shown_faces().presence(account))
+                    }),
+            )
             .child(
                 div()
-                    .id("profile-name")
-                    .debug_selector(|| "profile-name".to_owned())
-                    .aria_label(name.clone())
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .typeface(theme.types.name, theme)
-                    .ink(colors.ink)
-                    .truncate()
-                    .child(match view.person.account_id {
-                        Some(account) => super::people::person_name(
-                            &self.shown_faces(),
-                            account,
-                            name,
-                            "own-profile-name",
-                        ),
-                        None => name.into_any_element(),
-                    })
-                    .when_some(
-                        view.selected
-                            .as_ref()
-                            .and_then(|server| self.state.read(cx).owner(server.id))
-                            .filter(|owner| {
-                                self.state
-                                    .read(cx)
-                                    .presence_server(owner.entry.server_id)
-                                    .is_some()
-                            }),
-                        |name, owner| {
-                            name.child(
-                                Button::new("presence-open")
-                                    .kind(ButtonKind::Ghost)
-                                    .label(text::presence::label(
-                                        self.state
-                                            .read(cx)
-                                            .presence(owner.entry.server_id, owner.account_id),
-                                    ))
-                                    .tooltip(text::presence::TITLE)
-                                    .selector("presence-open")
-                                    .h(u(19.))
-                                    .px(u(0.))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_layer(super::Layer::Presence(owner), window, cx)
-                                    })),
-                            )
-                        },
-                    ),
-            );
+                    .child(
+                        div()
+                            .id("profile-name")
+                            .debug_selector(|| "profile-name".to_owned())
+                            .aria_label(name.clone())
+                            .typeface(theme.types.name, theme)
+                            .ink(colors.ink)
+                            .truncate()
+                            .child(name.clone()),
+                    )
+                    .when_some(status_line, |column, line| {
+                        column.child(
+                            div()
+                                .debug_selector(|| "own-status-line".to_owned())
+                                .typeface(theme.types.small, theme)
+                                .ink(colors.ink_2)
+                                .truncate()
+                                .child(line),
+                        )
+                    }),
+            )
+            .when_some(menu_owner, |identity, owner| {
+                identity
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_layer(super::Layer::Presence(owner), window, cx);
+                    }))
+            });
         let owner = view
             .selected
             .as_ref()
@@ -1495,7 +1528,7 @@ impl Shell {
                             MicrophoneButton::NotPermitted => Button::new("microphone")
                                 .kind(ButtonKind::SquareHeld)
                                 .icon(Icon::MicrophoneHeld)
-                                .tooltip(text::not_permitted(WorkspacePermission::Speak))
+                                .tooltip(text::MICROPHONE_CLOSED_IN_CALL)
                                 .disabled(true),
                         }
                         .selector("microphone")
@@ -1640,6 +1673,47 @@ mod tests {
         voice.hidden = true;
         voice.locked = false;
         assert_eq!(count(&voice), None);
+    }
+
+    #[test]
+    fn the_level_meter_is_drawn_only_for_the_people_of_the_call_of_this_device() {
+        let person = |level: Option<usize>, speaking: bool| Occupant {
+            account_id: junto_client_core::protocol::ids::AccountId::generate(),
+            name: None,
+            is_self: false,
+            microphone: Microphone::Open { speaking },
+            held_by: None,
+            sharing: true,
+            hand_raised: false,
+            sound_off: false,
+            sound_blocked: false,
+            level,
+            presence: Presence::Here,
+            volume: 100,
+        };
+        let meters = |occupant: &Occupant| {
+            occupant_marks(occupant)
+                .into_iter()
+                .filter(|mark| matches!(mark, OccupantMark::Level { .. }))
+                .count()
+        };
+        // Outside the call of this device: the other marks and no meter, also for a
+        // person marked as speaking.
+        for speaking in [false, true] {
+            let outside = person(None, speaking);
+            assert_eq!(meters(&outside), 0);
+            assert!(
+                occupant_marks(&outside)
+                    .iter()
+                    .any(|mark| matches!(mark, OccupantMark::Sharing(_)))
+            );
+        }
+        // In the call of this device: the measured level.
+        assert!(matches!(
+            occupant_marks(&person(Some(4), true)).last(),
+            Some(OccupantMark::Level { lit: 4, .. })
+        ));
+        assert_eq!(meters(&person(Some(0), false)), 1);
     }
 }
 

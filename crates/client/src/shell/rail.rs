@@ -4,22 +4,22 @@
 
 use gpui::{
     AnyElement, AppContext, ClickEvent, Context, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div,
-    prelude::FluentBuilder, px,
+    MouseButton, ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window,
+    deferred, div, prelude::FluentBuilder, px,
 };
 use junto_client_core::flow::add_server::{AddServerAction, AddServerState};
 
 use junto_client_core::settings::Panel;
 
-use super::{Layer, Shell, join, window_controls_height};
+use super::{Layer, MenuAt, Shell, join, window_controls_height};
 use crate::assets::Icon;
 use crate::state::book::DropTarget;
 use crate::state::view::{BookPart, ServerRow, ServerStatus, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Avatar, Band, BandKind, Button, ButtonKind, CornerCount, Field, FieldKind, Menu, ScrollArea,
-    StatusLine, StyleExt, WorkspaceRow, focus_ring, focus_ring_inside, menu_label, selection_mark,
+    Avatar, Band, BandKind, Button, ButtonKind, CornerCount, Menu, ScrollArea, StatusLine,
+    StyleExt, WorkspaceRow, focus_ring, focus_ring_inside, menu_label, selection_mark,
 };
 
 /// The line under the name of a server: an icon and a text for every state that is not
@@ -102,7 +102,7 @@ impl Shell {
         let address = self.address.read(cx).value().to_string();
         // A pasted link of Junto opens as the link does: an invite of a server of the
         // server book is redeemed into its account (ADR 0115).
-        if let Some(link) = junto_client_core::links::parse(address.trim()) {
+        if let Some(link) = junto_client_core::links::parse_pasted(address.trim()) {
             self.address
                 .update(cx, |field, cx| field.set_value("", window, cx));
             self.open_app_link(link, window, cx);
@@ -124,7 +124,9 @@ impl Shell {
                     return;
                 }
                 this.adding = None;
-                if this.pending_link.is_some() && !matches!(this.layer, Layer::None) {
+                if this.pending_link.is_some()
+                    && !matches!(this.layer, Layer::None | Layer::AddServer(_))
+                {
                     this.pending_link = None;
                     cx.notify();
                     return;
@@ -317,7 +319,7 @@ impl Shell {
                 }
                 BookPart::Group(group) => {
                     let row = &view.groups[*group];
-                    servers.push(self.render_group_head(*group, row, view, theme, cx));
+                    servers.push(self.render_group_head(*group, row, view, theme, window, cx));
                     if !row.collapsed {
                         let members: Vec<AnyElement> = row
                             .servers
@@ -351,7 +353,7 @@ impl Shell {
         let arrange_failed = self.state.read(cx).arrange_failure().is_some()
             && !matches!(
                 self.layer,
-                Layer::GroupMenu(_) | Layer::WorkspaceMenu(..) | Layer::ServerMenu
+                Layer::GroupMenu(_) | Layer::WorkspaceMenu(..) | Layer::ServerMenu(..)
             );
 
         // An empty server book says so above the field that adds a server. The rows can hold
@@ -369,61 +371,20 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        let asking = self.adding.is_some();
-        let help: SharedString = if asking {
-            text::ADDRESS_ASKING.into()
-        } else {
-            self.address_error
-                .clone()
-                .map_or_else(|| text::ADDRESS_HELP.into(), SharedString::from)
-        };
-        let failed = self.address_error.is_some() && !asking;
-        let add = div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .px(u(12.0))
-            .pb(u(12.0))
-            .child(
-                div()
-                    .pb(u(6.0))
-                    .typeface(theme.types.label, theme)
-                    .ink(colors.bone_label)
-                    .child(text::ADD_SERVER),
-            )
-            .child(
-                Field::new(&self.address, text::ADDRESS_FIELD)
-                    .kind(FieldKind::RailAddress)
-                    .selector("address-field")
-                    .trailing(
-                        Button::new("add-server")
-                            .kind(ButtonKind::RailAccent)
-                            .icon(Icon::Plus)
-                            .tooltip(text::ADD_SERVER_BY_ADDRESS)
-                            .selector("add-server")
-                            .disabled(asking)
-                            .rounded_l(px(0.0))
-                            .m(px(-1.0))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.submit_address(window, cx);
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .id("address-help")
-                    .relative()
-                    .h(u(64.0))
-                    .overflow_y_scroll()
-                    .debug_selector(|| "address-help".to_owned())
-                    .child(crate::ui::area("address-help"))
-                    .when(failed, |help| help.role(Role::Alert))
-                    .aria_label(help.clone())
-                    .mt(u(7.0))
-                    .typeface(theme.types.small, theme)
-                    .ink(if failed { colors.ochre } else { colors.bone_2 })
-                    .child(help),
-            );
+        // One button opens the window that adds a server or joins further workspaces
+        // (ADR 0732).
+        let add = div().flex().flex_none().px(u(12.0)).pb(u(12.0)).child(
+            Button::new("add-server")
+                .kind(ButtonKind::Rail)
+                .icon(Icon::Plus)
+                .label(text::add::OPEN)
+                .selector("add-server")
+                .w_full()
+                .h(u(30.0))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_add_window(super::add_server::AddTab::Server, None, window, cx);
+                })),
+        );
 
         vec![
             header.into_any_element(),
@@ -473,6 +434,46 @@ impl Shell {
                 .child(row.address.clone())
                 .into_any_element(),
         };
+        // The disclosure control of the workspaces is at the left of the head, as on the head of
+        // a group; a server without workspaces keeps its place empty, so the names align.
+        let toggle = if row.workspaces.is_empty() {
+            div().flex_none().w(u(22.0)).into_any_element()
+        } else {
+            let label = if collapsed {
+                text::book::EXPAND_WORKSPACES
+            } else {
+                text::book::COLLAPSE_WORKSPACES
+            };
+            div()
+                .flex_none()
+                .debug_selector(move || format!("workspaces-toggle-{index}"))
+                .child(
+                    Button::new(("workspaces-toggle", index))
+                        .kind(ButtonKind::Rail)
+                        .icon(if collapsed {
+                            Icon::ChevronRight
+                        } else {
+                            Icon::ChevronDown
+                        })
+                        .tooltip(label)
+                        .accessible_label(label)
+                        .w(u(22.0))
+                        .h(u(22.0))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.state.update(cx, |state, cx| {
+                                state.arrange(
+                                    junto_client_core::arrangement::Change::CollapseWorkspaces {
+                                        server: server_id,
+                                        collapsed: !collapsed,
+                                    },
+                                    cx,
+                                );
+                            });
+                        })),
+                )
+                .into_any_element()
+        };
         let head = div()
             .id(("server", row.id.as_uuid().as_u128() as u64))
             .role(Role::ListItem)
@@ -482,10 +483,10 @@ impl Shell {
             .relative()
             .flex()
             .items_center()
-            .gap(u(8.0))
+            .gap(u(6.0))
             .py(u(5.0))
             .pr(u(8.0))
-            .pl(u(10.0))
+            .pl(u(4.0))
             .cursor_pointer()
             .focusable()
             .tab_stop(true)
@@ -503,6 +504,7 @@ impl Shell {
                 let name = name.clone();
                 move |_, _, _, cx| cx.new(|_| super::person_drag::DragLabel(name.clone()))
             })
+            .child(toggle)
             .child(
                 div()
                     .flex_none()
@@ -526,50 +528,25 @@ impl Shell {
             .children(self.render_waiting_sign(index, row, cx))
             // What the server holds unread that no row of a workspace shows: with its
             // workspaces collapsed, all that it holds.
-            .children(super::book::head_sign(row, index, cx))
-            .when(!row.workspaces.is_empty(), |head| {
-                let label = if collapsed {
-                    text::book::EXPAND_WORKSPACES
-                } else {
-                    text::book::COLLAPSE_WORKSPACES
-                };
-                head.child(
-                    div()
-                        .flex_none()
-                        .debug_selector(move || format!("workspaces-toggle-{index}"))
-                        .child(
-                            Button::new(("workspaces-toggle", index))
-                                .kind(ButtonKind::Rail)
-                                .icon(if collapsed {
-                                    Icon::ChevronRight
-                                } else {
-                                    Icon::ChevronDown
-                                })
-                                .tooltip(label)
-                                .accessible_label(label)
-                                .w(u(22.0))
-                                .h(u(22.0))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    this.state.update(cx, |state, cx| {
-                                        state.arrange(
-                                            junto_client_core::arrangement::Change::CollapseWorkspaces {
-                                                server: server_id,
-                                                collapsed: !collapsed,
-                                            },
-                                            cx,
-                                        );
-                                    });
-                                })),
-                        ),
-                )
-            });
+            .children(super::book::head_sign(row, index, cx));
         let head = self.bind_server_context(head, "server-row", server_id, window, cx);
         let head = self.drop_target(head, DropTarget::Server(server_id), theme, cx);
         let open_menu = match &self.layer {
-            Layer::WorkspaceMenu(open_server, open) if *open_server == server_id => Some(*open),
+            Layer::WorkspaceMenu(open_server, open, MenuAt::Row) if *open_server == server_id => {
+                Some(*open)
+            }
             _ => None,
         };
+        let server_menu =
+            matches!(self.layer, Layer::ServerMenu(open, MenuAt::Row) if open == server_id).then(
+                || {
+                    div()
+                        .absolute()
+                        .left(u(36.0))
+                        .top(u(40.0))
+                        .child(deferred(self.render_server_menu(server_id, cx)))
+                },
+            );
         let mut workspaces: Vec<AnyElement> = Vec::new();
         for (position, workspace) in row.workspaces.iter().enumerate() {
             let workspace_id = workspace.id;
@@ -617,12 +594,14 @@ impl Shell {
             );
         }
         div()
+            .relative()
             .flex()
             .flex_col()
             .flex_none()
             .pt(u(2.0))
             .pb(u(8.0))
             .child(head)
+            .children(server_menu)
             .when(!row.workspaces.is_empty() && !collapsed, |server| {
                 server.child(
                     div()
@@ -634,7 +613,7 @@ impl Shell {
                         .child(
                             div()
                                 .absolute()
-                                .left(u(24.0))
+                                .left(u(46.0))
                                 .top_0()
                                 .bottom(u(14.0))
                                 .w(px(1.0))
@@ -752,13 +731,19 @@ impl Shell {
                     Button::new("add-server")
                         .kind(ButtonKind::RailAccent)
                         .icon(Icon::Plus)
-                        .tooltip(text::ADD_SERVER_BY_ADDRESS)
+                        .tooltip(text::add::OPEN)
+                        .accessible_label(text::add::OPEN)
                         .selector("add-server")
                         .w(u(36.0))
                         .h(u(30.0))
                         .mb(u(12.0))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.show_address_field(narrow, window, cx);
+                            this.open_add_window(
+                                super::add_server::AddTab::Server,
+                                None,
+                                window,
+                                cx,
+                            );
                         })),
                 )
                 .child(self.render_client_version(true, theme, cx))
@@ -885,22 +870,46 @@ impl Shell {
                         .bg(Hsla::from(colors.ochre)),
                 )
             });
-        let icon = self.bind_server_context(icon, "server-icon", server_id, window, cx);
+        let icon = self
+            .bind_server_context(icon, "server-icon", server_id, window, cx)
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, _, cx| this.open_server_icon_context(server_id, cx)),
+            )
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                let keys = &event.keystroke;
+                if keys.key == "menu" || (keys.key == "f10" && keys.modifiers.shift) {
+                    this.open_server_icon_context(server_id, cx);
+                }
+            }));
         let icon = self.drop_target(icon, DropTarget::Server(server_id), theme, cx);
         // The menu of a workspace that the hover menu opened stays at the tile of its server.
         let workspace_menu = match &self.layer {
-            Layer::WorkspaceMenu(open_server, open) if *open_server == server_id => row
-                .workspaces
-                .iter()
-                .position(|workspace| workspace.id == *open)
-                .map(|position| self.render_workspace_menu(row, position, cx)),
+            Layer::WorkspaceMenu(open_server, open, MenuAt::Row) if *open_server == server_id => {
+                row.workspaces
+                    .iter()
+                    .position(|workspace| workspace.id == *open)
+                    .map(|position| self.render_workspace_menu(row, position, cx))
+            }
             _ => None,
         };
+        let server_menu =
+            matches!(self.layer, Layer::ServerMenu(open, MenuAt::Row) if open == server_id).then(
+                || {
+                    // Under the tile, as under the head of the server in the wide book.
+                    div()
+                        .absolute()
+                        .left(u(8.0))
+                        .top(u(44.0))
+                        .child(deferred(self.render_server_menu(server_id, cx)))
+                },
+            );
         div()
             .relative()
             .flex_none()
             .child(icon)
             .children(workspace_menu)
+            .children(server_menu)
             .when(open, |wrapper| {
                 wrapper.child(
                     deferred(
@@ -1077,14 +1086,41 @@ impl Shell {
                                 .hover(move |style| style.bg(Hsla::from(colors.basalt_3)))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.dismiss_hover_menu(window, cx);
-                                    this.state.update(cx, |state, cx| {
-                                        state.select_server(server_id, cx);
-                                    });
-                                    this.open_join_for(server_id, window, cx);
+                                    this.open_add_window(
+                                        super::add_server::AddTab::Workspace,
+                                        Some(server_id),
+                                        window,
+                                        cx,
+                                    );
                                 }))
                                 .child(text::JOIN_WITH_INVITE),
                         )
                 })
+                // The menu of the server, as the row of the expanded server book opens it.
+                .child(
+                    div()
+                        .id(("hover-server-menu", index))
+                        .role(Role::MenuItem)
+                        .aria_label(text::SERVER_MENU)
+                        .debug_selector(|| "hover-server-menu".to_owned())
+                        .flex()
+                        .items_center()
+                        .gap(u(8.0))
+                        .px(u(12.0))
+                        .py(u(8.0))
+                        .typeface(theme.types.small, theme)
+                        .ink(colors.bone_2)
+                        .cursor_pointer()
+                        .focusable()
+                        .tab_stop(true)
+                        .hover(move |style| style.bg(Hsla::from(colors.basalt_3)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.dismiss_hover_menu(window, cx);
+                            this.open_server_menu_of(server_id, MenuAt::Row, window, cx);
+                        }))
+                        .child(crate::ui::icon(Icon::Dots, 14.0, colors.bone_2))
+                        .child(text::SERVER_MENU),
+                )
                 .when(empty, |menu| {
                     menu.child(
                         div()

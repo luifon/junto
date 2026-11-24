@@ -29,6 +29,7 @@ fn a_person_collapses_the_direct_messages_with_the_menu_pointer_and_keyboard_and
                     document: document(words),
                     reply_to: None,
                     attachments: Vec::new(),
+                    comment: None,
                 },
             ))
             .unwrap()
@@ -117,7 +118,7 @@ fn a_person_collapses_the_direct_messages_with_the_menu_pointer_and_keyboard_and
         |window| window.shows("directs-unread"),
     );
     again.right_click_named("directs-heading".to_owned());
-    again.click("context-action:New direct message");
+    again.click("context-action:New message");
     again.until("the menu of the heading starts a conversation", |window| {
         window.shows("new-direct-dialog")
     });

@@ -9,7 +9,7 @@ use gpui::{
     Window, div, prelude::FluentBuilder,
 };
 
-use super::{StyleExt, focus_ring, icon, ledge, tooltip};
+use super::{OwnPress, StyleExt, focus_ring, icon, ledge, tooltip};
 use crate::assets::Icon;
 use crate::theme::{Theme, theme, u};
 
@@ -125,6 +125,16 @@ impl Button {
         self
     }
 
+    /// Draws the button as `offer` states (ADR 0790): disabled with the reason as its
+    /// tooltip. The caller draws no button for `Offer::Absent`.
+    pub fn offer(mut self, offer: &super::Offer) -> Self {
+        self.disabled = offer.disabled();
+        if let Some(reason) = offer.reason() {
+            self.tooltip = Some(reason);
+        }
+        self
+    }
+
     /// The text that appears while the pointer rests on the button. A button without a
     /// label uses it as its accessible label too.
     pub fn tooltip(mut self, text: impl Into<SharedString>) -> Self {
@@ -176,6 +186,8 @@ impl IntoElement for Button {
                 icon: self.icon,
                 disabled: self.disabled,
                 detail: self.disabled.then(|| self.tooltip.clone()).flatten(),
+                shortcut: None,
+                selector: None,
                 handler: self.on_click.clone(),
             })
         });
@@ -425,6 +437,7 @@ impl RenderOnce for Button {
             },
             label.clone(),
             self.selected,
+            disabled,
         );
         let mut frame = div()
             .id(self.id)
@@ -477,11 +490,12 @@ impl RenderOnce for Button {
                 frame.debug_selector(|| selector.to_owned())
             })
             .when_some(self.tooltip, |frame, text| frame.tooltip(tooltip(text)))
-            .when(disabled, |frame| frame.cursor_not_allowed())
+            .when(disabled, |frame| frame.cursor_not_allowed().own_press())
             .when(!disabled, |frame| {
                 let (hover, pressed) = (look.hover, look.pressed);
                 frame
                     .cursor_pointer()
+                    .own_press_focusing(&focus)
                     .track_focus(&focus)
                     .children(super::reveal::report(&focus, window))
                     .hover(move |style| style.bg(Hsla::from(hover)))

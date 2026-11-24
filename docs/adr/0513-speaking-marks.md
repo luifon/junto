@@ -1,37 +1,24 @@
-# 0513. Speaking marks for the people outside a voice channel
+# 0513. No speaking state outside a call
 
 ## Status
 
-Accepted
+Accepted. Replaces the relay of speaking marks to the people outside a voice channel.
 
 ## Context
 
-ADR 0507 decides that the channel list shows, for the voice channels that a user is not in, a mark for who is speaking, that the clients in the voice channel report this, and that a voice channel that hides who is inside shows nothing. A client inside a call has the levels from the media server; a client outside has no connection to the room. Speaking changes several times per second. The event log keeps 5000 positions and a reconnect replays at most 1000 events (ADR 0207).
+ADR 0507 first decided that the channel list shows, for the voice channels that a user is not in, a mark for who is speaking, reported by the clients inside. The server kept those reports in memory, computed the set of speakers of each call once per second with a read transaction, and recorded the event `call_speaking` for the accounts that may see who is inside. The people inside a call never used it: they draw the levels that the media server gives them. A person outside a call does not take part in it, and who speaks there is not their information.
 
 ## Decision
 
-Reports:
+- Only the people in a call see who speaks in it. The channel list, the stage and the panel of the call of the device draw the level meter of each person from the levels that the media engine measures (ADR 0507, ADR 0734).
+- For any other call the rows of the people keep their other marks (microphone muted or blocked, sound off, share, raised hand, connecting) and draw no meter. An open microphone has no mark there.
+- The client reports nothing about speaking. The server has no speaking state: no report route, no relay task and no event.
+- The route `PUT /api/v1/call/speaking` and the event `call_speaking` are removed from API version 1 (ADR 0201). A 0.2 client that reports speaking to a server of this version gets `not_found` for the unknown path. Its media code treats the answer as a failed report and sends it again every 3 seconds while it is in a voice channel call; the request changes nothing on the server, and the call is not affected. It receives no speaking event, so it draws no speaking mark outside its call. A client of this version that is connected to a 0.2 server skips the event `call_speaking`, as it skips every event type that it does not know (ADR 0718), and sends no report.
 
-- A device in a call reports whether its own person speaks, with `PUT /api/v1/call/speaking` and a truth value. It reports no level, and a level in the body is ignored.
-- A device reports for its own person only.
-- One session sends at most 20 reports per 10 seconds. A further one gets `rate_limited`.
-- A report that the person speaks lasts 5 seconds. A device renews it while the person speaks, and ends it with a report that the person does not speak.
-- The server keeps the reports in memory.
-
-Relay:
-
-- At each interval of one second, and for each call that has a report or whose last event carried a speaker, the server computes the set of speakers from the record of that moment: the people who report that they speak, whom the media server lists, whose own microphone setting is not muted and who have no microphone block. The set has at most 16 accounts.
-- The server compares that set with the set that the last event of the call carried, and records the event `call_speaking` with the whole set when the two differ. It does not compare the reports.
-- A block, a removed block, a mute and a leave therefore change the marks at the next interval, also while the reports stay the same.
-- One call gets at most one such event per second.
-- The event goes to the accounts that may see who is inside the voice channel (ADR 0514), and is decided when it is delivered (ADR 0011).
-- The set of a call that hides who is inside is empty, so the server records no speaker of it. The call keeps the setting that it started with (ADR 0517). It records no speaking event for a direct-message call. The people inside have the levels from the media server.
+Tests: `shell::channels::tests::the_level_meter_is_drawn_only_for_the_people_of_the_call_of_this_device`, the view tests `a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call` and `the_call_of_this_device_shows_measured_levels_and_the_panel_of_the_call` (no speaking mark outside the call), and the server test `calls_review::the_retired_speaking_report_is_an_unknown_path`.
 
 ## Consequences
 
-- A mark in the channel list follows the speech with a delay of up to one second. A block removes the mark of a person who keeps reporting within one second.
-- Each call with a report costs one read transaction per second.
-- A call with changing speakers uses up to one position of the event log per second. Three such calls fill the 5000 kept positions in about 28 minutes, and a client that was disconnected for longer than about 5 minutes of such traffic loads a snapshot instead of a replay (ADR 0207). A snapshot carries no speaking marks; the next event of a call carries its whole set.
-- A modified client can report that its own person speaks. It cannot report for another person, and not while it is muted or blocked.
-- A restart of the server loses the reports. The next report of each device restores them.
-- The reports and the set of each call are per process (ADR 0011).
+- A call no longer costs one read transaction per second on the server, and changing speakers no longer use positions of the event log.
+- A modified client cannot show false speaking marks to people outside a call.
+- A person outside a call sees who is in it, not who talks.

@@ -96,6 +96,7 @@ pub const fn category(code: ErrorCode, status: u16) -> ErrorCategory {
         | ErrorCode::InviteRevoked
         | ErrorCode::LinkCodeInvalid => ErrorCategory::CodeRefused,
         ErrorCode::InvalidRequest
+        | ErrorCode::Retired
         | ErrorCode::MethodNotAllowed
         | ErrorCode::ImageTooLarge
         | ErrorCode::ImageUnsupported
@@ -400,6 +401,7 @@ mod tests {
             (ErrorCode::LinkCodeInvalid, C::CodeRefused),
             (ErrorCode::InvalidRequest, C::ClientFault),
             (ErrorCode::MethodNotAllowed, C::ClientFault),
+            (ErrorCode::Retired, C::ClientFault),
             (ErrorCode::ImageTooLarge, C::ClientFault),
             (ErrorCode::ImageUnsupported, C::ClientFault),
             (ErrorCode::RangeNotSatisfiable, C::ClientFault),

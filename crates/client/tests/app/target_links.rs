@@ -55,6 +55,7 @@ fn channel_links_open_active_and_archived_channels_and_conversation_links_open_d
                 document: document("A linked conversation"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -203,6 +204,7 @@ fn a_file_link_opens_its_message_and_shows_the_file_with_copy_and_download_actio
                     document: document("Linked report"),
                     reply_to: None,
                     attachments: vec![file],
+                    comment: None,
                 },
             )
             .await
@@ -654,6 +656,7 @@ fn rendered_links_open_channels_conversations_messages_and_threads(cx: &mut Test
                 document: document("Direct destination"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -707,5 +710,9 @@ fn an_unknown_application_origin_shows_the_address_field_in_collapsed_and_narrow
         );
         assert_eq!(window.selected_channel(), selected);
         assert_eq!(window.server_names(), ["Example Studio"]);
+        // The field is in the window "Add server or workspace", which Escape closes.
+        window.press("escape");
+        window.settle();
+        assert!(!window.shows("add-window"));
     }
 }

@@ -495,7 +495,7 @@ impl LiveServer {
         files: Vec<PendingFile>,
     ) -> Option<u64> {
         let account_id = self.shared.model()?.account.id;
-        self.enqueue_message_for(account_id, place, document, reply_to, files)
+        self.enqueue_message_for(account_id, place, document, reply_to, None, files)
     }
 
     pub(crate) fn enqueue_message_for(
@@ -504,6 +504,7 @@ impl LiveServer {
         place: PlaceId,
         document: Document,
         reply_to: Option<MessageId>,
+        comment: Option<Document>,
         files: Vec<PendingFile>,
     ) -> Option<u64> {
         if self.shared.model()?.account.id != account_id {
@@ -511,7 +512,8 @@ impl LiveServer {
         }
         let id = self.shared.next_number();
         let created_at = OffsetDateTime::now_utc();
-        let pending = PendingMessage::new(id, place, document, reply_to, files, created_at);
+        let mut pending = PendingMessage::new(id, place, document, reply_to, files, created_at);
+        pending.comment = comment;
         self.shared
             .send(Command::Enqueue {
                 account_id,

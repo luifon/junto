@@ -97,5 +97,47 @@ fn main() {
             "cargo:rustc-link-arg-bin=junto-installer={}",
             resource.display()
         );
+        thumb_glyphs(&out);
     }
+}
+
+/// The glyphs of the buttons of the taskbar preview (ADR 0755): each line icon of the window
+/// in the shade for a dark and for a light taskbar, at the sizes of a small icon, as blue,
+/// green, red and alpha, and the table `GLYPHS` of `taskbar::thumb` that names them.
+fn thumb_glyphs(out: &std::path::Path) {
+    const LEAVE: [u8; 3] = [0xc5, 0x31, 0x1f];
+    let glyphs = [
+        ("microphone", "mic.svg", None),
+        ("microphone-off", "mic-off.svg", None),
+        ("sound", "headphones.svg", None),
+        ("sound-off", "headphone-off.svg", None),
+        ("leave", "phone-off.svg", Some(LEAVE)),
+    ];
+    let mut table = String::from("pub(crate) const GLYPHS: &[(&str, bool, u32, &[u8])] = &[\n");
+    for (name, file, colour) in glyphs {
+        let path = format!("../client/assets/icons/lucide/{file}");
+        println!("cargo:rerun-if-changed={path}");
+        let svg = fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
+        for light in [true, false] {
+            let shade = colour.unwrap_or(if light {
+                [0x1f, 0x1f, 0x1f]
+            } else {
+                [0xff, 0xff, 0xff]
+            });
+            for size in [16u32, 20, 24, 32] {
+                let mut pixels = junto_icon::glyph(&svg, shade, size).unwrap().rgba;
+                for pixel in pixels.as_chunks_mut::<4>().0 {
+                    pixel.swap(0, 2);
+                }
+                let shade_name = if light { "light" } else { "dark" };
+                let file = format!("thumb-{name}-{shade_name}-{size}.bgra");
+                fs::write(out.join(&file), pixels).unwrap();
+                table.push_str(&format!(
+                    "    ({name:?}, {light}, {size}, include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{file}\"))),\n"
+                ));
+            }
+        }
+    }
+    table.push_str("];\n");
+    fs::write(out.join("thumb_glyphs.rs"), table).unwrap();
 }

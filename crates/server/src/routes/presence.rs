@@ -7,10 +7,11 @@ use junto_protocol::{
     ids::AccountId,
     presence::{
         AccountPresence, PRESENCE_PAGE, Presence, PresenceChoice, PresencePage, ReadPresence,
-        SetPresence,
+        STATUS_TEXT_MAX_CHARS, SetPresence, SetStatusText, StatusText,
     },
 };
 use sqlx::PgConnection;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
@@ -28,13 +29,25 @@ struct Preference {
     account_id: AccountId,
     choice: PresenceChoice,
     administrator: bool,
+    status_text: Option<StatusText>,
 }
 
-type PreferenceRow = (AccountId, String, bool, bool, i64, i64, i64);
+type PreferenceRow = (
+    AccountId,
+    String,
+    bool,
+    bool,
+    i64,
+    i64,
+    i64,
+    Option<String>,
+    Option<OffsetDateTime>,
+);
 
 async fn preferences(
     connection: &mut PgConnection,
     accounts: &[AccountId],
+    now: OffsetDateTime,
 ) -> ApiResult<Vec<Preference>> {
     let rows: Vec<PreferenceRow> = sqlx::query_as(
         "select a.id, a.presence_mode,
@@ -42,7 +55,10 @@ async fn preferences(
                 coalesce(a.id = s.owner_account_id, false),
                 coalesce((select bit_or(r.permissions) from account_server_roles h
                           join server_roles r on r.id=h.role_id where h.account_id=a.id), 0),
-                coalesce(o.allow, 0), coalesce(o.deny, 0)
+                coalesce(o.allow, 0), coalesce(o.deny, 0),
+                case when a.status_text_until is null or a.status_text_until > $3
+                     then a.status_text end,
+                case when a.status_text_until > $3 then a.status_text_until end
          from accounts a cross join server_state s
          left join notification_settings n on n.account_id=a.id and n.scope_id=$2
          left join server_person_overrides o on o.account_id=a.id
@@ -50,32 +66,36 @@ async fn preferences(
     )
     .bind(accounts)
     .bind(Uuid::nil())
+    .bind(now)
     .fetch_all(connection)
     .await?;
     rows.into_iter()
-        .map(|(account_id, mode, dnd, owner, roles, allow, deny)| {
-            let choice = match mode.as_str() {
-                "invisible" => PresenceChoice::Invisible,
-                _ if dnd => PresenceChoice::DoNotDisturb,
-                "online" => PresenceChoice::Online,
-                "idle" => PresenceChoice::Idle,
-                _ => return Err(ApiError::internal(&"invalid stored presence mode")),
-            };
-            let actor = Actor {
-                position: if owner {
-                    Position::Owner
-                } else {
-                    Position::Member
-                },
-                server_roles: vec![db::server_permissions(roles)?],
-                server_override: crate::access::permissions::server_rule(allow, deny)?,
-            };
-            Ok(Preference {
-                account_id,
-                choice,
-                administrator: actor.is_administrator(),
-            })
-        })
+        .map(
+            |(account_id, mode, dnd, owner, roles, allow, deny, text, until)| {
+                let choice = match mode.as_str() {
+                    "invisible" => PresenceChoice::Invisible,
+                    _ if dnd => PresenceChoice::DoNotDisturb,
+                    "online" => PresenceChoice::Online,
+                    "idle" => PresenceChoice::Idle,
+                    _ => return Err(ApiError::internal(&"invalid stored presence mode")),
+                };
+                let actor = Actor {
+                    position: if owner {
+                        Position::Owner
+                    } else {
+                        Position::Member
+                    },
+                    server_roles: vec![db::server_permissions(roles)?],
+                    server_override: crate::access::permissions::server_rule(allow, deny)?,
+                };
+                Ok(Preference {
+                    account_id,
+                    choice,
+                    administrator: actor.is_administrator(),
+                    status_text: text.map(|text| StatusText { text, until }),
+                })
+            },
+        )
         .collect()
 }
 
@@ -148,7 +168,7 @@ async fn page(
     if !with_own.contains(&access.account_id) {
         with_own.push(access.account_id);
     }
-    let preferences = preferences(connection, &with_own).await?;
+    let preferences = preferences(connection, &with_own, app.now()).await?;
     let own = preferences
         .iter()
         .find(|preference| preference.account_id == access.account_id)
@@ -161,10 +181,13 @@ async fn page(
                 let idle = connected.get(&preference.account_id);
                 (
                     preference.account_id,
-                    preference.choice.shown(
-                        idle.is_some(),
-                        idle.copied().unwrap_or(false),
-                        preference.account_id == access.account_id,
+                    (
+                        preference.choice.shown(
+                            idle.is_some(),
+                            idle.copied().unwrap_or(false),
+                            preference.account_id == access.account_id,
+                        ),
+                        preference.status_text,
                     ),
                 )
             })
@@ -180,9 +203,16 @@ async fn page(
         own,
         accounts: asked
             .into_iter()
-            .map(|account_id| AccountPresence {
-                account_id,
-                presence: shown.get(&account_id).copied().unwrap_or(Presence::Offline),
+            .map(|account_id| {
+                let (presence, status_text) = shown
+                    .get(&account_id)
+                    .cloned()
+                    .unwrap_or((Presence::Offline, None));
+                AccountPresence {
+                    account_id,
+                    presence,
+                    status_text,
+                }
             })
             .collect(),
     })
@@ -210,7 +240,7 @@ pub(crate) async fn may_receive_changes(
         let access = Access::open(connection, bearer, app.now()).await?;
         access.require(Request::OwnAccount)?;
         let fellows = store::fellow_members(connection, access.account_id, accounts).await?;
-        Ok(preferences(connection, accounts)
+        Ok(preferences(connection, accounts, app.now())
             .await?
             .iter()
             .any(|preference| may_see(&access, preference, &fellows)))
@@ -261,4 +291,86 @@ pub async fn set_presence(
         .set_visible(account_id, body.choice != PresenceChoice::Invisible);
     app.streams.presence_changed_for(account_id);
     Ok(Json(body))
+}
+
+/// One line of 1 to 100 characters without control characters, with outer whitespace
+/// removed, and an end time in the future.
+fn checked_status_text(text: StatusText, now: OffsetDateTime) -> ApiResult<StatusText> {
+    let trimmed = text.text.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::invalid("status text is empty"));
+    }
+    if trimmed.chars().count() > STATUS_TEXT_MAX_CHARS {
+        return Err(ApiError::invalid(format!(
+            "status text is longer than {STATUS_TEXT_MAX_CHARS} characters"
+        )));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(ApiError::invalid(
+            "status text contains a control character",
+        ));
+    }
+    if text.until.is_some_and(|until| until <= now) {
+        return Err(ApiError::invalid(
+            "the end time of the status text has passed",
+        ));
+    }
+    Ok(StatusText {
+        text: trimmed.to_owned(),
+        until: text.until,
+    })
+}
+
+/// Sets or removes the status text of the caller's account. The people who watch the
+/// account read its presence again.
+#[utoipa::path(put,path="/api/v1/account/status-text",tag="account",request_body=SetStatusText,security(("session"=[])),responses((status=200,body=SetStatusText),ApiError))]
+pub async fn set_status_text(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiJson(body): ApiJson<SetStatusText>,
+) -> ApiResult<Json<SetStatusText>> {
+    let status_text = body
+        .status_text
+        .map(|text| checked_status_text(text, app.now()))
+        .transpose()?;
+    let mut counted = false;
+    let account_id = transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        access.require(Request::OwnAccount)?;
+        super::account::limit_change(&app, &access, &mut counted)?;
+        sqlx::query("update accounts set status_text=$2, status_text_until=$3 where id=$1")
+            .bind(access.account_id)
+            .bind(status_text.as_ref().map(|text| text.text.as_str()))
+            .bind(status_text.as_ref().and_then(|text| text.until))
+            .execute(&mut *connection)
+            .await?;
+        Ok(access.account_id)
+    })?;
+    app.streams.status_text_changed_for(account_id);
+    Ok(Json(SetStatusText { status_text }))
+}
+
+/// Removes the status texts whose end time has passed, and tells the people who watch each
+/// account (ADR 0401).
+pub(crate) async fn expire_status_texts(app: &AppState, now: OffsetDateTime) -> ApiResult<()> {
+    let batch = i64::from(app.config.limits.maintenance_batch.max(1));
+    loop {
+        let ended: Vec<AccountId> = transact!(app, |connection| {
+            Ok(sqlx::query_scalar(
+                "update accounts set status_text=null, status_text_until=null where id in (
+                     select id from accounts where status_text_until <= $1 limit $2)
+                 returning id",
+            )
+            .bind(now)
+            .bind(batch)
+            .fetch_all(&mut *connection)
+            .await?)
+        })?;
+        for account_id in &ended {
+            app.streams.status_text_changed_for(*account_id);
+        }
+        if i64::try_from(ended.len()).unwrap_or(i64::MAX) < batch {
+            return Ok(());
+        }
+    }
 }

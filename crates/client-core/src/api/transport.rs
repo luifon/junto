@@ -289,6 +289,20 @@ impl ReqwestTransport {
     }
 }
 
+/// The headers with which every request and the event stream state the group conversations
+/// that this client reads (ADR 0302): groups by the value that a server of 0.2 takes, and
+/// groups without a name by a header of their own, which such a server ignores.
+pub(crate) const GROUP_HEADERS: [(&str, &str); 2] = [
+    (
+        junto_protocol::message::GROUPS_HEADER,
+        junto_protocol::message::GROUPS_READ,
+    ),
+    (
+        junto_protocol::message::GROUP_NAMES_HEADER,
+        junto_protocol::message::GROUP_NAMES_OPTIONAL,
+    ),
+];
+
 fn build(
     client: &reqwest::Client,
     request: HttpRequest,
@@ -304,8 +318,10 @@ fn build(
     let mut builder = client
         .request(method, request.url)
         .header(reqwest::header::ACCEPT, accepted)
-        .header("Junto-Notification-Preferences", "1")
-        .header(junto_protocol::message::GROUPS_HEADER, "1");
+        .header("Junto-Notification-Preferences", "1");
+    for (name, value) in GROUP_HEADERS {
+        builder = builder.header(name, value);
+    }
     builder = builder.header(
         "Junto-Event-Revision",
         junto_protocol::events::EVENT_REVISION.to_string(),
@@ -626,5 +642,27 @@ mod tests {
         assert!(arrived(TransportErrorKind::Timeout));
         assert!(arrived(TransportErrorKind::Interrupted));
         assert!(arrived(TransportErrorKind::TooLarge));
+    }
+
+    /// A server of 0.2 gives group conversations only to a request whose group header has the
+    /// value 1; a client that reads a group without a name states it in a header of its own.
+    #[test]
+    fn a_request_asks_for_groups_as_a_server_of_0_2_reads_it() {
+        let request = HttpRequest {
+            method: Method::Get,
+            url: Url::parse("https://chat.example.test/api/v1/snapshot").unwrap(),
+            bearer: None,
+            body: None,
+            test_number: None,
+        };
+        let built = build(&reqwest::Client::new(), request, "application/json")
+            .build()
+            .unwrap();
+        let headers = built.headers();
+        assert_eq!(headers[junto_protocol::message::GROUPS_HEADER], "1");
+        assert_eq!(
+            headers[junto_protocol::message::GROUP_NAMES_HEADER],
+            junto_protocol::message::GROUP_NAMES_OPTIONAL
+        );
     }
 }

@@ -197,18 +197,7 @@ impl Shell {
                     .label(text::JOIN)
                     .icon(Icon::Speaker)
                     .kind(ButtonKind::Primary)
-                    .when(!invited.may_connect, |button| {
-                        button
-                            .tooltip(text::not_permitted(
-                                junto_client_core::protocol::WorkspacePermission::Connect,
-                            ))
-                            .disabled(true)
-                    })
-                    .selector(if invited.may_connect {
-                        "invitation-join"
-                    } else {
-                        "invitation-join-refused"
-                    }),
+                    .selector("invitation-join"),
                 Button::new(id("invitation-decline"))
                     .label(text::DECLINE)
                     .selector("invitation-decline"),
@@ -218,6 +207,28 @@ impl Shell {
             this.state
                 .update(cx, |state, cx| state.accept_invitation(&accepted, cx));
         }));
+        // The answer has the arrow of the device check where the person may join
+        // (ADR 0735).
+        let accept = if invited.may_connect {
+            Some(self.join_control(
+                accept,
+                ButtonKind::Primary,
+                super::device_checks::JoinCheck {
+                    target: invited.target,
+                    invitation: Some(invitation_id),
+                    arrow: if direct {
+                        "direct-call-accept-check"
+                    } else {
+                        "invitation-join-check"
+                    },
+                },
+                cx,
+            ))
+        } else if direct {
+            Some(accept.into_any_element())
+        } else {
+            None
+        };
         let decline = decline.on_click(cx.listener(move |this, _, _, cx| {
             this.state
                 .update(cx, |state, cx| state.decline_invitation(&declined, cx));
@@ -335,24 +346,18 @@ impl Shell {
                     .flex()
                     .justify_end()
                     .gap(u(6.0))
-                    .children(invited.may_connect.then(|| {
-                        self.device_check_button(
-                            invited.target,
-                            Some(invitation_id),
-                            "check-invitation-devices",
-                            cx,
-                        )
-                    }))
                     .child(
                         div()
                             .debug_selector(move || format!("invitation-decline:{invitation_id}"))
                             .child(decline),
                     )
-                    .child(
+                    // Without "connect" an invitation into a channel offers no join
+                    // (ADR 0790).
+                    .children(accept.map(|accept| {
                         div()
                             .debug_selector(move || format!("invitation-accept:{invitation_id}"))
-                            .child(accept),
-                    ),
+                            .child(accept)
+                    })),
             )
             .when(direct, |card| card.border_color(Hsla::from(colors.cypress)));
         div()

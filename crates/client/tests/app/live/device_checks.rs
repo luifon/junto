@@ -20,7 +20,8 @@ fn a_prejoin_check_releases_local_devices_when_the_channel_call_starts(cx: &mut 
     };
     enter(&world, &caller, target);
     window.click_channel(ROOM);
-    window.click("check-call-devices");
+    window.click("join-call-check");
+    window.click("join-after-check");
     window.click_in_device_check("preview-camera");
     window.until("local preview", |window| {
         window.shows("camera-preview-picture")
@@ -63,9 +64,10 @@ fn an_invitation_check_closes_on_cancellation_and_accepts_only_its_current_invit
     };
     world.run(caller.calls.join(target)).unwrap();
     window.until("incoming invitation can be checked", |window| {
-        window.shows("check-invitation-devices")
+        window.shows("direct-call-accept-check")
     });
-    window.click("check-invitation-devices");
+    window.click("direct-call-accept-check");
+    window.click("join-after-check");
     window.click_in_device_check("preview-camera");
     window.until("invitation preview", |window| {
         window.shows("camera-preview-picture")
@@ -81,9 +83,10 @@ fn an_invitation_check_closes_on_cancellation_and_accepts_only_its_current_invit
     );
     world.run(caller.calls.join(target)).unwrap();
     window.until("new invitation", |window| {
-        window.shows("check-invitation-devices")
+        window.shows("direct-call-accept-check")
     });
-    window.click("check-invitation-devices");
+    window.click("direct-call-accept-check");
+    window.click("join-after-check");
     window.click_in_device_check("prejoin-join");
     window.until("current invitation accepted", |window| {
         window.state.read_with(&window.cx, |state, _| {
@@ -125,9 +128,10 @@ fn a_group_invitation_can_be_checked_and_joined(cx: &mut TestAppContext) {
     };
     world.run(caller.calls.join(target)).unwrap();
     window.until("group invitation device check", |window| {
-        window.shows("check-invitation-devices")
+        window.shows("invitation-join-check")
     });
-    window.click("check-invitation-devices");
+    window.click("invitation-join-check");
+    window.click("join-after-check");
     window.click_in_device_check("preview-camera");
     window.until("group invitation preview", |window| {
         window.shows("camera-preview-picture")

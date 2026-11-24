@@ -2,7 +2,7 @@
 //! start and the stop of a recording belong to its call and are with the call routes.
 
 use junto_protocol::ids::{RecordingId, RecordingSegmentId, WorkspaceId};
-use junto_protocol::recording::{Recording, RecordingDetail, RecordingPage};
+use junto_protocol::recording::{Recording, RecordingDetail, RecordingPage, RecordingSettings};
 use junto_protocol::transcript::{
     CorrectLine, Glossary, RenameSpeaker, SetGlossary, Transcript, TranscriptLine,
     TranscriptLinePage, TranscriptLineQuery, TranscriptSpeaker,
@@ -43,6 +43,30 @@ impl ServerApi {
         }
         let path = format!("/workspaces/{workspace_id}/recordings");
         read_json(&self.call(Method::Get, path, query, None).await?)
+    }
+
+    /// The settings of the recordings of the server: the spoken language of a recording
+    /// that names none (ADR 0604).
+    pub async fn recording_settings(&self) -> Result<RecordingSettings, ApiError> {
+        self.get("/server/recording-settings".to_owned()).await
+    }
+
+    /// Sets the spoken language of a recording that names none. The caller is an
+    /// administrator of the server.
+    pub async fn set_recording_settings(
+        &self,
+        settings: &RecordingSettings,
+    ) -> Result<RecordingSettings, ApiError> {
+        read_json(
+            &self
+                .call(
+                    Method::Put,
+                    "/server/recording-settings".to_owned(),
+                    Vec::new(),
+                    Some(super::client::encode(settings)?),
+                )
+                .await?,
+        )
     }
 
     /// One recording with its segments, in the order in which they were asked for.

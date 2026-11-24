@@ -107,7 +107,26 @@ fn emoji_segment(emoji: &str) -> String {
 
 impl ServerApi {
     async fn check_document_format(&self, document: &Document) -> Result<(), ApiError> {
-        let required = document.required_revision();
+        self.check_format_revision(document.required_revision())
+            .await
+    }
+
+    /// The comment of a forward needs a server that stores comments (ADR 0408).
+    async fn check_comment_format(&self, comment: Option<&Document>) -> Result<(), ApiError> {
+        match comment {
+            Some(comment) => {
+                self.check_format_revision(
+                    comment
+                        .required_revision()
+                        .max(junto_protocol::message::FORWARD_COMMENT_REVISION),
+                )
+                .await
+            }
+            None => Ok(()),
+        }
+    }
+
+    async fn check_format_revision(&self, required: u32) -> Result<(), ApiError> {
         if required == 0 {
             return Ok(());
         }
@@ -245,6 +264,7 @@ impl ServerApi {
         message: &SendMessage,
     ) -> Result<Changed<Message>, ApiError> {
         self.check_document_format(&message.document).await?;
+        self.check_comment_format(message.comment.as_ref()).await?;
         let sent: Changed<Message> = self
             .change(Method::Post, messages_of(place), Some(message))
             .await?;
@@ -278,9 +298,35 @@ impl ServerApi {
         self.check_document_format(&document).await?;
         let path = format!("/messages/{message_id}");
         bounded(
-            self.send(Method::Put, path, &EditMessage { document })
-                .await?,
+            self.send(
+                Method::Put,
+                path,
+                &EditMessage {
+                    document,
+                    comment: None,
+                },
+            )
+            .await?,
         )
+    }
+
+    /// Replaces the comment of a forward of the caller and keeps its forwarded content, which
+    /// `document` repeats as the message holds it (ADR 0408). A comment without blocks removes
+    /// it.
+    pub async fn edit_comment(
+        &self,
+        message_id: MessageId,
+        document: Document,
+        comment: Document,
+    ) -> Result<Message, ApiError> {
+        self.check_document_format(&document).await?;
+        self.check_comment_format(Some(&comment)).await?;
+        let path = format!("/messages/{message_id}");
+        let edit = EditMessage {
+            document,
+            comment: Some(comment),
+        };
+        bounded(self.send(Method::Put, path, &edit).await?)
     }
 
     pub async fn delete_message(&self, message_id: MessageId) -> Result<(), ApiError> {

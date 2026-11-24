@@ -22,7 +22,6 @@ use junto_client_core::settings::Panel;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::MentionSwitch;
-use crate::state::admin::view::notifications::DefaultChoice;
 use crate::state::notices::{
     Agreement, Jump, Mute, MuteFor, NoticeRow, NoticesPanel, NotifyPanel, QuietView, Whereabouts,
     clock_text, parse_clock,
@@ -31,9 +30,9 @@ use crate::state::view::{ServerLists, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Avatar, Button, ButtonKind, ChannelRow, ContextMenuExt, Dialog, Field, Menu, MenuItem, Notice,
-    Segmented, SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label,
-    menu_separator, scroll_bar, unread_dot,
+    Avatar, Button, ButtonKind, ContextMenuExt, Dialog, Field, Menu, MenuItem, Notice, Segmented,
+    SideHeader, StatePanel, StyleExt, Toggle, icon, menu_label, menu_separator, scroll_bar,
+    unread_dot,
 };
 
 /// The icon of the place of a message.
@@ -407,39 +406,57 @@ impl Shell {
         cx.notify();
     }
 
-    /// The entry of the channel column that opens the notices of the server, with the
-    /// count of the notices that the person has not read. `in_call`: the main area shows
-    /// the call of this device, whose side panel is the panel of the call: the notices
-    /// open there (ADR 0742).
-    pub(crate) fn render_notices_row(
+    /// The bell beside the search field that opens the activity of the shown server in the
+    /// side panel, with the count of the notices that the person has not read (ADR 0742).
+    /// `in_call`: the button stands at the top of the panel of the call, whose side panel
+    /// the list opens in.
+    pub(crate) fn render_activity_button(
         &mut self,
         lists: &ServerLists,
         in_call: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let unread = lists.unread_notices;
-        let sign = (unread > 0).then(|| UnreadSign {
-            mentions: Some(text::unread_count(unread as u64).into()),
-            label: text::unread_notices(unread).into(),
-        });
+        let open = if in_call {
+            self.call_notices_open(cx)
+        } else {
+            lists.notices.is_some()
+        };
+        let label: SharedString = if unread > 0 {
+            format!("{}, {}", text::ACTIVITY, text::unread_notices(unread)).into()
+        } else {
+            text::ACTIVITY.into()
+        };
+        let colors = theme(cx).colors;
         div()
             .flex_none()
-            .debug_selector(|| "notices-row".to_owned())
+            .debug_selector(|| "activity".to_owned())
             .child(
-                ChannelRow::new("notices-row", Icon::Bell, text::NOTIFICATIONS)
-                    .selected(lists.notices.is_some())
-                    .unread(sign)
+                Button::new("activity-button")
+                    .icon(Icon::Bell)
+                    .tooltip(text::ACTIVITY)
+                    .accessible_label(label)
+                    .count((unread > 0).then(|| text::unread_count(unread as u64)))
+                    .selector("activity-button")
+                    .when(open, |button| {
+                        button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_notices(cx);
-                        // A narrow window draws the panel of the call over the stage
-                        // only while it is open.
                         if in_call {
-                            this.open_call_panel(cx);
+                            if this.call_notices_open(cx) {
+                                this.close_call_notices(cx);
+                            } else {
+                                this.open_call_notices(cx);
+                                this.open_call_panel(cx);
+                            }
+                            cx.notify();
+                        } else {
+                            this.toggle_notices(cx);
                         }
                     })),
             )
-            .when(unread > 0, |row| {
-                row.child(
+            .when(unread > 0, |button| {
+                button.child(
                     div()
                         .absolute()
                         .size_0()
@@ -511,7 +528,7 @@ impl Shell {
                     });
                 }))
         });
-        let header = SideHeader::new(text::NOTIFICATIONS)
+        let header = SideHeader::new(text::ACTIVITY)
             .title_bar()
             .icon(Icon::Bell)
             .note(if panel.unread > 0 {
@@ -525,11 +542,24 @@ impl Shell {
                     .items_center()
                     .gap(u(4.0))
                     .children(mark_all)
+                    // The notification levels of the person on the server: the page
+                    // Notifications of "Your account" in Server settings (ADR 0742).
+                    .child(
+                        Button::new("activity-settings")
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::Gear)
+                            .tooltip(text::SERVER_NOTIFICATIONS)
+                            .accessible_label(text::SERVER_NOTIFICATIONS)
+                            .selector("activity-settings")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_own_notifications(server_id, window, cx);
+                            })),
+                    )
                     .child(
                         Button::new("close-notices")
                             .kind(ButtonKind::Ghost)
                             .icon(Icon::X)
-                            .tooltip(text::CLOSE_NOTIFICATIONS)
+                            .tooltip(text::CLOSE_ACTIVITY)
                             .selector("close-notices")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if in_call {
@@ -590,20 +620,19 @@ impl Shell {
             let items = Rc::clone(&self.notice_list.items);
             // The list lays out each entry as a root: the block gives it the width of the
             // list, so that its text wraps.
-            let render =
-                cx.processor(move |this: &mut Self, index: usize, _window, cx| {
-                    match items.get(index) {
-                        Some(NoticeItem::Older) => this.render_older_notices(server_id, cx),
-                        Some(NoticeItem::Notice(row)) => {
-                            let below_a_notice = index
-                                .checked_sub(1)
-                                .and_then(|above| items.get(above))
-                                .is_some_and(|above| matches!(above, NoticeItem::Notice(_)));
-                            this.render_notice_row(server_id, below_a_notice, row, cx)
-                        }
-                        None => div().into_any_element(),
-                    }
-                });
+            let render = cx.processor(move |this: &mut Self, index: usize, window, cx| match items
+                .get(index)
+            {
+                Some(NoticeItem::Older) => this.render_older_notices(server_id, cx),
+                Some(NoticeItem::Notice(row)) => {
+                    let below_a_notice = index
+                        .checked_sub(1)
+                        .and_then(|above| items.get(above))
+                        .is_some_and(|above| matches!(above, NoticeItem::Notice(_)));
+                    this.render_notice_row(server_id, below_a_notice, row, window, cx)
+                }
+                None => div().into_any_element(),
+            });
             div()
                 .relative()
                 .flex()
@@ -614,7 +643,7 @@ impl Shell {
                     div()
                         .id("notice-list")
                         .role(Role::List)
-                        .aria_label(text::NOTIFICATIONS)
+                        .aria_label(text::ACTIVITY)
                         .debug_selector(|| "notice-list".to_owned())
                         .size_full()
                         .child(list(state.clone(), render).size_full().pb(u(6.0))),
@@ -633,7 +662,7 @@ impl Shell {
         } else {
             side_panel(
                 &theme,
-                text::NOTIFICATIONS,
+                text::ACTIVITY,
                 "notices-panel",
                 self.panel_width(Panel::Notices, theme.metrics.side_panel_width, cx),
             )
@@ -655,6 +684,7 @@ impl Shell {
         server_id: ServerId,
         below_a_notice: bool,
         row: &NoticeRow,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -708,6 +738,11 @@ impl Shell {
         let menu = matches!(self.layer, Layer::NoticeMenu(server, notice)
             if server == server_id && notice == notice_id)
         .then(|| self.render_notice_menu(server_id, row, cx));
+        let focus = crate::ui::row_focus(("notice", notice_id.as_u128() as u64), window, cx);
+        let focused = focus.is_focused(window) || menu.is_some();
+        let open_menu = Self::handler(cx, move |this, window, cx| {
+            this.open_layer(Layer::NoticeMenu(server_id, notice_id), window, cx);
+        });
         div()
             .relative()
             .w_full()
@@ -717,8 +752,9 @@ impl Shell {
                     .role(Role::ListItem)
                     .aria_label(label)
                     .debug_selector(move || format!("notice:{notice_id}"))
-                    .focusable()
-                    .tab_stop(true)
+                    .relative()
+                    .group(crate::ui::MENU_ROW)
+                    .track_focus(&focus)
                     .focus_visible(move |style| style.shadow(ring))
                     .on_context_menu(Self::handler(cx, move |this, window, cx| {
                         this.open_layer(Layer::NoticeMenu(server_id, notice_id), window, cx);
@@ -736,7 +772,16 @@ impl Shell {
                                 this.go_to_notice(&held, cx);
                             }))
                     })
-                    .child(shown.element(&theme, cx)),
+                    .child(shown.element(&theme, cx))
+                    .child(
+                        div().absolute().top(u(6.0)).right(u(6.0)).child(
+                            crate::ui::MenuButton::new("notice-more")
+                                .selector(format!("menu-button:notice:{notice_id}"))
+                                .shown(focused)
+                                .ground(colors.row_hover)
+                                .on_open(open_menu),
+                        ),
+                    ),
             )
             .children(menu)
             .into_any_element()
@@ -789,7 +834,7 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        self.row_menu("notice-menu", text::NOTIFICATIONS.to_owned(), items, cx)
+        self.row_menu("notice-menu", text::ACTIVITY.to_owned(), items, cx)
     }
 
     /// The control above the oldest listed notice that reads the older ones.
@@ -906,35 +951,34 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let channel_id = channel.id;
-        let mut items = vec![
-            MenuItem::new("channel-files", "Files")
-                .icon(Icon::FolderOpen)
-                .disabled(!channel.allowed.read_history)
-                .selector("channel-files")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    this.show_place_files(
-                        server_id,
-                        junto_client_core::model::PlaceId::Channel(channel_id),
-                        window,
-                        cx,
-                    );
-                }))
-                .into_any_element(),
-            MenuItem::new("channel-mark-read", text::MARK_AS_READ)
-                .icon(Icon::CheckDouble)
-                .selector("channel-mark-read")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    this.state.update(cx, |state, _| {
-                        state.mark_place_as_read(
+        let mut items = Vec::new();
+        // The files are read from the history (ADR 0790).
+        if channel.allowed.read_history {
+            items.push(
+                MenuItem::new("channel-files", text::FILES)
+                    .icon(Icon::FolderOpen)
+                    .selector("channel-files")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.show_place_files(
                             server_id,
                             junto_client_core::model::PlaceId::Channel(channel_id),
+                            window,
+                            cx,
                         );
-                    });
-                }))
-                .into_any_element(),
-        ];
+                    }))
+                    .into_any_element(),
+            );
+        }
+        items.extend(self.read_item(
+            "channel",
+            server_id,
+            junto_client_core::model::PlaceId::Channel(channel_id),
+            channel.holds_messages,
+            channel.unread.unread(),
+            channel.selected,
+            cx,
+        ));
         if let Some(status) = self.voice_status_item(server_id, channel, cx) {
             items.push(status);
         }
@@ -966,19 +1010,16 @@ impl Shell {
                 }))
                 .into_any_element(),
         );
-        if channel.allowed.manage {
+        if channel.allowed.channel_settings(channel.kind) {
             items.push(
-                MenuItem::new("channel-edit", text::EDIT_CHANNEL)
+                MenuItem::new("channel-settings", text::admin::CHANNEL_SETTINGS)
                     .icon(Icon::Gear)
-                    .selector("channel-edit")
+                    .selector("channel-settings")
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_admin(
-                            crate::state::admin::AdminOpen::Channel {
-                                server_id,
-                                workspace_id,
-                                channel_id,
-                                page: crate::state::admin::ChannelPage::Overview,
-                            },
+                        this.open_settings_of_channel(
+                            server_id,
+                            workspace_id,
+                            channel_id,
                             window,
                             cx,
                         );
@@ -1027,7 +1068,7 @@ impl Shell {
         let account_id = direct.account_id;
         let name = direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
         let mut items = vec![
-            MenuItem::new("direct-files", "Files")
+            MenuItem::new("direct-files", text::FILES)
                 .icon(Icon::FolderOpen)
                 .selector("direct-files")
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -1040,21 +1081,17 @@ impl Shell {
                     );
                 }))
                 .into_any_element(),
-            MenuItem::new("direct-mark-read", text::MARK_AS_READ)
-                .icon(Icon::CheckDouble)
-                .selector("direct-mark-read")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    this.state.update(cx, |state, _| {
-                        state.mark_place_as_read(
-                            server_id,
-                            junto_client_core::model::PlaceId::Direct(conversation_id),
-                        );
-                    });
-                }))
-                .into_any_element(),
-            menu_separator(cx).into_any_element(),
         ];
+        items.extend(self.read_item(
+            "direct",
+            server_id,
+            junto_client_core::model::PlaceId::Direct(conversation_id),
+            direct.holds_messages,
+            direct.unread.unread(),
+            direct.selected,
+            cx,
+        ));
+        items.push(menu_separator(cx).into_any_element());
         items.insert(
             1,
             MenuItem::new("direct-copy-link", text::COPY_TARGET_LINK)
@@ -1180,18 +1217,54 @@ impl Shell {
                     }
                 }),
             );
-            items.push(
-                MenuItem::new("group-details", text::conversations::MENU)
-                    .selector("group-details-open")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if !matches!(this.layer, Layer::DirectMenu(id) if id == conversation_id) {
-                            return;
-                        }
-                        this.open_group_details(owner, conversation_id, window, cx);
-                    }))
-                    .into_any_element(),
-            );
+            // The people of the group, and leaving it, are in its panel "People" (ADR 0741).
+            for (selector, label, icon_shown, leaving) in [
+                (
+                    "group-details-open",
+                    text::conversations::PEOPLE,
+                    Icon::People,
+                    false,
+                ),
+                (
+                    "group-leave-open",
+                    text::conversations::LEAVE,
+                    Icon::Leave,
+                    true,
+                ),
+            ] {
+                items.push(
+                    MenuItem::new(selector, label)
+                        .icon(icon_shown)
+                        .selector(selector)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if !matches!(this.layer, Layer::DirectMenu(id) if id == conversation_id)
+                            {
+                                return;
+                            }
+                            this.close_layer(window, cx);
+                            this.state.update(cx, |state, cx| {
+                                state.select_conversation(server_id, conversation_id, cx)
+                            });
+                            this.open_group_details(owner, conversation_id, window, cx);
+                            this.groups.leaving = leaving;
+                        }))
+                        .into_any_element(),
+                );
+            }
         }
+        // The export asks first, and its file is in Exports of the account (ADR 0411).
+        items.push(
+            MenuItem::new("direct-export", text::conversations::EXPORT)
+                .icon(Icon::Download)
+                .selector("direct-export")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if !matches!(this.layer, Layer::DirectMenu(id) if id == conversation_id) {
+                        return;
+                    }
+                    this.open_layer(Layer::ConfirmExport(server_id, conversation_id), window, cx);
+                }))
+                .into_any_element(),
+        );
         if let Some(account_id) = account_id {
             items.extend(
                 self.mute_items(&direct.mute, "direct", cx, move |this, length, cx| {
@@ -1207,6 +1280,49 @@ impl Shell {
             items,
             cx,
         )
+    }
+
+    /// The one read item of a channel or a conversation (ADR 0742): "Mark as read" while the
+    /// place has unread messages, "Mark as unread" while it has none, and no item for a place
+    /// without messages. `prefix` names the selectors, such as `channel-mark-read`.
+    #[allow(clippy::too_many_arguments)]
+    fn read_item(
+        &mut self,
+        prefix: &'static str,
+        server_id: ServerId,
+        place: junto_client_core::model::PlaceId,
+        holds_messages: bool,
+        unread: bool,
+        shown: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !holds_messages {
+            return None;
+        }
+        let item = if unread {
+            MenuItem::new("mark-read", text::MARK_AS_READ)
+                .icon(Icon::CheckDouble)
+                .when(shown, |item| {
+                    item.shortcut(junto_client_core::keybinds::KeyAction::MarkChannelRead)
+                })
+                .selector(format!("{prefix}-mark-read"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state
+                        .update(cx, |state, _| state.mark_place_as_read(server_id, place));
+                }))
+        } else {
+            MenuItem::new("mark-unread", text::MARK_AS_UNREAD)
+                .icon(Icon::Unread)
+                .selector(format!("{prefix}-mark-unread"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state.update(cx, |state, cx| {
+                        state.mark_place_unread(server_id, place, cx)
+                    });
+                }))
+        };
+        Some(item.into_any_element())
     }
 
     fn row_menu(
@@ -1261,6 +1377,22 @@ impl Shell {
         self.state
             .update(cx, |state, cx| state.close_notify_settings(cx));
         self.close_layer(window, cx);
+        if let Some(open) = self.notify_return.take() {
+            self.open_admin(open, window, cx);
+        }
+    }
+
+    /// Opens the notification dialog of a channel from the page "Notifications" of the
+    /// account group; the page opens again when the dialog closes.
+    pub(crate) fn open_notify_settings_from_admin(
+        &mut self,
+        server_id: ServerId,
+        scope: SettingsScope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.notify_return = self.state.read(cx).admin_open();
+        self.open_notify_settings(server_id, scope, window, cx);
     }
 
     pub(crate) fn render_notify_dialog(
@@ -1360,50 +1492,35 @@ impl Shell {
         }))
         .child(help(about_level));
 
-        if let Some(hidden) = panel.hide_text {
-            dialog = dialog.child(
-                div()
-                    .mt(u(12.0))
-                    .flex()
-                    .justify_between()
-                    .child(text::NOTIFICATION_TEXT)
-                    .child(
-                        Toggle::new(
-                            "server-notification-text",
-                            text::NOTIFICATION_TEXT,
-                            !hidden,
-                            (text::ON, text::OFF),
-                        )
-                        .selector("server-notification-text")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if !busy {
-                                this.state.update(cx, |state, cx| {
-                                    state.set_server_hide_text(server_id, !hidden, cx)
-                                });
-                            }
-                        })),
+        if let Some(channel) = &panel.channel {
+            let switches = match scope {
+                SettingsScope::Channel(channel_id) => vec![
+                    (channel_id, MentionSwitch::Roles),
+                    (channel_id, MentionSwitch::Everyone),
+                ],
+                _ => Vec::new(),
+            };
+            let switches = switches
+                .into_iter()
+                .map(|(channel_id, switch)| match switch {
+                    MentionSwitch::Roles => (
+                        channel_id,
+                        MentionSwitch::Roles,
+                        channel.role_mentions,
+                        text::ROLE_MENTIONS,
+                        text::ROLE_MENTIONS_HELP,
+                        "role-mentions",
                     ),
-            );
-        }
-
-        if let (Some(channel), SettingsScope::Channel(channel_id)) = (&panel.channel, scope) {
-            let switches = [
-                (
-                    MentionSwitch::Roles,
-                    channel.role_mentions,
-                    text::ROLE_MENTIONS,
-                    text::ROLE_MENTIONS_HELP,
-                    "role-mentions",
-                ),
-                (
-                    MentionSwitch::Everyone,
-                    channel.everyone_mentions,
-                    text::EVERYONE_MENTIONS,
-                    text::EVERYONE_MENTIONS_HELP,
-                    "everyone-mentions",
-                ),
-            ];
-            for (switch, on, title, sentence, selector) in switches {
+                    MentionSwitch::Everyone => (
+                        channel_id,
+                        MentionSwitch::Everyone,
+                        channel.everyone_mentions,
+                        text::EVERYONE_MENTIONS,
+                        text::EVERYONE_MENTIONS_HELP,
+                        "everyone-mentions",
+                    ),
+                });
+            for (channel_id, switch, on, title, sentence, selector) in switches {
                 dialog = dialog.child(
                     div()
                         .flex()
@@ -1458,7 +1575,7 @@ impl Shell {
                         .selector("dialog-unmute")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.state.update(cx, |state, cx| {
-                                state.set_channel_mute(server_id, channel_id, None, cx);
+                                state.set_scope_mute(server_id, scope, None, cx);
                             });
                         }))
                         .into_any_element(),
@@ -1475,9 +1592,9 @@ impl Shell {
                                     .disabled(busy)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.state.update(cx, |state, cx| {
-                                            state.set_channel_mute(
+                                            state.set_scope_mute(
                                                 server_id,
-                                                channel_id,
+                                                scope,
                                                 Some(length),
                                                 cx,
                                             );
@@ -1492,72 +1609,6 @@ impl Shell {
                 .child(div().mt(u(16.0)).child(group(text::MUTE)))
                 .child(div().flex().flex_wrap().gap(u(6.0)).children(actions))
                 .child(help(state));
-        }
-
-        if let (Some(default), SettingsScope::Workspace(workspace_id)) =
-            (panel.workspace_default, scope)
-        {
-            dialog = dialog.child(div().mt(u(16.0)).child(group(text::WORKSPACE_DEFAULT)));
-            let held = default.level;
-            dialog = if default.may_set {
-                let shown = held;
-                let changing = default.changing;
-                dialog.child(
-                    div().flex().child(
-                        Segmented::new(
-                            "workspace-default",
-                            text::WORKSPACE_DEFAULT,
-                            levels.map(|level| SharedString::from(text::level_name(level))),
-                        )
-                        .selected(
-                            held.and_then(|held| levels.iter().position(|level| *level == held)),
-                        )
-                        .selector("workspace-default")
-                        .on_select({
-                            let select = cx.listener(move |this, index: &usize, _, cx| {
-                                let Some(level) = levels.get(*index).copied() else {
-                                    return;
-                                };
-                                if busy || changing || shown == Some(level) {
-                                    return;
-                                }
-                                this.state.update(cx, |state, cx| {
-                                    state.set_workspace_default(server_id, workspace_id, level, cx);
-                                });
-                            });
-                            move |index, window, cx| select(&index, window, cx)
-                        }),
-                    ),
-                )
-            } else {
-                // A member reads the level and does not set it.
-                dialog.child(
-                    div()
-                        .id("workspace-default-held")
-                        .debug_selector(|| "workspace-default-held".to_owned())
-                        .typeface(theme.types.control, &theme)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .ink(colors.ink)
-                        .child(text::admin::notifications::choice(DefaultChoice::of(held))),
-                )
-            };
-            dialog = dialog.child(
-                crate::ui::notice_slot("workspace-default-status-slot")
-                    .when(default.changing, |slot| {
-                        slot.child(
-                            help(text::admin::SENDING.into())
-                                .debug_selector(|| "workspace-default-sending".to_owned()),
-                        )
-                    })
-                    .when(default.may_set && held.is_none(), |slot| {
-                        slot.child(
-                            help(text::admin::notifications::stated(DefaultChoice::NotSet).into())
-                                .id("workspace-default-not-set")
-                                .debug_selector(|| "workspace-default-not-set".to_owned()),
-                        )
-                    }),
-            );
-            dialog = dialog.child(help(text::WORKSPACE_DEFAULT_HELP.into()));
         }
 
         dialog
@@ -1823,7 +1874,9 @@ impl Shell {
                 .ink(colors.ink_2)
                 .child(label)
         };
-        let (Some(do_not_disturb), Some(daily)) = (&quiet.do_not_disturb, &quiet.daily) else {
+        // "Do not disturb" is a status of each server (ADR 0404); this section holds the
+        // daily quiet time, which the device sends to every server.
+        let Some(daily) = &quiet.daily else {
             return vec![
                 div()
                     .id("quiet-no-server")
@@ -1833,15 +1886,15 @@ impl Shell {
             ];
         };
         let busy = quiet.busy;
-        let on = *do_not_disturb == Agreement::All(true);
         let daily_on = matches!(daily, Agreement::All(Some(_)));
-        let differs = *do_not_disturb == Agreement::Differs || *daily == Agreement::Differs;
+        let differs = *daily == Agreement::Differs;
         let mut rows =
             vec![
                 div()
                     .flex()
                     .items_start()
                     .gap(u(10.0))
+                    .mt(u(10.0))
                     .child(
                         div()
                             .flex_1()
@@ -1851,7 +1904,7 @@ impl Shell {
                                     .flex()
                                     .items_center()
                                     .gap(u(8.0))
-                                    .child(title(text::DO_NOT_DISTURB))
+                                    .child(title(text::DAILY_QUIET))
                                     .when(quiet.quiet_now, |line| {
                                         line.child(
                                             div()
@@ -1863,35 +1916,6 @@ impl Shell {
                                         )
                                     }),
                             )
-                            .child(help(text::DO_NOT_DISTURB_HELP)),
-                    )
-                    .child(
-                        Toggle::new(
-                            "do-not-disturb",
-                            text::DO_NOT_DISTURB,
-                            on,
-                            (text::ON, text::OFF),
-                        )
-                        .selector("do-not-disturb")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if busy {
-                                return;
-                            }
-                            this.state
-                                .update(cx, |state, cx| state.set_do_not_disturb(!on, cx));
-                        })),
-                    )
-                    .into_any_element(),
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(u(10.0))
-                    .mt(u(10.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(title(text::DAILY_QUIET))
                             .child(help(text::DAILY_QUIET_HELP)),
                     )
                     .child(

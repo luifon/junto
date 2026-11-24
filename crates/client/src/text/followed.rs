@@ -10,6 +10,7 @@ pub const FOLLOWING_BY_RULE: &str =
     "You follow this thread because you wrote in it or were named in it.";
 pub const NOT_FOLLOWING: &str = "You do not follow this thread.";
 pub const FOLLOW: &str = "Follow";
+pub const FOLLOWING: &str = "Following";
 pub const STOP_FOLLOWING: &str = "Stop following";
 pub const USE_DEFAULT: &str = "Use the default";
 pub const USE_DEFAULT_HELP: &str =
@@ -35,16 +36,6 @@ pub const fn action(following: bool) -> &'static str {
     if following { STOP_FOLLOWING } else { FOLLOW }
 }
 
-/// The row that shows the further followed threads of a channel. `count`: how many the
-/// client holds; absent while the server lists further ones.
-pub fn show_more(count: Option<usize>) -> String {
-    match count {
-        None => SHOW_MORE.to_owned(),
-        Some(1) => "Show 1 more followed thread".to_owned(),
-        Some(count) => format!("Show {count} more followed threads"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,13 +59,6 @@ mod tests {
     fn the_action_is_the_opposite_of_what_holds() {
         assert_eq!(action(true), "Stop following");
         assert_eq!(action(false), "Follow");
-    }
-
-    #[test]
-    fn the_row_of_further_threads_counts_them_when_the_client_holds_them_all() {
-        assert_eq!(show_more(Some(1)), "Show 1 more followed thread");
-        assert_eq!(show_more(Some(5)), "Show 5 more followed threads");
-        assert_eq!(show_more(None), "Show more followed threads");
     }
 
     #[test]

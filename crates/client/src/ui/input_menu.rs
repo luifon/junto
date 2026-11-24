@@ -118,6 +118,16 @@ impl Edit {
             Self::SelectAll => Box::new(gpui_base::input::SelectAll),
         }
     }
+
+    /// The letter of the keys of the system for the edit.
+    const fn letter(self) -> char {
+        match self {
+            Self::Cut => 'X',
+            Self::Copy => 'C',
+            Self::Paste => 'V',
+            Self::SelectAll => 'A',
+        }
+    }
 }
 
 impl Render for Popup {
@@ -146,6 +156,7 @@ impl Render for Popup {
             };
             MenuItem::new(selector, title)
                 .selector(selector)
+                .keys(text::editing_keys(edit.letter()))
                 .disabled(disabled)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.close(window, cx);

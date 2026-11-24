@@ -281,14 +281,6 @@ async fn format_4_applying_a_file_keeps_the_rules_of_people() {
         json!({ "deny": ["attach_files"] }),
     )
     .await;
-    let workspace_person = format!("/api/v1/workspaces/{workspace}/members/{person}/permissions");
-    put_rule(
-        server,
-        owner,
-        &workspace_person,
-        json!({ "deny": ["add_reactions"] }),
-    )
-    .await;
     let server_person = format!("/api/v1/accounts/{person}/server-permissions");
     put_rule(
         server,
@@ -303,7 +295,6 @@ async fn format_4_applying_a_file_keeps_the_rules_of_people() {
     };
     let people_before = (
         read(category_person.replace(&format!("/people/{person}"), "")).await,
-        read(workspace_person.clone()).await,
         read(server_person.clone()).await,
     );
 
@@ -366,8 +357,7 @@ async fn format_4_applying_a_file_keeps_the_rules_of_people() {
     let category_rules: Value =
         read(category_person.replace(&format!("/people/{person}"), "")).await;
     assert_eq!(person_rule(&category_rules), person_rule(&people_before.0));
-    assert_eq!(read(workspace_person.clone()).await, people_before.1);
-    assert_eq!(read(server_person.clone()).await, people_before.2);
+    assert_eq!(read(server_person.clone()).await, people_before.1);
 
     // Syncing the channel with its own rule of a person again replaces that rule with the
     // rules of the category, as the sync route does.

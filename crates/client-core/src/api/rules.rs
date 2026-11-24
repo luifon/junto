@@ -8,7 +8,7 @@ use junto_protocol::roles::{
 };
 use junto_protocol::structure::{
     CategoryRules, ChangeChannelOverride, ChannelPermissions, ChannelRules, OverrideState,
-    PermissionRule, PersonPermissions, RuleSubject, SetChannelOverride,
+    PermissionRule, RuleSubject, SetChannelOverride,
 };
 use junto_protocol::{ServerPermission, WorkspacePermission};
 
@@ -102,39 +102,6 @@ impl ServerApi {
             category_path(workspace_id, category_id),
             subject_path(subject)
         );
-        let change = ChangeChannelOverride { permission, state };
-        self.send(Method::Patch, path, &change).await
-    }
-
-    /// The workspace permissions that are allowed to or denied to one member.
-    pub async fn member_permissions(
-        &self,
-        workspace_id: WorkspaceId,
-        account_id: AccountId,
-    ) -> Result<PersonPermissions, ApiError> {
-        self.get(format!(
-            "/workspaces/{workspace_id}/members/{account_id}/permissions"
-        ))
-        .await
-    }
-
-    pub async fn set_member_permissions(
-        &self,
-        workspace_id: WorkspaceId,
-        account_id: AccountId,
-        sets: &SetChannelOverride,
-    ) -> Result<PersonPermissions, ApiError> {
-        let path = format!("/workspaces/{workspace_id}/members/{account_id}/permissions");
-        self.send(Method::Put, path, sets).await
-    }
-
-    pub async fn change_member_permission(
-        &self,
-        (workspace_id, account_id): (WorkspaceId, AccountId),
-        permission: WorkspacePermission,
-        state: OverrideState,
-    ) -> Result<PersonPermissions, ApiError> {
-        let path = format!("/workspaces/{workspace_id}/members/{account_id}/permissions");
         let change = ChangeChannelOverride { permission, state };
         self.send(Method::Patch, path, &change).await
     }

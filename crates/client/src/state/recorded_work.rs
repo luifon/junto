@@ -90,9 +90,22 @@ impl AppState {
     /// whose files the page of the recordings lists is held open too; its lines are not
     /// read.
     pub(super) fn follow_recordings(&mut self, shown: Shown, cx: &mut Context<Self>) {
-        let with_lines = self.wanted_recordings(shown);
+        let mut with_lines = self.wanted_recordings(shown);
+        // The transcript of the panel of the call window (ADR 0741).
+        if let Some(panel) = self.call_window_panel()
+            && let super::call_window::CallWindowShows::Transcript(recording_id) = panel.shows
+            && !with_lines.contains(&(panel.server_id, recording_id))
+        {
+            with_lines.push((panel.server_id, recording_id));
+        }
         let mut wanted = with_lines.clone();
         if let Some(key) = self.admin_recording_files()
+            && !wanted.contains(&key)
+        {
+            wanted.push(key);
+        }
+        // The recording whose files the tab "Recordings" of the Files panel lists.
+        if let Some(key) = self.channel_recording_files()
             && !wanted.contains(&key)
         {
             wanted.push(key);
@@ -585,6 +598,7 @@ impl AppState {
             self.selection.conversations.remove(&server_id);
         }
         self.selection.transcript = Some((server_id, channel_id, recording_id));
+        self.selection.threads = None;
         self.selection.thread = None;
         self.selection.pins = None;
         self.known.fork = None;

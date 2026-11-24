@@ -88,7 +88,7 @@ impl Window {
     }
 
     pub(crate) fn open_notices(&mut self) {
-        self.click("notices-row");
+        self.click("activity-button");
         self.until("the notices are listed", |window| {
             window
                 .notices()
@@ -295,18 +295,30 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
         window.selected_channel() == random
     });
 
-    // "Do not disturb" is a switch of the settings. The server holds it.
+    // "Do not disturb" is a status of the server (ADR 0404): with it, the account is in
+    // its quiet time, which Settings, Notifications states.
+    let handle = window.handle();
+    let set_quiet = |world: &World, on: bool| {
+        let settings = junto_client_core::protocol::discovery::NotificationSettings {
+            do_not_disturb: on,
+            ..world
+                .run(handle.api().notification_settings(SettingsScope::Account))
+                .unwrap()
+        };
+        world
+            .run(
+                handle
+                    .api()
+                    .set_notification_settings(SettingsScope::Account, &settings),
+            )
+            .unwrap();
+    };
     window.click("app-settings");
-    window.click("settings-section-quiet");
-    assert!(window.shows("settings-dialog") && window.shows("do-not-disturb"));
-    assert_eq!(
-        window.view().quiet.do_not_disturb,
-        Some(Agreement::All(false))
-    );
-    window.click_in_settings("do-not-disturb");
-    window.until("do not disturb is on", |window| {
-        let quiet = window.view().quiet;
-        quiet.do_not_disturb == Some(Agreement::All(true)) && !quiet.busy && quiet.quiet_now
+    window.click("settings-section-notifications");
+    assert!(window.shows("settings-dialog") && !window.shows("do-not-disturb"));
+    set_quiet(&world, true);
+    window.until("the quiet time holds", |window| {
+        window.view().quiet.quiet_now
     });
     assert!(window.shows("quiet-now"));
 
@@ -321,10 +333,9 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
 
     // The quiet time ends, and the list holds its notices. They are not told
     // afterwards; a later one is.
-    window.click_in_settings("do-not-disturb");
-    window.until("do not disturb is off", |window| {
-        let quiet = window.view().quiet;
-        quiet.do_not_disturb == Some(Agreement::All(false)) && !quiet.busy
+    set_quiet(&world, false);
+    window.until("the quiet time ends", |window| {
+        !window.view().quiet.quiet_now
     });
     window.until("the notices of the quiet time", |window| {
         window.unread_notices() == 2
@@ -512,43 +523,38 @@ fn a_person_sets_the_level_and_the_mute_of_a_channel(cx: &mut TestAppContext) {
         row.mute == Mute::Off && !row.unread.muted
     });
 
-    // The settings of the server and of the workspace open from the menu of the server.
-    window.click("server-menu-button");
+    // The levels of the server and of the workspace are on the page "Notifications" of the
+    // account group, which the entries of the menus of the server and of the workspace open.
+    let server_level = |window: &mut Window| match window.admin().map(|admin| admin.scope) {
+        Some(junto_client::state::admin::view::Scope::Server {
+            page: junto_client::state::admin::view::ServerPage::OwnNotifications(page),
+            ..
+        }) if !page.busy => Some(page.server_level),
+        _ => None,
+    };
+    window.open_server_menu();
     window.click("server-notifications");
-    window.until("the settings of the server", |window| {
-        window
-            .view()
-            .notify
-            .is_some_and(|panel| panel.scope == SettingsScope::Account)
+    window.until("the page of the own levels", |window| {
+        server_level(window) == Some(NotificationLevel::Mentions)
     });
     assert_eq!(
-        window.view().notify.unwrap().name,
-        window.view().selected.unwrap().name
+        window.admin().map(|admin| admin.server_id),
+        Some(server_id),
+        "the page belongs to the shown server"
     );
-    window.click("notify-level-2");
+    window.click("own-notify-server-2");
     window.until("the level of the server", |window| {
-        level(window) == Some(NotificationLevel::Nothing)
+        server_level(window) == Some(NotificationLevel::Nothing)
     });
-    window.click("dialog-close");
-    window.click("server-menu-button");
+    window.press("escape");
+    window.click("workspace-menu-button");
     window.click("workspace-notifications");
-    window.until("the settings of the workspace", |window| {
-        window.view().notify.is_some_and(|panel| {
-            matches!(panel.scope, SettingsScope::Workspace(_))
-                && panel.workspace_default.is_some_and(|default| {
-                    // The workspace of a new server sets no level (ADR 0412).
-                    default.level.is_none() && !default.may_set
-                })
-        })
+    window.until("the same page from the entry of the workspace", |window| {
+        window.shows("own-notify-workspace-0")
     });
-    // A member does not set the level of the workspace for the other members.
-    assert!(window.shows("workspace-default-held"));
-    assert_eq!(
-        window.view().notify.unwrap().server_id,
-        server_id,
-        "the dialog belongs to the shown server"
-    );
-    window.click("dialog-close");
+    // The level that the administrators set for every member is not on this page.
+    assert!(!window.shows("notification-default"));
+    window.press("escape");
 }
 
 #[gpui::test]
@@ -831,6 +837,7 @@ fn at_the_bottom_of_the_rows_of_a_jump_one_newer_page_arrives_below_the_view(
                 document: document(&text),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             };
             world
                 .run(
@@ -1049,49 +1056,6 @@ fn a_pressed_notification_brings_the_window_to_the_front(cx: &mut TestAppContext
         assert!(window.cx.update(|window, _| window.is_window_active()));
     }
     window.close();
-}
-
-#[gpui::test]
-fn a_workspace_default_result_keeps_the_dialog_controls_in_place(cx: &mut TestAppContext) {
-    let world = World::new();
-    let mut server = world.server("Studio");
-    let proxy = world.run(crate::support::FaultProxy::start(&server));
-    let (_directory, mut window) = crate::harness::named(cx, "Owner");
-    window.find_server(&proxy.address());
-    window.join_with_code(&server.owner_code().unwrap());
-    window.until_ready();
-    window.click("server-menu-button");
-    window.click("workspace-notifications");
-    window.until("the workspace default is drawn", |window| {
-        window.shows("workspace-default-not-set") && window.shows("notify-level-0")
-    });
-    let before = window.cx.debug_bounds("notify-level-0").unwrap();
-    proxy.hold_ending("/notification-default");
-    window.click("workspace-default-1");
-    window.until("the default request is pending", |window| {
-        window.shows("workspace-default-sending")
-    });
-    let pending = window.cx.debug_bounds("notify-level-0").unwrap();
-    proxy.release();
-    window.until("the default request has completed", |window| {
-        window
-            .view()
-            .notify
-            .and_then(|panel| panel.workspace_default)
-            .is_some_and(|default| {
-                !default.changing && default.level == Some(NotificationLevel::Mentions)
-            })
-    });
-    let completed = window.cx.debug_bounds("notify-level-0").unwrap();
-    assert_eq!(pending, completed);
-    assert_eq!(before, completed);
-
-    server.stop();
-    window.click("workspace-default-0");
-    window.until("the default request failure is drawn", |window| {
-        window.shows("notify-refused")
-    });
-    assert_eq!(window.cx.debug_bounds("notify-level-0"), Some(before));
 }
 
 #[gpui::test]

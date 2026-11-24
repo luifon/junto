@@ -99,10 +99,13 @@ pub async fn prepare(
             message_id: id,
             verified: true,
         }];
+        // The comment of a forward that is forwarded again stays above its content: it is
+        // part of that message (ADR 0408). Its references are frozen with the rest.
         blocks.extend(
             source
-                .document
+                .comment
                 .iter()
+                .chain(source.document.iter())
                 .flat_map(Document::content_blocks)
                 .cloned(),
         );
@@ -167,4 +170,28 @@ pub async fn verify_files(
         ));
     }
     Ok(())
+}
+
+/// The comment of a forward as the server stores it (ADR 0408): only with a document that
+/// holds a forward origin, an ordinary document of at most 16 KiB without an origin of its
+/// own. A comment without content is no comment.
+pub fn comment(document: &Document, comment: Option<&Document>) -> ApiResult<Option<Document>> {
+    let Some(comment) = comment else {
+        return Ok(None);
+    };
+    if comment.blocks.is_empty() {
+        return Ok(None);
+    }
+    if document.forward_origins() == 0 {
+        return Err(ApiError::invalid("a comment belongs to a forward"));
+    }
+    if comment.forward_origins() > 0 {
+        return Err(ApiError::invalid("a comment has no forward origin"));
+    }
+    let bytes = serde_json::to_vec(comment).map_err(|error| ApiError::internal(&error))?;
+    if bytes.len() > junto_protocol::message::MAX_COMMENT_BYTES {
+        return Err(ApiError::invalid("a comment has at most 16 KiB"));
+    }
+    super::document::validate(comment)?;
+    Ok(super::document::has_content(comment).then(|| comment.clone()))
 }

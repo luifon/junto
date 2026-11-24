@@ -101,7 +101,32 @@ impl Shell {
             let permission = row.permission;
             let name = txt::name(system, permission);
             let sentence = txt::state(system, permission, row.access);
+            let line = txt::state_line(system, permission, row.access);
+            let steps = txt::steps(system, permission, row.access);
+            let open = self.permission_steps.contains(&permission);
             let warned = matches!(row.access, Access::Refused | Access::Restricted);
+            let how = steps.is_some().then(|| {
+                Button::new(gpui::SharedString::from(format!(
+                    "permission-how-{}",
+                    key(permission)
+                )))
+                .label(if open { txt::HIDE_HOW } else { txt::HOW })
+                .kind(crate::ui::ButtonKind::Ghost)
+                .h(u(24.0))
+                .px(u(6.0))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(index) = this
+                        .permission_steps
+                        .iter()
+                        .position(|held| *held == permission)
+                    {
+                        this.permission_steps.remove(index);
+                    } else {
+                        this.permission_steps.push(permission);
+                    }
+                    cx.notify();
+                }))
+            });
             let button = self.permission_button(action_selector(permission), permission, cx);
             parts.push(
                 div()
@@ -136,17 +161,41 @@ impl Shell {
                             .child(
                                 div()
                                     .mt(u(3.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap(u(6.0))
+                                    .child(
+                                        div()
+                                            .typeface(theme.types.small, theme)
+                                            .ink(if warned {
+                                                colors.terracotta_deep
+                                            } else {
+                                                colors.ink_2
+                                            })
+                                            .debug_selector(move || {
+                                                format!("permission-state-{}", key(permission))
+                                            })
+                                            .child(line),
+                                    )
+                                    .children(how.map(|how| {
+                                        div()
+                                            .flex_none()
+                                            .debug_selector(move || {
+                                                format!("permission-how-{}", key(permission))
+                                            })
+                                            .child(how)
+                                    })),
+                            )
+                            .children(steps.filter(|_| open).map(|steps| {
+                                div()
+                                    .mt(u(3.0))
                                     .typeface(theme.types.small, theme)
-                                    .ink(if warned {
-                                        colors.terracotta_deep
-                                    } else {
-                                        colors.ink_2
-                                    })
+                                    .ink(colors.ink_2)
                                     .debug_selector(move || {
-                                        format!("permission-state-{}", key(permission))
+                                        format!("permission-steps-{}", key(permission))
                                     })
-                                    .child(sentence),
-                            ),
+                                    .child(steps)
+                            })),
                     )
                     .children(button)
                     .into_any_element(),

@@ -430,6 +430,8 @@ pub struct PendingMessage {
     pub document: Document,
     pub reply_to: Option<MessageId>,
     pub files: Vec<PendingFile>,
+    /// The comment of a forward (ADR 0408).
+    pub comment: Option<Document>,
     pub state: SendState,
     /// The time of this device at which the person sent the message.
     pub created_at: OffsetDateTime,
@@ -460,6 +462,7 @@ impl PendingMessage {
             document,
             reply_to,
             files,
+            comment: None,
             state,
             created_at,
             after: 0,

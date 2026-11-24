@@ -14,7 +14,7 @@ Devices:
 
 - A second device is added with a short-lived one-time code.
 - The approval names the public key of the new device.
-- One flow links all the servers of the first device: the new device creates a device key per server, and the first device approves each one.
+- One flow links the servers that the person chooses on the first device, with one code: the new device creates a device key per server, and the first device approves each one. The first server carries the other servers and their codes between the two devices in a relay that only the two devices read, with each message signed by the sender and encrypted to the receiver (ADR 0716).
 - A user can list the devices of the account and remove one. Removing a device ends the sessions of that device.
 
 Recovery:
@@ -30,5 +30,5 @@ Recovery:
 - A person who has lost every device of an account depends on the server owner to return to it.
 - The server owner can give a device access to any account, including its direct messages. Each use is recorded and is shown to the account.
 - An administrator who is not the server owner cannot perform a recovery (ADR 0301).
-- Linking a device needs the first device at hand, and the first device approves one device key per server.
+- Linking a device needs the first device at hand, and the first device approves one device key per server. The person types one code and compares one device code.
 - A removed device cannot log in again without a new link or a recovery.

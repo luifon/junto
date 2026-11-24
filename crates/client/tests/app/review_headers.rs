@@ -20,10 +20,13 @@ fn triggers(window: &mut Window, target: &str, menu: &str) {
                 .cx
                 .debug_bounds(crate::harness::selector(target.to_owned()))
                 .unwrap();
-            let menu = window.cx.debug_bounds("row-context-menu").unwrap();
+            let menu = window
+                .cx
+                .debug_bounds(crate::harness::selector(menu.to_owned()))
+                .unwrap();
             assert!(
-                menu.left() <= row.left() + gpui::px(16.0),
-                "the row keyboard menu must use the row's anchor"
+                menu.top() >= row.top() && menu.left() <= row.right(),
+                "the keyboard menu of the row opens at the row"
             );
         }
         assert!(
@@ -57,9 +60,14 @@ fn server_rows_in_both_book_forms_offer_captured_actions_without_selecting_the_t
             state.server(target).unwrap().entry().connection_mode
         });
         window.right_click_named("server-0".to_owned());
-        assert!(window.shows("row-context-menu"));
+        assert!(window.shows("server-menu"));
         assert_eq!(window.view().selected.unwrap().id, other);
-        window.click_named("context-action:Keep connected in the background".to_owned());
+        // The item is a check item: its name tells whether it is checked.
+        if window.shows("keep-connected-checked") {
+            window.click("keep-connected-checked");
+        } else {
+            window.click("keep-connected");
+        }
         window.until(
             "only the captured server changes its connection mode",
             |window| {
@@ -69,7 +77,8 @@ fn server_rows_in_both_book_forms_offer_captured_actions_without_selecting_the_t
             },
         );
         assert_eq!(window.view().selected.unwrap().id, other);
-        triggers(&mut window, "server-0", "row-context-menu");
+        window.press("escape");
+        triggers(&mut window, "server-0", "server-menu");
     }
 }
 
@@ -81,7 +90,7 @@ fn server_workspace_text_voice_and_direct_titles_have_pointer_and_keyboard_menus
     let server = world.server("Example Studio");
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
-    triggers(&mut window, "server-title", "row-context-menu");
+    triggers(&mut window, "server-title", "server-menu");
     triggers(&mut window, "workspace-title", "row-context-menu");
     triggers(&mut window, "channel-title", "row-context-menu");
     crate::calls::voice_channel(&world, &admin, &mut window, "Standup");
@@ -97,6 +106,7 @@ fn server_workspace_text_voice_and_direct_titles_have_pointer_and_keyboard_menus
                 document: document("A conversation title"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -124,7 +134,7 @@ fn server_workspace_text_voice_and_direct_titles_have_pointer_and_keyboard_menus
                 })
         },
     );
-    triggers(&mut window, "workspace-title", "row-context-menu");
+    triggers(&mut window, "workspace-title", "server-menu");
 }
 
 #[gpui::test]

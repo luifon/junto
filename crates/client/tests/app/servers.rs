@@ -1,13 +1,11 @@
-//! Several servers in one window against the real server (ADR 0107, ADR 0780, ADR 0784):
+//! Several servers in one window against the real server (ADR 0107, ADR 0780):
 //! a second server that is joined by approval, a notice from a server in the background,
-//! the order of the server book, the notice of a newer build, the version of a server in its
-//! menu, and the page of the recordings of a workspace.
+//! the order of the server book, the notice of a newer build, and the version of a server in
+//! its menu.
 
 use std::time::{Duration, Instant};
 
 use gpui::TestAppContext;
-use junto_client::state::admin::view::recordings::RecordingsRead;
-use junto_client::state::admin::view::{Scope, ServerPage};
 use junto_client::state::book::CheckShown;
 use junto_client::state::view::{ServerRelease, ServerStatus};
 use junto_client::text;
@@ -20,7 +18,7 @@ use junto_client_core::version::ServerVersion;
 
 use crate::harness::{Admin, Window, World, member, named, open, open_with_updates};
 use crate::messages::document;
-use crate::support::{Fault, FaultProxy, TestServer};
+use crate::support::TestServer;
 
 impl Window {
     pub(crate) fn server_names(&mut self) -> Vec<String> {
@@ -66,46 +64,6 @@ impl Window {
         self.in_shell(|shell, window, cx| shell.open_version_settings(window, cx));
         assert!(self.shows("settings-dialog") && self.shows("version-section"));
     }
-
-    /// Checks the place and the outer form of a line of the channel column that is
-    /// directly above the profile strip, in design pixels at 100 %: 30 high, 8 from each
-    /// side of the column and 8 above the strip. The column has a border of 1 at its
-    /// right side.
-    #[track_caller]
-    fn above_the_profile_strip(&mut self, line: &'static str) {
-        self.run_tasks();
-        let bounds = |window: &mut Self, name: &'static str| {
-            window
-                .cx
-                .debug_bounds(name)
-                .unwrap_or_else(|| panic!("{name} is not drawn"))
-        };
-        let (column, strip) = (
-            bounds(self, "channel-column"),
-            bounds(self, "profile-strip"),
-        );
-        let line = bounds(self, line);
-        let measures = [
-            ("height", line.size.height, 30.0),
-            ("below", strip.top() - line.bottom(), 8.0),
-            ("left", line.left() - column.left(), 8.0),
-            ("right", column.right() - line.right(), 9.0),
-        ];
-        for (name, measure, expected) in measures {
-            let measure = f32::from(measure);
-            assert!(
-                (measure - expected).abs() < 0.01,
-                "{name} is {measure} and not {expected}"
-            );
-        }
-    }
-
-    pub(crate) fn open_server_menu(&mut self) {
-        if !self.shows("server-menu") {
-            self.click("server-menu-button");
-        }
-        assert!(self.shows("server-menu"));
-    }
 }
 
 impl Admin {
@@ -122,6 +80,7 @@ impl Admin {
             document: document(text),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world
             .run(api.send_message(PlaceId::Direct(conversation.id), &message))
@@ -291,9 +250,7 @@ fn a_server_in_the_background_shows_its_unread_signs_and_a_server_that_is_not_ke
     window.click_named(format!("direct-row:{conversation}"));
     window.until_message("Hello from Harbor");
     window.until("everything of the second server is read", |window| {
-        if window.shows("mark-as-read") {
-            window.click("mark-as-read");
-        }
+        window.mark_shown_as_read();
         let view = window.view();
         if view
             .lists()
@@ -380,6 +337,7 @@ fn a_server_is_moved_in_the_server_book_and_a_second_start_shows_the_same_order(
 
     // The menu of the selected server has the two items. The second server is the last.
     window.open_server_menu();
+    window.click("menu-arrange");
     assert!(window.shows("menu-move-up") && window.shows("menu-move-down"));
     // "Move down" does nothing at the end.
     window.click("menu-move-down");
@@ -440,7 +398,7 @@ fn a_server_is_moved_in_the_server_book_and_a_second_start_shows_the_same_order(
 }
 
 #[gpui::test]
-fn a_newer_version_is_told_above_the_profile_strip_and_the_line_opens_the_version(
+fn a_newer_version_is_told_once_in_the_version_block_whose_button_opens_the_version(
     cx: &mut TestAppContext,
 ) {
     const PAGE: &str = "https://junto.example.test/releases/0.4.0";
@@ -461,7 +419,7 @@ fn a_newer_version_is_told_above_the_profile_strip_and_the_line_opens_the_versio
         check(window) == CheckShown::Current
     });
     assert_eq!(source.checks(), 1);
-    assert!(!window.shows("update-notice"));
+    assert!(!window.shows("client-version-action"));
     assert_eq!(window.view().update, None);
 
     // The settings state the version of this build and that it is the newest.
@@ -544,61 +502,42 @@ fn a_newer_version_is_told_above_the_profile_strip_and_the_line_opens_the_versio
         "Junto 0.4.0 is available."
     );
 
-    // The server book is empty: the channel column holds the profile strip alone, and
-    // the line is above it.
+    // The version block of the server book is the one notice: the version with its button
+    // beside it. The channel column draws no line above the profile strip.
+    let told = |window: &mut Window| {
+        window.shows("client-version-action") && !window.shows("update-notice")
+    };
     assert!(window.view().servers.is_empty());
-    assert!(window.shows("update-notice"));
-    window.above_the_profile_strip("update-notice");
+    assert!(told(&mut window));
+    let number = window.cx.debug_bounds("client-version-number").unwrap();
+    let button = window.cx.debug_bounds("client-version-action").unwrap();
+    assert!(
+        button.left() >= number.right() && button.top() < number.bottom(),
+        "the button {button:?} is beside the version {number:?}"
+    );
 
-    // A server that shows its lists: the line is in its channel column, and the server
-    // book holds nothing of the notice. No control puts the line away.
+    // A server that shows its lists: the block stays the one notice.
     let world = World::new();
     let server = world.server("Harbor");
     window.find_server(&server.address());
     window.join_with_code(&server.owner_code().unwrap());
     window.until_ready();
-    assert!(window.shows("channel-list") && window.shows("update-notice"));
-    window.above_the_profile_strip("update-notice");
-    for gone in ["update-dismiss", "update-details", "update-notice-icon"] {
-        assert!(!window.shows(gone), "{gone} is drawn");
-    }
+    assert!(window.shows("channel-list") && told(&mut window));
 
-    // The whole line is one control. A click opens the settings, which hold the section
-    // "Version".
-    window.click("update-notice");
+    // This copy installs nothing: the button opens the settings at the section "Version".
+    window.click("client-version-action");
     assert!(window.shows("settings-dialog") && window.shows("version-section"));
     assert!(window.shows("release-page") && window.shows("version-no-install"));
     assert!(window.in_shell(|shell, _, _| shell.is_settings_open()));
     window.press("escape");
     assert!(!window.shows("settings-dialog"));
 
-    // The line is a stop of the keyboard, and Enter and Space activate it.
-    let focused = |window: &mut Window| {
-        window.in_shell(|shell, window, _| shell.update_notice_is_focused(window))
-    };
-    assert!(focused(&mut window), "the focus returns to the line");
-    window.press("tab");
-    assert!(!focused(&mut window));
-    window.press("shift-tab");
-    assert!(focused(&mut window));
-    for key in ["enter", "space"] {
-        window.press(key);
-        assert!(
-            window.shows("settings-dialog") && window.shows("version-section"),
-            "{key} does not open the section"
-        );
-        window.press("escape");
-        assert!(!window.shows("settings-dialog"));
-        assert!(focused(&mut window));
-    }
-
-    // The collapsed server book changes nothing of the line.
+    // The collapsed server book keeps the button of the notice.
     window.click("collapse-server-book");
     window.until("the server book is collapsed", |window| {
         window.shows("expand-server-book")
     });
-    assert!(window.shows("update-notice") && !window.shows("update-notice-icon"));
-    window.above_the_profile_strip("update-notice");
+    assert!(told(&mut window));
     window.click("expand-server-book");
     window.until("the server book is expanded", |window| {
         window.shows("collapse-server-book")
@@ -613,9 +552,7 @@ fn a_newer_version_is_told_above_the_profile_strip_and_the_line_opens_the_versio
         source.checks() == checks + 1
     });
     window.press("escape");
-    window.stays("the line stays", Duration::from_millis(400), |window| {
-        window.shows("update-notice")
-    });
+    window.stays("the notice stays", Duration::from_millis(400), told);
 
     // A second server whose administrator has not answered shows a state panel. The
     // channel column is drawn with its profile strip, and the line with it.
@@ -631,8 +568,7 @@ fn a_newer_version_is_told_above_the_profile_strip_and_the_line_opens_the_versio
     });
     window.click("close-join");
     assert!(window.shows("waiting-for-approval") && !window.shows("channel-list"));
-    assert!(window.shows("update-notice"));
-    window.above_the_profile_strip("update-notice");
+    assert!(told(&mut window));
 
     // A release without a page shows no address, and the line stays.
     let newest = Version::new(0, 5, 0);
@@ -657,7 +593,7 @@ fn a_newer_version_is_told_above_the_profile_strip_and_the_line_opens_the_versio
     });
     assert!(!window.shows("copy-release-page"));
     window.press("escape");
-    assert!(window.shows("update-notice"));
+    assert!(told(&mut window));
 
     // The source offers the build that runs again: the line is gone.
     source.set(release(build, None));
@@ -673,15 +609,15 @@ fn a_newer_version_is_told_above_the_profile_strip_and_the_line_opens_the_versio
         check(window) == CheckShown::Current
     });
     window.press("escape");
-    assert!(!window.shows("update-notice"));
+    assert!(!window.shows("client-version-action"));
     assert_eq!(window.view().update, None);
 
     // A second start with a newer version shows the line after its first check.
     source.set(release(newest, None));
     window.close();
     let mut again = open_with_updates(cx, directory.path(), source.clone(), build);
-    again.until("the line is shown after a start", |window| {
-        window.shows("update-notice")
+    again.until("the notice is shown after a start", |window| {
+        window.shows("client-version-action")
     });
 }
 
@@ -783,7 +719,7 @@ fn the_application_without_a_source_of_releases_shows_no_notice_and_asks_nothing
     cx: &mut TestAppContext,
 ) {
     let (_directory, mut window) = named(cx, "Luca");
-    assert!(!window.shows("update-notice"));
+    assert!(!window.shows("client-version-action"));
     assert_eq!(window.view().update, None);
     window.version_settings();
     assert!(window.shows("version-section") && window.shows("version-build"));
@@ -798,95 +734,6 @@ fn the_application_without_a_source_of_releases_shows_no_notice_and_asks_nothing
     assert!(!version.can_check && !version.checking);
 }
 
-/// The page of the recordings that the open administration shows.
-fn recordings_page(
-    window: &mut Window,
-) -> Option<junto_client::state::admin::view::recordings::RecordingsPage> {
-    window.run_tasks();
-    let view = window
-        .state
-        .read_with(&window.cx, |state, _| state.admin_view())?;
-    match view.scope {
-        Scope::Server {
-            page: ServerPage::Recordings(page),
-            ..
-        } => Some(page),
-        _ => None,
-    }
-}
-
-#[gpui::test]
-fn a_member_reads_the_recordings_of_a_workspace_that_has_none_and_a_read_that_failed_again(
-    cx: &mut TestAppContext,
-) {
-    let world = World::new();
-    let server = world.server("Acme Studio");
-    let admin = world.owner(&server);
-    let proxy = world.run(FaultProxy::start(&server));
-    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
-    let workspace_id = window.view().workspace().unwrap().id;
-    // One read asks for the 50 newest recordings.
-    let path = format!("/api/v1/workspaces/{workspace_id}/recordings?limit=50");
-
-    // A member has the page in the group of the shown workspace.
-    window.open_server_menu();
-    window.click("menu-administration");
-    window.until("the administration is open", |window| {
-        window.shows("admin") && window.shows("admin-nav-recordings")
-    });
-    // The first read gets no answer: the page states the failure with "Read again".
-    proxy.fail(&path, [Fault::Cut; 8]);
-    window.click("admin-nav-recordings");
-    window.until("the read failed", |window| {
-        window.shows("recordings-failed")
-    });
-    let page = recordings_page(&mut window).unwrap();
-    assert!(matches!(
-        page.state,
-        RecordingsRead::Failed { older: false, .. }
-    ));
-    assert!(page.rows.is_empty());
-    assert!(window.shows("recordings-retry"));
-    assert!(!window.shows("recordings-empty") && !window.shows("recordings-older"));
-    assert!(!proxy.seen(&path).is_empty());
-
-    // The server answers again: the list is empty, and the page says so.
-    window.until("the list was read", |window| {
-        if window.shows("recordings-retry") {
-            window.click("recordings-retry");
-        }
-        window.shows("recordings-empty")
-    });
-    let page = recordings_page(&mut window).unwrap();
-    assert_eq!(page.state, RecordingsRead::Loaded);
-    assert_eq!(page.workspace_id, workspace_id);
-    assert!(page.rows.is_empty() && !page.older && !page.at_bound);
-    assert!(!window.shows("recordings-failed") && !window.shows("recordings-older"));
-    assert!(!window.shows("recordings-bound"));
-    assert!(window.shows("recordings-reload") && window.shows("recordings-count"));
-    // Every request asked for the first page, and for nothing else of the recordings.
-    let all = proxy.all();
-    assert!(
-        all.iter()
-            .filter(|seen| seen.path.contains("/recordings"))
-            .all(|seen| seen.path == path && seen.method == "GET")
-    );
-
-    // "Read again" reads the list again.
-    let reads = proxy.seen(&path).len();
-    window.click("recordings-reload");
-    window.until("the list was read again", |window| {
-        proxy.seen(&path).len() > reads && window.shows("recordings-empty")
-    });
-
-    // The page offers no player and no control that saves or removes a recording.
-    for absent in ["recording-play", "recording-save", "recording-remove"] {
-        assert!(!window.shows(absent), "{absent}");
-    }
-    window.click("admin-close");
-    assert!(!window.shows("admin"));
-}
-
 /// Finding 11 of the first live test: the menu of a server kept an empty space for a
 /// refusal of a move between "Move down" and the next item. The refusal now follows the
 /// last item.
@@ -897,6 +744,7 @@ fn the_server_menu_has_no_empty_space_after_its_move_items(cx: &mut TestAppConte
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Ana");
     window.open_server_menu();
+    window.click("menu-arrange");
     // The item after the move items is the choice of the group of the server (ADR 0775).
     window.until("the menu offers the group of the server", |window| {
         window.shows("menu-move-down") && window.shows("menu-server-group")

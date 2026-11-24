@@ -50,6 +50,18 @@ impl DeviceKey {
         PublicKey::from_bytes(self.signing.verifying_key().to_bytes())
     }
 
+    /// The X25519 secret that belongs to this key, for the relay of a device link: a message
+    /// that the other device encrypts to the public key of this one is opened with it
+    /// (ADR 0104).
+    pub(crate) fn exchange_secret(&self) -> Zeroizing<[u8; SEED_LENGTH]> {
+        Zeroizing::new(self.signing.to_scalar_bytes())
+    }
+
+    /// Signs a message of the relay of a device link (ADR 0104).
+    pub(crate) fn sign_relay(&self, message: &[u8]) -> Signature {
+        Signature::from_bytes(self.signing.sign(message).to_bytes())
+    }
+
     /// Only the code that has compared a challenge with what the client asked for signs
     /// (`api::proof`).
     pub(crate) fn sign(&self, message: &[u8]) -> Signature {

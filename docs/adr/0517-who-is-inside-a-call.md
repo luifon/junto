@@ -41,7 +41,7 @@ What an account gets before it is inside:
 The setting that a call keeps:
 
 - A call stores the setting "hides who is inside" that its voice channel had when the record of the call was created. The database copies the value and keeps it: a statement that states another value for an existing call changes nothing.
-- Every rule about a call reads the stored value: the reads above, the events, the speaking marks (ADR 0513), the private system lines, the recordings.
+- Every rule about a call reads the stored value: the reads above, the events, the private system lines, the recordings.
 - A change of the setting of the channel during a call changes nothing of that call. It applies to the next call of the channel. The channel carries the new setting at once, and `channel_updated` and the audit entry are recorded as before.
 
 Events of a call:

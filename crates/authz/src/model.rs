@@ -52,12 +52,12 @@ pub struct HeldRole {
 }
 
 /// One workspace as the actor stands in it: the "everyone" role and the actor's own roles.
+/// Roles only grant: a workspace has no rule for one member (ADR 0301).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceScope {
     pub membership: Membership,
     pub everyone: WorkspacePermissions,
     pub roles: Vec<HeldRole>,
-    pub person_override: Override,
 }
 
 impl WorkspaceScope {
@@ -66,8 +66,6 @@ impl WorkspaceScope {
         self.roles
             .iter()
             .fold(self.everyone, |held, role| held.union(role.permissions))
-            .difference(self.person_override.deny())
-            .union(self.person_override.allow())
     }
 }
 

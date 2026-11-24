@@ -453,7 +453,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         let deadline = self.app.streams.limits().read_deadline.unsigned_abs();
         let places = self.app.streams.places(lane);
         let (waiting, mut given_up) = oneshot::channel::<()>();
-        let groups = crate::messages::groups::supported();
+        let groups = crate::messages::groups::support();
         let mut reading = tokio::spawn(crate::messages::groups::with_support(groups, async move {
             let _place = tokio::select! {
                 biased;

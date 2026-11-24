@@ -11,14 +11,13 @@ use gpui_base::slider::{SliderEvent, SliderState};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::settings::ThemeChoice;
 use junto_client_core::voice::{
-    InputMode, SHARE_FRAME_RATES, ShareResolution, THRESHOLD_DEFAULT, THRESHOLD_RANGE, TalkKey,
+    InputMode, SHARE_FRAME_RATES, ShareResolution, THRESHOLD_DEFAULT, THRESHOLD_RANGE,
 };
 
 use super::account::Surface;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::ProcessingPart;
-use crate::state::view::CallRoom;
 use crate::text;
 use crate::theme::{self, Theme, theme, u};
 use crate::ui::{
@@ -32,16 +31,13 @@ const THEMES: [ThemeChoice; 3] = [ThemeChoice::Light, ThemeChoice::Dark, ThemeCh
 /// The sections of the settings, in the order of their list. One is shown at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsSection {
+    /// The name and the picture that a new account of this device starts with (ADR 0717).
     #[default]
     Profile,
-    Picture,
-    Interface,
+    Appearance,
     VoiceAndVideo,
-    /// The settings of the room of the call of this device (ADR 0739).
-    Call,
     /// The key bindings (ADR 0777).
     Keybinds,
-    Quiet,
     Notifications,
     Sounds,
     Devices,
@@ -50,16 +46,13 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 9] = [
         Self::Profile,
-        Self::Picture,
-        Self::Interface,
+        Self::Appearance,
         Self::VoiceAndVideo,
-        Self::Call,
-        Self::Keybinds,
-        Self::Quiet,
-        Self::Notifications,
         Self::Sounds,
+        Self::Notifications,
+        Self::Keybinds,
         Self::Devices,
         Self::Permissions,
         Self::About,
@@ -67,13 +60,10 @@ impl SettingsSection {
 
     pub fn name(self) -> &'static str {
         match self {
-            Self::Profile => text::PROFILE,
-            Self::Picture => text::PICTURE,
-            Self::Interface => text::INTERFACE,
+            Self::Profile => text::NEW_SERVER_PROFILE,
+            Self::Appearance => text::APPEARANCE,
             Self::VoiceAndVideo => text::VOICE_AND_VIDEO,
-            Self::Call => text::CALL_SECTION,
             Self::Keybinds => text::KEYBINDS,
-            Self::Quiet => text::QUIET,
             Self::Notifications => text::NOTIFICATIONS,
             Self::Sounds => text::SOUNDS,
             Self::Devices => text::account::DEVICES_SECTION,
@@ -85,12 +75,9 @@ impl SettingsSection {
     fn icon(self) -> Icon {
         match self {
             Self::Profile => Icon::Person,
-            Self::Picture => Icon::Picture,
-            Self::Interface => Icon::AppWindow,
+            Self::Appearance => Icon::AppWindow,
             Self::VoiceAndVideo => Icon::Microphone,
-            Self::Call => Icon::Phone,
             Self::Keybinds => Icon::Keyboard,
-            Self::Quiet => Icon::Clock,
             Self::Notifications => Icon::Bell,
             Self::Sounds => Icon::Speaker,
             Self::Devices => Icon::Devices,
@@ -103,12 +90,9 @@ impl SettingsSection {
     pub fn selector(self) -> &'static str {
         match self {
             Self::Profile => "settings-section-profile",
-            Self::Picture => "settings-section-picture",
-            Self::Interface => "settings-section-interface",
+            Self::Appearance => "settings-section-appearance",
             Self::VoiceAndVideo => "settings-section-voice-and-video",
-            Self::Call => "settings-section-call",
             Self::Keybinds => "settings-section-keybinds",
-            Self::Quiet => "settings-section-quiet",
             Self::Notifications => "settings-section-notifications",
             Self::Sounds => "settings-section-sounds",
             Self::Devices => "settings-section-devices",
@@ -194,8 +178,10 @@ impl Shell {
         self.name_error = None;
         self.name_saved = false;
         self.show_quiet_times(window, cx);
-        self.settings_section = SettingsSection::Profile;
+        // Settings opens at the section that was open last in this window (ADR 0703).
+        let section = self.settings_section;
         self.open_layer(Layer::Settings, window, cx);
+        self.open_settings_section(section, window, cx);
     }
 
     /// Stores the typed name as the name of the profile preset. The result arrives through
@@ -244,10 +230,18 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = theme(cx);
+        let heading = |label: &'static str| {
+            div()
+                .typeface(theme.types.heading, &theme)
+                .ink(theme.colors.ink)
+                .child(label)
+        };
         Dialog::new(text::WELCOME_TITLE, self.layer_focus())
             .selector("welcome-dialog")
+            .child(heading(text::WELCOME_NEW))
             .child(
                 div()
+                    .mt(u(4.0))
                     .typeface(theme.types.notice, &theme)
                     .ink(theme.colors.ink_2)
                     .child(text::WELCOME),
@@ -265,6 +259,39 @@ impl Shell {
                 .px(u(12.0))
                 .on_click(cx.listener(|this, _, window, cx| this.submit_name(window, cx)))
                 .into_any_element()]))
+            .child(
+                div()
+                    .mt(u(14.0))
+                    .pt(u(12.0))
+                    .border_t_1()
+                    .border_color(gpui::Hsla::from(theme.colors.rule))
+                    .child(heading(text::WELCOME_OTHER_COMPUTER))
+                    .child(
+                        div()
+                            .mt(u(4.0))
+                            .typeface(theme.types.notice, &theme)
+                            .ink(theme.colors.ink_2)
+                            .child(text::WELCOME_OTHER_COMPUTER_HELP),
+                    )
+                    .child(
+                        div().flex().flex_none().justify_end().mt(u(10.0)).child(
+                            Button::new("welcome-link")
+                                .icon(crate::assets::Icon::Link)
+                                .label(text::account::REQUEST_LINK)
+                                .selector("welcome-link")
+                                .h(u(30.0))
+                                .px(u(12.0))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_link_all(
+                                        crate::state::linking::LinkRole::NewDevice,
+                                        None,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        ),
+                    ),
+            )
             .child(
                 crate::ui::notice_slot("name-error-slot").children(self.name_error.clone().map(
                     |error| {
@@ -295,7 +322,7 @@ impl Shell {
         // The permissions are read again when a section shows them (ADR 0708).
         self.state.update(cx, |state, cx| {
             state.set_device_checks(section == SettingsSection::VoiceAndVideo, cx);
-            if section == SettingsSection::Interface {
+            if section == SettingsSection::Appearance {
                 state.refresh_startup(cx);
             }
             if matches!(
@@ -325,67 +352,65 @@ impl Shell {
         self.open_settings_section(SettingsSection::VoiceAndVideo, window, cx);
     }
 
-    /// Opens the settings of the application at "Call", the settings of the room of the
-    /// call. The call window opens them in the main window, as `open_voice_settings` does.
-    pub fn open_room_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.detached {
-            crate::app::in_main_window(
-                |shell, window, cx| shell.open_room_settings(window, cx),
-                cx,
-            );
-            return;
-        }
-        if !matches!(self.layer, Layer::Settings) {
-            self.open_settings(window, cx);
-        }
-        self.open_settings_section(SettingsSection::Call, window, cx);
-    }
-
-    /// The settings of the room of the call of this device: they apply to everyone in the
-    /// call, apart from the personal settings at "Voice and video" (ADR 0739). Without a call,
-    /// and in a call without a room, the section states it and shows no control.
-    fn render_call_section(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut parts = vec![group_label(text::CALL_SECTION, theme).into_any_element()];
-        let room = self.view.as_ref().and_then(|view| view.call_room.clone());
-        // The statement of each case has a name of its own, for a test.
-        let statement = |case: &'static str, sentence: &'static str| {
-            div()
-                .debug_selector(move || format!("call-section-statement:{case}"))
-                .child(help(sentence, theme))
-                .into_any_element()
+    /// The resolution and the frame rate of the next share, as Settings at "Your screen
+    /// share" and the dialog of a share show them: both read and write the one stored
+    /// setting (ADR 0738). `prefix` names the controls of the place.
+    pub(crate) fn share_quality_controls(
+        &mut self,
+        prefix: &'static str,
+        cx: &mut Context<Self>,
+    ) -> (Segmented, Segmented) {
+        let voice = self.state.read(cx).voice().clone();
+        let resolutions = [
+            ShareResolution::P720,
+            ShareResolution::P1080,
+            ShareResolution::Source,
+        ];
+        let (resolution_id, rate_id): (&'static str, &'static str) = match prefix {
+            "share" => ("share-resolution", "share-frame-rate"),
+            _ => ("share-dialog-resolution", "share-dialog-frame-rate"),
         };
-        match room {
-            None => parts.push(statement("no-call", text::CALL_SECTION_NO_CALL)),
-            Some(CallRoom::Direct) => parts.push(statement("no-room", text::CALL_SECTION_NO_ROOM)),
-            Some(CallRoom::Unknown) => {
-                parts.push(statement("not-read", text::CALL_SECTION_NOT_READ))
-            }
-            Some(CallRoom::Channel(room)) => {
-                parts.push(
-                    div()
-                        .debug_selector({
-                            let name = room.name.clone();
-                            move || format!("call-section-channel:{name}")
-                        })
-                        .mt(u(4.0))
-                        .typeface(theme.types.name, theme)
-                        .ink(theme.colors.ink)
-                        .child(text::call_section_heading(&room.name))
-                        .into_any_element(),
-                );
-                parts.push(help(text::CALL_SECTION_FOR_EVERYONE, theme).into_any_element());
-                parts.push(
-                    div()
-                        .debug_selector(|| "room-settings".to_owned())
-                        .mt(u(8.0))
-                        .flex()
-                        .flex_col()
-                        .children(self.render_room_settings(&room, theme, cx))
-                        .into_any_element(),
-                );
-            }
-        }
-        parts
+        let resolution = Segmented::new(
+            resolution_id,
+            text::RESOLUTION,
+            resolutions.map(|resolution| SharedString::from(text::share_resolution(resolution))),
+        )
+        .selected(
+            resolutions
+                .iter()
+                .position(|resolution| *resolution == voice.share_resolution),
+        )
+        .selector(resolution_id)
+        .on_select({
+            let select = cx.listener(move |this, index: &usize, _, cx| {
+                if let Some(resolution) = resolutions.get(*index).copied() {
+                    this.state
+                        .update(cx, |state, cx| state.set_share_resolution(resolution, cx));
+                }
+            });
+            move |index, window, cx| select(&index, window, cx)
+        });
+        let frame_rate = Segmented::new(
+            rate_id,
+            text::FRAME_RATE,
+            SHARE_FRAME_RATES.map(|rate| SharedString::from(rate.to_string())),
+        )
+        .selected(
+            SHARE_FRAME_RATES
+                .iter()
+                .position(|rate| *rate == voice.share_frame_rate),
+        )
+        .selector(rate_id)
+        .on_select({
+            let select = cx.listener(move |this, index: &usize, _, cx| {
+                if let Some(rate) = SHARE_FRAME_RATES.get(*index).copied() {
+                    this.state
+                        .update(cx, |state, cx| state.set_share_frame_rate(rate, cx));
+                }
+            });
+            move |index, window, cx| select(&index, window, cx)
+        });
+        (resolution, frame_rate)
     }
 
     /// Whether this shell draws the call window (ADR 0772).
@@ -417,13 +442,12 @@ impl Shell {
             );
         }
         let parts: Vec<AnyElement> = match section {
-            SettingsSection::Profile => self.render_profile_section(&theme, cx),
-            SettingsSection::Picture => {
-                let mut parts = vec![group_label(text::PICTURE, &theme).into_any_element()];
+            SettingsSection::Profile => {
+                let mut parts = self.render_profile_section(&theme, cx);
                 parts.extend(self.render_preset_picture(&theme, cx));
                 parts
             }
-            SettingsSection::Interface => self.render_interface_section(&theme, cx),
+            SettingsSection::Appearance => self.render_appearance_section(&theme, cx),
             SettingsSection::VoiceAndVideo => {
                 let mut parts = vec![group_label(text::VOICE_AND_VIDEO, &theme).into_any_element()];
                 parts.push(self.render_device_checks(&theme, cx));
@@ -431,18 +455,7 @@ impl Shell {
                 parts.extend(self.render_share_and_view_settings(&theme, cx));
                 parts
             }
-            SettingsSection::Call => self.render_call_section(&theme, cx),
             SettingsSection::Keybinds => self.render_keybinds_section(&theme, cx),
-            SettingsSection::Quiet => {
-                let quiet = self
-                    .view
-                    .as_ref()
-                    .map(|view| view.quiet.clone())
-                    .unwrap_or_default();
-                let mut parts = vec![group_label(text::QUIET, &theme).into_any_element()];
-                parts.extend(self.render_quiet_settings(&quiet, &theme, cx));
-                parts
-            }
             SettingsSection::Notifications => self.render_notifications_section(&theme, cx),
             SettingsSection::Sounds => self.render_sounds_section(&theme, cx),
             SettingsSection::Devices => self.render_devices_settings(&theme, cx),
@@ -475,7 +488,7 @@ impl Shell {
     /// The name of the profile preset.
     fn render_profile_section(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         vec![
-            group_label(text::PROFILE, theme).into_any_element(),
+            group_label(text::NEW_SERVER_PROFILE, theme).into_any_element(),
             div()
                 .flex()
                 .items_center()
@@ -515,7 +528,7 @@ impl Shell {
     }
 
     /// The interface scale and the theme.
-    fn render_interface_section(
+    fn render_appearance_section(
         &mut self,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -540,49 +553,7 @@ impl Shell {
             _ => None,
         };
         vec![
-            group_label(text::INTERFACE, theme).into_any_element(),
-            Toggle::new(
-                "start-at-login",
-                text::start_at_login(startup.profile.as_deref()),
-                startup
-                    .status
-                    .is_some_and(junto_client_core::startup::Status::requested),
-                (text::ON, text::OFF),
-            )
-            .selector("start-at-login")
-            .held(if startup.busy || startup.status.is_none() {
-                Some(text::LOGIN_CHECKING)
-            } else {
-                unavailable
-            })
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.state.update(cx, |state, cx| {
-                    let enabled = !state
-                        .startup()
-                        .status
-                        .is_some_and(junto_client_core::startup::Status::requested);
-                    state.set_start_at_login(enabled, cx);
-                });
-            }))
-            .into_any_element(),
-            help(unavailable.unwrap_or(text::START_AT_LOGIN_HELP), theme).into_any_element(),
-            Toggle::new(
-                "keep-running-after-close",
-                text::KEEP_RUNNING_AFTER_CLOSE,
-                self.state.read(cx).settings().keep_running_after_close,
-                (text::ON, text::OFF),
-            )
-            .selector("keep-running-after-close")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.state.update(cx, |state, cx| {
-                    state.set_keep_running_after_close(
-                        !state.settings().keep_running_after_close,
-                        cx,
-                    );
-                });
-            }))
-            .into_any_element(),
-            help(text::KEEP_RUNNING_AFTER_CLOSE_HELP, theme).into_any_element(),
+            group_label(text::APPEARANCE, theme).into_any_element(),
             div()
                 .flex()
                 .items_center()
@@ -670,6 +641,59 @@ impl Shell {
                 )
                 .into_any_element(),
             help(text::THEME_HELP, theme).into_any_element(),
+            // Start and close: the two switches at the end of the section (ADR 0703).
+            div()
+                .mt(u(16.0))
+                .child(group_label(text::START_AND_CLOSE, theme))
+                .into_any_element(),
+            titled_switch(
+                text::start_at_login(startup.profile.as_deref()),
+                unavailable.unwrap_or(text::START_AT_LOGIN_HELP),
+                Toggle::new(
+                    "start-at-login",
+                    text::start_at_login(startup.profile.as_deref()),
+                    startup
+                        .status
+                        .is_some_and(junto_client_core::startup::Status::requested),
+                    (text::ON, text::OFF),
+                )
+                .selector("start-at-login")
+                .held(if startup.busy || startup.status.is_none() {
+                    Some(text::LOGIN_CHECKING)
+                } else {
+                    unavailable
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        let enabled = !state
+                            .startup()
+                            .status
+                            .is_some_and(junto_client_core::startup::Status::requested);
+                        state.set_start_at_login(enabled, cx);
+                    });
+                })),
+                theme,
+            ),
+            titled_switch(
+                text::KEEP_RUNNING_AFTER_CLOSE,
+                text::KEEP_RUNNING_AFTER_CLOSE_HELP,
+                Toggle::new(
+                    "keep-running-after-close",
+                    text::KEEP_RUNNING_AFTER_CLOSE,
+                    self.state.read(cx).settings().keep_running_after_close,
+                    (text::ON, text::OFF),
+                )
+                .selector("keep-running-after-close")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.set_keep_running_after_close(
+                            !state.settings().keep_running_after_close,
+                            cx,
+                        );
+                    });
+                })),
+                theme,
+            ),
             crate::ui::notice_slot("startup-result-slot")
                 .at_end()
                 .children(startup.error.map(|error| {
@@ -720,7 +744,7 @@ impl Shell {
         let colors = theme.colors;
         let switch = |selector: &'static str,
                       title: &'static str,
-                      sentence: &'static str,
+                      sentence: Option<&'static str>,
                       on: bool,
                       held: Option<&'static str>,
                       press: SwitchPress,
@@ -742,12 +766,12 @@ impl Shell {
                                 .ink(colors.ink)
                                 .child(title),
                         )
-                        .child(
+                        .children(sentence.map(|sentence| {
                             div()
                                 .typeface(theme.types.small, theme)
                                 .ink(colors.ink_2)
-                                .child(sentence),
-                        ),
+                                .child(sentence)
+                        })),
                 )
                 .child(
                     Toggle::new(selector, title, on, (text::ON, text::OFF))
@@ -762,7 +786,7 @@ impl Shell {
         parts.push(switch(
             "all-sounds",
             text::ALL_SOUNDS,
-            text::ALL_SOUNDS_HELP,
+            Some(text::ALL_SOUNDS_HELP),
             all,
             None,
             Box::new(move |this, cx| {
@@ -771,21 +795,29 @@ impl Shell {
             }),
             cx,
         ));
-        for kind in junto_client_core::voice::SoundKind::ALL {
-            let (title, sentence) = text::sound_kind(kind);
-            let on = sounds.kind_on(kind);
-            parts.push(switch(
-                sound_kind_selector(kind),
-                title,
-                sentence,
-                all && on,
-                (!all).then_some(text::ALL_SOUNDS_ARE_OFF),
-                Box::new(move |this, cx| {
-                    this.state
-                        .update(cx, |state, cx| state.set_sound_kind(kind, !on, cx));
-                }),
-                cx,
-            ));
+        for (group, kinds) in text::SOUND_GROUPS {
+            parts.push(
+                div()
+                    .mt(u(10.0))
+                    .child(group_label(group, theme))
+                    .into_any_element(),
+            );
+            for kind in kinds.iter().copied() {
+                let (title, sentence) = text::sound_kind(kind);
+                let on = sounds.kind_on(kind);
+                parts.push(switch(
+                    sound_kind_selector(kind),
+                    title,
+                    sentence,
+                    all && on,
+                    (!all).then_some(text::ALL_SOUNDS_ARE_OFF),
+                    Box::new(move |this, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.set_sound_kind(kind, !on, cx));
+                    }),
+                    cx,
+                ));
+            }
         }
         parts
     }
@@ -833,7 +865,7 @@ impl Shell {
         ];
         // Settings of the account on each server; the window sets them on every server of
         // the device, as the quiet times (ADR 0742).
-        if let Some(hide_text) = quiet.hide_text {
+        if let Some(hide_text) = quiet.hide_text.clone() {
             let shown = hide_text == crate::state::notices::Agreement::All(false);
             let busy = quiet.busy;
             parts.push(self.switch_row(
@@ -853,7 +885,7 @@ impl Shell {
                 cx,
             ));
         }
-        if let Some(hold) = quiet.hold_while_presenting {
+        if let Some(hold) = quiet.hold_while_presenting.clone() {
             let on = hold == crate::state::notices::Agreement::All(true);
             let busy = quiet.busy;
             parts.push(self.switch_row(
@@ -873,6 +905,14 @@ impl Shell {
                 cx,
             ));
         }
+        // The daily quiet time is part of this section (ADR 0742).
+        parts.push(
+            div()
+                .mt(u(14.0))
+                .child(group_label(text::QUIET, theme))
+                .into_any_element(),
+        );
+        parts.extend(self.render_quiet_settings(&quiet, theme, cx));
         parts
     }
 
@@ -932,11 +972,6 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let voice = self.state.read(cx).voice().clone();
-        let resolutions = [
-            ShareResolution::P720,
-            ShareResolution::P1080,
-            ShareResolution::Source,
-        ];
         let choice_row = |label: &'static str, control: Segmented| {
             div()
                 .flex()
@@ -947,46 +982,7 @@ impl Shell {
                 .child(control)
                 .into_any_element()
         };
-        let resolution = Segmented::new(
-            "share-resolution",
-            text::RESOLUTION,
-            resolutions.map(|resolution| SharedString::from(text::share_resolution(resolution))),
-        )
-        .selected(
-            resolutions
-                .iter()
-                .position(|resolution| *resolution == voice.share_resolution),
-        )
-        .selector("share-resolution")
-        .on_select({
-            let select = cx.listener(move |this, index: &usize, _, cx| {
-                if let Some(resolution) = resolutions.get(*index).copied() {
-                    this.state
-                        .update(cx, |state, cx| state.set_share_resolution(resolution, cx));
-                }
-            });
-            move |index, window, cx| select(&index, window, cx)
-        });
-        let frame_rate = Segmented::new(
-            "share-frame-rate",
-            text::FRAME_RATE,
-            SHARE_FRAME_RATES.map(|rate| SharedString::from(rate.to_string())),
-        )
-        .selected(
-            SHARE_FRAME_RATES
-                .iter()
-                .position(|rate| *rate == voice.share_frame_rate),
-        )
-        .selector("share-frame-rate")
-        .on_select({
-            let select = cx.listener(move |this, index: &usize, _, cx| {
-                if let Some(rate) = SHARE_FRAME_RATES.get(*index).copied() {
-                    this.state
-                        .update(cx, |state, cx| state.set_share_frame_rate(rate, cx));
-                }
-            });
-            move |index, window, cx| select(&index, window, cx)
-        });
+        let (resolution, frame_rate) = self.share_quality_controls("share", cx);
         let hide_without_video = voice.hide_people_without_video;
         let hide_own_camera = voice.hide_own_camera;
         vec![
@@ -1244,7 +1240,14 @@ impl Shell {
                 .child(label)
         };
         let modes = [InputMode::VoiceActivation, InputMode::PushToTalk];
-        let keys = [TalkKey::Alt, TalkKey::Control];
+        // The key of push to talk is set in Keyboard shortcuts; this section states it
+        // (ADR 0777).
+        let talk_keys: SharedString = self
+            .state
+            .read(cx)
+            .talk_keys()
+            .map_or_else(|| text::NO_KEYS.to_owned(), |keys| text::key_combo(&keys))
+            .into();
         let mut rows = vec![
             div()
                 .flex()
@@ -1289,7 +1292,7 @@ impl Shell {
                 div()
                     .id("push-to-talk-question")
                     .role(Role::Alert)
-                    .aria_label(text::push_to_talk_question(voice.talk_key))
+                    .aria_label(text::push_to_talk_question(&talk_keys))
                     .debug_selector(|| "push-to-talk-question".to_owned())
                     .flex()
                     .flex_col()
@@ -1303,7 +1306,7 @@ impl Shell {
                         div()
                             .typeface(theme.types.small, theme)
                             .ink(colors.ink)
-                            .child(text::push_to_talk_question(voice.talk_key)),
+                            .child(text::push_to_talk_question(&talk_keys)),
                     )
                     .child(
                         div()
@@ -1365,22 +1368,27 @@ impl Shell {
                     .mt(u(6.0))
                     .child(row_label(text::TALK_KEY))
                     .child(
-                        Segmented::new(
-                            "talk-key",
-                            text::TALK_KEY,
-                            keys.map(|key| SharedString::from(text::talk_key(key))),
-                        )
-                        .selected(keys.iter().position(|key| *key == voice.talk_key))
-                        .selector("talk-key")
-                        .on_select({
-                            let select = cx.listener(move |this, index: &usize, _, cx| {
-                                if let Some(key) = keys.get(*index).copied() {
-                                    this.state
-                                        .update(cx, |state, cx| state.set_talk_key(key, cx));
-                                }
-                            });
-                            move |index, window, cx| select(&index, window, cx)
-                        }),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .typeface(theme.types.mono_small, theme)
+                            .ink(colors.ink)
+                            .debug_selector(|| "talk-key".to_owned())
+                            .child(talk_keys),
+                    )
+                    .child(
+                        Button::new("talk-key-change")
+                            .label(text::CHANGE_KEYS)
+                            .selector("talk-key-change")
+                            .h(u(28.0))
+                            .px(u(10.0))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_settings_section(SettingsSection::Keybinds, window, cx);
+                                this.start_keybind_recording(
+                                    junto_client_core::keybinds::KeyAction::PushToTalk,
+                                    cx,
+                                );
+                            })),
                     )
                     .into_any_element(),
             );
@@ -1415,30 +1423,43 @@ impl Shell {
         if voice.input_mode == InputMode::VoiceActivation {
             rows.push(self.render_voice_threshold(voice.voice_threshold, theme, window, cx));
         }
+        #[derive(Clone, Copy)]
+        enum VoiceSwitch {
+            SoundOffMutes,
+            MutedSpeech,
+            Processing(ProcessingPart),
+        }
         for (part, on, title, sentence, selector) in [
             (
-                None,
+                VoiceSwitch::SoundOffMutes,
                 voice.sound_off_mutes,
                 text::SOUND_OFF_MUTES,
                 text::SOUND_OFF_MUTES_HELP,
                 "sound-off-mutes",
             ),
             (
-                Some(ProcessingPart::EchoCancellation),
+                VoiceSwitch::MutedSpeech,
+                voice.muted_speech_notice,
+                text::MUTED_SPEECH_SETTING,
+                text::MUTED_SPEECH_SETTING_HELP,
+                "muted-speech-notice",
+            ),
+            (
+                VoiceSwitch::Processing(ProcessingPart::EchoCancellation),
                 voice.echo_cancellation,
                 text::ECHO_CANCELLATION,
                 text::ECHO_CANCELLATION_HELP,
                 "echo-cancellation",
             ),
             (
-                Some(ProcessingPart::NoiseSuppression),
+                VoiceSwitch::Processing(ProcessingPart::NoiseSuppression),
                 voice.noise_suppression,
                 text::NOISE_SUPPRESSION,
                 text::NOISE_SUPPRESSION_HELP,
                 "noise-suppression",
             ),
             (
-                Some(ProcessingPart::AutomaticGain),
+                VoiceSwitch::Processing(ProcessingPart::AutomaticGain),
                 voice.automatic_gain,
                 text::AUTOMATIC_GAIN,
                 text::AUTOMATIC_GAIN_HELP,
@@ -1475,8 +1496,15 @@ impl Shell {
                             .selector(selector)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.state.update(cx, |state, cx| match part {
-                                    Some(part) => state.set_processing(part, !on, cx),
-                                    None => state.set_sound_off_mutes(!on, cx),
+                                    VoiceSwitch::Processing(part) => {
+                                        state.set_processing(part, !on, cx)
+                                    }
+                                    VoiceSwitch::SoundOffMutes => {
+                                        state.set_sound_off_mutes(!on, cx)
+                                    }
+                                    VoiceSwitch::MutedSpeech => {
+                                        state.set_muted_speech_notice(!on, cx)
+                                    }
                                 });
                             })),
                     )
@@ -1499,4 +1527,40 @@ struct Setting {
     title: &'static str,
     sentence: &'static str,
     on: bool,
+}
+
+/// A switch with its title and its sentence, in the form of `Shell::switch_row`, for a switch
+/// whose title or state the caller builds.
+fn titled_switch(
+    title: impl Into<SharedString>,
+    sentence: impl Into<SharedString>,
+    switch: Toggle,
+    theme: &Theme,
+) -> AnyElement {
+    let colors = &theme.colors;
+    div()
+        .flex()
+        .items_start()
+        .gap(u(10.0))
+        .mt(u(12.0))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .typeface(theme.types.control, theme)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .ink(colors.ink)
+                        .child(title.into()),
+                )
+                .child(
+                    div()
+                        .typeface(theme.types.small, theme)
+                        .ink(colors.ink_2)
+                        .child(sentence.into()),
+                ),
+        )
+        .child(switch)
+        .into_any_element()
 }

@@ -99,7 +99,7 @@ async fn own_entry_requests(
     path = "/api/v1/snapshot",
     tag = "events",
     security(("session" = [])),
-    params(("Junto-Notification-Preferences" = Option<String>, Header, description = "1 includes the text privacy and presentation preferences"),("Junto-Group-Conversations"=Option<String>,Header,description="1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels")),
+    params(("Junto-Notification-Preferences" = Option<String>, Header, description = "1 includes the text privacy and presentation preferences"),("Junto-Group-Conversations"=Option<String>,Header,description="1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels"),("Junto-Group-Names"=Option<String>,Header,description="optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group")),
     responses((status = 200, body = SnapshotResponse), ApiError)
 )]
 pub async fn get_snapshot(
@@ -251,7 +251,12 @@ pub async fn get_snapshot(
                 .await?;
         let snapshot = Snapshot {
             hidden_conversations: crate::messages::visibility::list(connection, access.account_id, &messages).await?,
-            group_conversations: crate::messages::groups::list(connection, &access).await?,
+            group_conversations: {
+                let mut listed = crate::messages::groups::list(connection, &access).await?;
+                crate::messages::groups::named_for_reader(connection, access.account_id, &mut listed)
+                    .await?;
+                listed
+            },
             cursor: log.cursor(log.head)?,
             account,
             workspaces,

@@ -9,10 +9,150 @@ use junto_client_core::model::{
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{AccountId, CategoryId, ChannelId};
 use junto_client_core::protocol::structure::{
-    Category, Channel, OverrideState, PermissionRule, RuleSubject,
+    Category, Channel, ChannelKind, OverrideState, PermissionRule, RuleSubject,
 };
 
 use super::Listed;
+
+/// A group of the permissions of a rule, in the order of the page (ADR 0761).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PermissionGroup {
+    General,
+    Messages,
+    Calls,
+    Moderation,
+    Recordings,
+}
+
+impl PermissionGroup {
+    pub const ALL: [Self; 5] = [
+        Self::General,
+        Self::Messages,
+        Self::Calls,
+        Self::Moderation,
+        Self::Recordings,
+    ];
+}
+
+/// The group of a permission in a rule of a channel or a category. `None` for the two
+/// permissions that the server checks in the workspace only, which a rule of a place does
+/// not change.
+pub const fn group_of(permission: WorkspacePermission) -> Option<PermissionGroup> {
+    use WorkspacePermission as W;
+    match permission {
+        W::ManageRoles | W::ManageGlossary => None,
+        W::ViewChannel | W::ManageChannel | W::ExportChannel | W::ViewAuditEntries => {
+            Some(PermissionGroup::General)
+        }
+        W::SendMessages
+        | W::SendMessagesInThreads
+        | W::CreateThreads
+        | W::ReadMessageHistory
+        | W::AttachFiles
+        | W::AddReactions
+        | W::MentionEveryone
+        | W::MentionRoles
+        | W::ManageMessages => Some(PermissionGroup::Messages),
+        W::Connect
+        | W::Speak
+        | W::Video
+        | W::ShareScreen
+        | W::UseVoiceActivity
+        | W::SetCallUserLimit
+        | W::SetVoiceChannelStatus
+        | W::LockRoom
+        | W::RunMeetingMode
+        | W::AdmitToFullCall => Some(PermissionGroup::Calls),
+        W::MoveMembers | W::MuteMembers | W::DeafenMembers | W::DisconnectMembers => {
+            Some(PermissionGroup::Moderation)
+        }
+        W::RecordCalls | W::ManageRecordings => Some(PermissionGroup::Recordings),
+    }
+}
+
+/// Whether a rule of a place of this kind lists the permission: a text channel has no
+/// call, and a category, whose rules reach channels of both kinds (`None`), lists both.
+pub fn applies(permission: WorkspacePermission, kind: Option<ChannelKind>) -> bool {
+    match group_of(permission) {
+        None => false,
+        Some(
+            PermissionGroup::Calls | PermissionGroup::Moderation | PermissionGroup::Recordings,
+        ) => kind != Some(ChannelKind::Text),
+        Some(PermissionGroup::General | PermissionGroup::Messages) => true,
+    }
+}
+
+/// The permissions that a rule of a place of this kind lists, group by group.
+pub fn listed_permissions(kind: Option<ChannelKind>) -> Vec<WorkspacePermission> {
+    PermissionGroup::ALL
+        .iter()
+        .flat_map(|group| {
+            WorkspacePermission::ALL
+                .iter()
+                .copied()
+                .filter(move |permission| group_of(*permission) == Some(*group))
+        })
+        .filter(|permission| applies(*permission, kind))
+        .collect()
+}
+
+/// A role or a person that the rules of a private channel let see it, or a person whom a
+/// rule keeps from seeing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Viewer {
+    pub subject: RuleSubject,
+    pub name: String,
+    pub kind: SubjectKind,
+    pub color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    /// A rule under "Advanced" denies the person "view channel": the person does not see
+    /// the channel, whatever a role gives.
+    pub denied: bool,
+}
+
+/// Whether a channel is private, and who sees it then (ADR 0761).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Visibility {
+    /// The rule of the "everyone" role denies "view channel".
+    pub private: bool,
+    /// The roles and the people with an allow of "view channel", then the people with a
+    /// deny of it, each in the order of the list of rules.
+    pub viewers: Vec<Viewer>,
+}
+
+/// Who sees a channel by its rules, from the list of rules of the page.
+pub fn visibility(list: &RuleList) -> Visibility {
+    let view = |line: &SubjectLine| {
+        line.permissions
+            .iter()
+            .find(|held| held.permission == WorkspacePermission::ViewChannel)
+            .map(|held| held.current)
+    };
+    let private = list
+        .subjects
+        .iter()
+        .any(|line| line.kind == SubjectKind::Everyone && view(line) == Some(Choice::Deny));
+    let viewer = |line: &SubjectLine, denied| Viewer {
+        subject: line.subject,
+        name: line.name.clone(),
+        kind: line.kind,
+        color: line.color,
+        denied,
+    };
+    let allowed = list
+        .subjects
+        .iter()
+        .filter(|line| line.kind != SubjectKind::Everyone && view(line) == Some(Choice::Allow))
+        .map(|line| viewer(line, false));
+    let denied = list
+        .subjects
+        .iter()
+        .filter(|line| line.kind == SubjectKind::Person && view(line) == Some(Choice::Deny))
+        .map(|line| viewer(line, true));
+    Visibility {
+        private,
+        viewers: allowed.chain(denied).collect(),
+    }
+}
 
 /// The most person rules of one category or channel (ADR 0306).
 pub const MOST_PERSON_RULES: usize = 250;
@@ -114,7 +254,7 @@ pub struct SubjectLine {
     /// The subject has a rule at the place now.
     pub has_rule: bool,
     pub locked: Option<Locked>,
-    /// In the order of `WorkspacePermission::ALL`.
+    /// The permissions that the place lists, group by group (`listed_permissions`).
     pub permissions: Vec<PermissionLine>,
 }
 
@@ -318,7 +458,9 @@ pub fn rule_list(
     rules: &[PermissionRule],
     held: &[WorkspacePermission],
     added: &[RuleSubject],
+    kind: Option<ChannelKind>,
 ) -> RuleList {
+    let listed = listed_permissions(kind);
     let current = |subject: RuleSubject| rules.iter().find(|rule| rule.subject == subject);
     let shown = |subject: RuleSubject| current(subject).is_some() || added.contains(&subject);
     let line = |subject: RuleSubject, name: String, kind: SubjectKind, locked| {
@@ -337,7 +479,7 @@ pub fn rule_list(
             kind,
             has_rule: rule.is_some_and(|of| !of.allow.is_empty() || !of.deny.is_empty()),
             locked,
-            permissions: WorkspacePermission::ALL
+            permissions: listed
                 .iter()
                 .copied()
                 .map(|permission| PermissionLine {
@@ -447,7 +589,14 @@ pub fn derive(
     let held = model.permissions_in(channel.id).unwrap_or_default();
     let collection = model.admin.rules(channel.id);
     let rules = Listed::of(collection, |rules| {
-        rule_list(model, workspace, &rules.rules, held, added)
+        rule_list(
+            model,
+            workspace,
+            &rules.rules,
+            held,
+            added,
+            Some(channel.kind),
+        )
     });
     // The category of the channel is the one of the state: an event moves a channel at
     // once, and its rules are read again when the move changed them.
@@ -504,7 +653,7 @@ pub fn category_page(
             let held = model
                 .permissions_with_rules(workspace_id, &rules.rules)
                 .unwrap_or_default();
-            rule_list(model, workspace, &rules.rules, &held, added)
+            rule_list(model, workspace, &rules.rules, &held, added, None)
         },
     );
     let channels = workspace
@@ -602,7 +751,8 @@ mod tests {
             id: ChannelId::generate(),
             workspace_id: studio,
             category_id: Some(teams.id),
-            kind: ChannelKind::Text,
+            // A voice channel: its rules list every group of permissions.
+            kind: ChannelKind::Voice,
             name: "general".to_owned(),
             position: 0,
             permanent_messages: false,
@@ -859,7 +1009,29 @@ mod tests {
     }
 
     #[test]
-    fn each_subject_lists_every_permission_in_the_order_of_the_protocol() {
+    fn a_place_lists_the_permissions_of_its_kind_without_the_workspace_ones() {
+        use WorkspacePermission as W;
+        let text = listed_permissions(Some(ChannelKind::Text));
+        let voice = listed_permissions(Some(ChannelKind::Voice));
+        let category = listed_permissions(None);
+        for listed in [&text, &voice, &category] {
+            assert!(!listed.contains(&W::ManageRoles) && !listed.contains(&W::ManageGlossary));
+            assert!(listed.contains(&W::ViewChannel) && listed.contains(&W::SendMessages));
+        }
+        for call in [W::Connect, W::MuteMembers, W::RecordCalls] {
+            assert!(!text.contains(&call) && voice.contains(&call) && category.contains(&call));
+        }
+        assert_eq!(voice, category);
+        assert_eq!(voice.len(), WorkspacePermission::ALL.len() - 2);
+        // The groups follow one another.
+        let groups: Vec<_> = voice.iter().filter_map(|held| group_of(*held)).collect();
+        let mut sorted = groups.clone();
+        sorted.sort_by_key(|group| PermissionGroup::ALL.iter().position(|held| held == group));
+        assert_eq!(groups, sorted);
+    }
+
+    #[test]
+    fn each_subject_lists_the_permissions_of_its_place_group_by_group() {
         let scene = scene();
         for line in scene.list(&[scene.person(scene.bruno)]).subjects {
             assert_eq!(
@@ -867,7 +1039,7 @@ mod tests {
                     .iter()
                     .map(|permission| permission.permission)
                     .collect::<Vec<_>>(),
-                WorkspacePermission::ALL
+                listed_permissions(Some(ChannelKind::Voice))
             );
         }
     }

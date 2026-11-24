@@ -23,8 +23,8 @@ use crate::assets::Icon;
 use crate::state::RecordedFile;
 use crate::state::feed::RecordingRow;
 use crate::state::recorded::{
-    CardDetail, CardState, FileKind, FileRow, LineFrom, LineRow, RecordingCard, SHOWN_LINES,
-    TranscriptRequest, TranscriptShown, When, line_row,
+    CardDetail, CardState, FileKind, FileRow, LineFrom, LineRow, RecordingCard, TranscriptRequest,
+    TranscriptShown, When, line_row,
 };
 use crate::state::transcript_work::TranscriptChange;
 use crate::state::view::{TranscriptPanel, TranscriptPanelState};
@@ -201,6 +201,18 @@ impl Shell {
         line: Option<u32>,
         cx: &mut Context<Self>,
     ) {
+        // The call window opens the transcript in its own panel, of the channel of its call
+        // (ADR 0741).
+        if self.detached {
+            self.show_call_tab(super::call::CallTab::Chat, cx);
+            self.state.update(cx, |state, cx| {
+                state.open_in_call_window(
+                    crate::state::call_window::CallWindowShows::Transcript(recording_id),
+                    cx,
+                )
+            });
+            return;
+        }
         let view = self.state.read(cx).view();
         let Some((workspace_id, channel_id)) = view
             .workspace()
@@ -323,6 +335,9 @@ impl Shell {
 
     /// The list of the files of a recording: the video, each audio file, and the
     /// transcript as text.
+    /// The one list of the files of a recording (ADR 0784): each part with its name, size,
+    /// state with the reason and time range; a part with a file saves it, and the text of the
+    /// transcript is at the end.
     fn render_recording_files(
         &mut self,
         card: &RecordingCard,
@@ -331,46 +346,85 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut items: Vec<AnyElement> =
-            vec![menu_label(text::DOWNLOAD, false, cx).into_any_element()];
-        for (index, file) in detail.files.iter().enumerate() {
-            let (held, stem, segment_id) = (card.clone(), file.stem.clone(), file.segment_id);
-            let mut item = MenuItem::new(("recorded-file", index), file_title(file))
-                .icon(match file.kind {
-                    FileKind::Video => Icon::Play,
-                    FileKind::Microphone => Icon::Microphone,
-                    FileKind::ShareSound => Icon::Screen,
-                })
-                .trailing(text::file_size(file.bytes))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.save_recorded(
-                        &held,
-                        RecordedFile::Segment(segment_id),
-                        stem.clone(),
-                        false,
-                        cx,
-                    );
-                    this.close_layer(window, cx);
-                }));
-            if file.problem.is_some() {
-                item = item
-                    .detail(text::FILE_FAILED_CHECK)
-                    .detail_icon(Icon::Warning);
+            vec![menu_label(text::RECORDING_FILES, false, cx).into_any_element()];
+        for (index, part) in detail.parts.iter().enumerate() {
+            let file = detail
+                .files
+                .iter()
+                .position(|file| file.segment_id == part.segment_id);
+            let state = match file.and_then(|position| detail.files[position].problem.clone()) {
+                Some(problem) => problem,
+                None => part.state.clone(),
+            };
+            let detail_line = match &part.span {
+                Some(span) => format!("{state} · {span}"),
+                None => state,
+            };
+            let item = match file {
+                Some(position) => {
+                    let file = &detail.files[position];
+                    let (held, stem, segment_id) =
+                        (card.clone(), file.stem.clone(), file.segment_id);
+                    MenuItem::new(("recorded-file", position), file_title(file))
+                        .icon(match file.kind {
+                            FileKind::Video => Icon::Play,
+                            FileKind::Microphone => Icon::Microphone,
+                            FileKind::ShareSound => Icon::Screen,
+                        })
+                        .trailing(text::file_size(file.bytes))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.save_recorded(
+                                &held,
+                                RecordedFile::Segment(segment_id),
+                                stem.clone(),
+                                false,
+                                cx,
+                            );
+                            this.close_layer(window, cx);
+                        }))
+                }
+                None => MenuItem::new(("recording-part", index), part.title.clone())
+                    .icon(Icon::Warning)
+                    .disabled(true),
             }
+            .detail(detail_line.clone());
+            let item = if part.failed {
+                item.detail_icon(Icon::Warning)
+            } else {
+                item
+            };
+            let selector = match file {
+                Some(position) => format!("recorded-file-{position}"),
+                None => format!("recording-part:{index}"),
+            };
+            let title = match file {
+                Some(position) => file_title(&detail.files[position]),
+                None => part.title.clone(),
+            };
             items.push(
                 div()
                     .flex_none()
-                    .debug_selector(move || format!("recorded-file-{index}"))
+                    .debug_selector(move || selector.clone())
                     .child(
                         self.recording_row_menu(
                             card,
                             (
                                 format!(
                                     "recording-file-menu:{}:{}",
-                                    card.recording_id, file.segment_id
+                                    card.recording_id, part.segment_id
                                 )
                                 .into(),
-                                text::COPY_NAME,
-                                file_title(file),
+                                // A saved file copies its name; a part without a file its text.
+                                if file.is_some() {
+                                    text::COPY_FILE_NAME
+                                } else {
+                                    text::COPY_TEXT
+                                },
+                                if file.is_some() {
+                                    title
+                                } else {
+                                    format!("{title}\n{detail_line}")
+                                },
                             ),
                             item,
                             window,
@@ -396,7 +450,7 @@ impl Shell {
                 card,
                 (
                     format!("recording-file-menu:{}:text", card.recording_id).into(),
-                    text::COPY_NAME,
+                    text::COPY_FILE_NAME,
                     text::RECORDING_TRANSCRIPT_TEXT.to_owned(),
                 ),
                 item,
@@ -411,7 +465,7 @@ impl Shell {
             .child(deferred(
                 anchored().snap_to_window().child(
                     Menu::new("recording-files", text::RECORDING_FILES, self.layer_focus())
-                        .width(340.0)
+                        .width(400.0)
                         .selector("recording-files")
                         .on_close(Self::handler(cx, |this, window, cx| {
                             this.recording_files_closed_by_press =
@@ -500,15 +554,6 @@ impl Shell {
                 }),
             )
             .register();
-            if surface == "card" {
-                crate::ui::RowAction::new(
-                    text::OPEN_TRANSCRIPT,
-                    cx.listener(move |this, _, _, cx| {
-                        this.open_transcript(server_id, recording_id, Some(line), cx);
-                    }),
-                )
-                .register();
-            }
             render(self, window, cx)
         });
         let key = SharedString::from(format!(
@@ -603,39 +648,6 @@ impl Shell {
             cx,
         )
         .into_any_element()
-    }
-
-    /// One line of a transcript (view G of the design): its time, its speaker with the
-    /// source of the sound, and its text.
-    fn transcript_line(
-        row: &LineRow,
-        picture: Option<Arc<RenderImage>>,
-        (faces, server): (&crate::state::people::ServerFaces, ServerId),
-        wide: bool,
-        marked: bool,
-        theme: &Theme,
-        identity: impl FnMut(&'static str, AnyElement) -> AnyElement,
-    ) -> AnyElement {
-        let corrected = row.corrected.then(|| {
-            div()
-                .flex_none()
-                .text_size(u(12.5))
-                .font_weight(FontWeight::NORMAL)
-                .ink(theme.colors.ink_3)
-                .child(text::LINE_CORRECTED)
-                .into_any_element()
-        });
-        let spoken = div()
-            .flex_1()
-            .min_w_0()
-            .text_size(u(14.5))
-            .line_height(u(22.0))
-            .ink(theme.colors.ink)
-            .child(SharedString::from(row.text.clone()))
-            .into_any_element();
-        Self::line_frame(
-            row, picture, faces, server, wide, marked, theme, corrected, spoken, None, identity,
-        )
     }
 
     /// A line of a transcript with the parts that the card or the side panel give it: the
@@ -824,119 +836,73 @@ impl Shell {
 
     /// The transcript of a card: its header with the count and the language, the first
     /// lines, and the control that shows all of them.
+    /// The one line of the transcript on a card: its state, or its lines, language and
+    /// "Show all" (ADR 0784). The side panel shows the lines.
     fn card_transcript(
         &mut self,
         card: &RecordingCard,
         transcript: &TranscriptShown,
         theme: &Theme,
-        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    ) -> AnyElement {
         let colors = theme.colors;
         let (server_id, recording_id) = (card.server_id, card.recording_id);
-        let state: SharedString =
-            text::transcript_state(transcript.state, transcript.failure).into();
         let ready = matches!(
             transcript.state,
             TranscriptState::Ready | TranscriptState::Partial
         );
-        let mut parts = vec![
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(u(8.0))
-                .h(u(36.0))
-                .pl(u(10.0))
-                .pr(u(8.0))
-                .bg(Hsla::from(colors.plaster))
-                .border_t_1()
-                .border_color(Hsla::from(colors.rule))
-                .text_size(u(13.5))
-                .ink(colors.ink_2)
-                .child(icon(Icon::ChevronDown, 14.0, colors.ink_2))
-                .child(
-                    div()
-                        .flex_none()
-                        .text_size(u(14.0))
-                        .font_weight(FontWeight::BOLD)
-                        .ink(colors.ink)
-                        .child(text::TRANSCRIPT),
+        let summary = if !ready {
+            text::transcript_state(transcript.state, transcript.failure)
+        } else if transcript.refresh_failed {
+            text::TRANSCRIPT_REFRESH_FAILED.to_owned()
+        } else if transcript.language.is_empty() {
+            text::lines(transcript.total)
+        } else {
+            format!(
+                "{} · {}",
+                text::lines(transcript.total),
+                text::transcript_language(&transcript.language)
+            )
+        };
+        let ring = crate::ui::focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
+        div()
+            .id(("card-transcript", recording_id.as_uuid().as_u128() as usize))
+            .debug_selector(move || format!("card-transcript:{recording_id}"))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(u(8.0))
+            .h(u(36.0))
+            .pl(u(10.0))
+            .pr(u(8.0))
+            .bg(Hsla::from(colors.plaster))
+            .border_t_1()
+            .border_color(Hsla::from(colors.rule))
+            .text_size(u(13.5))
+            .ink(colors.ink_2)
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::BOLD)
+                    .ink(colors.ink)
+                    .child(text::TRANSCRIPT),
+            )
+            .child(div().flex_none().child("·"))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .child(SharedString::from(summary)),
+            )
+            .when(ready, |line| {
+                crate::ui::RowAction::new(
+                    text::SHOW_ALL,
+                    cx.listener(move |this, _, _, cx| {
+                        this.open_transcript(server_id, recording_id, None, cx);
+                    }),
                 )
-                .child(div().flex_none().child(if ready {
-                    SharedString::from(text::lines(transcript.total))
-                } else {
-                    state
-                }))
-                .when(ready && !transcript.language.is_empty(), |header| {
-                    header.child(Chip::new(text::transcript_language(&transcript.language)))
-                })
-                .children(self.request_transcript_button(card, transcript, cx))
-                .into_any_element(),
-        ];
-        if !ready {
-            return parts;
-        }
-        let faces = self.faces(server_id);
-        for row in transcript.lines.iter().take(SHOWN_LINES) {
-            let picture = faces.image(row.account_id);
-            parts.push(self.transcript_row_menu(
-                row,
-                (server_id, recording_id, "card"),
-                window,
-                cx,
-                |this, window, cx| {
-                    Self::transcript_line(
-                        row,
-                        picture,
-                        (&faces, server_id),
-                        true,
-                        false,
-                        theme,
-                        |part, child| {
-                            this.transcript_identity_target(
-                                row,
-                                (server_id, recording_id, "card"),
-                                part,
-                                child,
-                                window,
-                                cx,
-                            )
-                        },
-                    )
-                },
-            ));
-        }
-        let shown = transcript.lines.len().min(SHOWN_LINES);
-        parts.push(
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(u(8.0))
-                .h(u(32.0))
-                .px(u(10.0))
-                .border_t_1()
-                .border_color(Hsla::from(colors.rule_soft))
-                .text_size(u(13.0))
-                .ink(colors.ink_2)
-                .child(SharedString::from(if transcript.refresh_failed {
-                    text::TRANSCRIPT_REFRESH_FAILED.to_owned()
-                } else if transcript.failed {
-                    text::TRANSCRIPT_LINES_FAILED.to_owned()
-                } else {
-                    text::lines_shown(shown, transcript.total)
-                }))
-                .child({
-                    let ring =
-                        crate::ui::focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
-                    crate::ui::RowAction::new(
-                        text::SHOW_ALL,
-                        cx.listener(move |this, _, _, cx| {
-                            this.open_transcript(server_id, recording_id, None, cx);
-                        }),
-                    )
-                    .register();
+                .register();
+                line.child(div().flex_none().child("·")).child(
                     div()
                         .id(("show-transcript", recording_id.as_uuid().as_u128() as usize))
                         .role(Role::Button)
@@ -952,11 +918,12 @@ impl Shell {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_transcript(server_id, recording_id, None, cx);
                         }))
-                        .child(text::SHOW_ALL)
-                })
-                .into_any_element(),
-        );
-        parts
+                        .child(text::SHOW_ALL),
+                )
+            })
+            .child(div().flex_1())
+            .children(self.request_transcript_button(card, transcript, cx))
+            .into_any_element()
     }
 
     /// The control that asks for the transcript again, at the end of the title line of the
@@ -979,11 +946,8 @@ impl Shell {
             .h(u(26.0))
             .px(u(8.0));
         let button = match card.request {
-            TranscriptRequest::NotOffered => return None,
-            TranscriptRequest::NotAllowed => button
-                .label(label)
-                .tooltip(text::transcripts::REQUEST_NEEDS)
-                .disabled(true),
+            // Without the permission the request is absent (ADR 0790).
+            TranscriptRequest::NotOffered | TranscriptRequest::NotAllowed => return None,
             TranscriptRequest::Allowed { sending } => button
                 .label(if sending {
                     text::transcripts::REQUESTING
@@ -1009,130 +973,6 @@ impl Shell {
     }
 
     /// Opens the parts of a recording with their time ranges, at its card.
-    pub fn open_recording_parts(
-        &mut self,
-        recording_id: RecordingId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if std::mem::take(&mut self.recording_parts_closed_by_press) {
-            return;
-        }
-        self.open_layer(Layer::RecordingParts(recording_id), window, cx);
-    }
-
-    /// The parts of a recording: each file of the composite and of each track, its state,
-    /// and the time range that the recorder reported for it (ADR 0601). It floats over the
-    /// chat, so the rows of the chat do not move.
-    fn render_recording_parts(
-        &mut self,
-        card: &RecordingCard,
-        detail: &CardDetail,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let theme = theme(cx);
-        let colors = theme.colors;
-        let mut items: Vec<AnyElement> =
-            vec![menu_label(text::transcripts::PARTS_HELP, false, cx).into_any_element()];
-        for (index, part) in detail.parts.iter().enumerate() {
-            let content = div()
-                .debug_selector(move || format!("recording-part:{index}"))
-                .flex()
-                .items_start()
-                .gap(u(6.0))
-                .px(u(12.0))
-                .py(u(5.0))
-                .text_size(u(13.0))
-                .line_height(u(18.0))
-                .when(part.failed, |row| {
-                    row.child(
-                        div()
-                            .mt(u(2.0))
-                            .child(icon(Icon::Warning, 13.0, colors.cinnabar)),
-                    )
-                })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .ink(colors.ink)
-                                .child(SharedString::from(part.title.clone())),
-                        )
-                        .child(
-                            div()
-                                .ink(if part.failed {
-                                    colors.cinnabar_ink
-                                } else {
-                                    colors.ink_2
-                                })
-                                .child(SharedString::from(part.state.clone())),
-                        )
-                        .when_some(part.span.clone(), |column, span| {
-                            column.child(
-                                div()
-                                    .debug_selector(move || format!("recording-part-span:{index}"))
-                                    .font_family(theme.fonts.mono.clone())
-                                    .ink(colors.ink_2)
-                                    .child(SharedString::from(span)),
-                            )
-                        }),
-                )
-                .into_any_element();
-            let value = [
-                Some(part.title.clone()),
-                Some(part.state.clone()),
-                part.span.clone(),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("\n");
-            items.push(
-                self.recording_row_menu(
-                    card,
-                    (
-                        format!(
-                            "recording-part-menu:{}:{index}:{}",
-                            card.recording_id, part.title
-                        )
-                        .into(),
-                        text::COPY_TEXT,
-                        value,
-                    ),
-                    content,
-                    window,
-                    cx,
-                ),
-            );
-        }
-        div()
-            .absolute()
-            .left_0()
-            .top(u(32.0))
-            .child(deferred(
-                anchored().snap_to_window().child(
-                    Menu::new(
-                        "recording-parts-list",
-                        text::transcripts::PARTS_HELP,
-                        self.layer_focus(),
-                    )
-                    .width(380.0)
-                    .selector("recording-parts-list")
-                    .on_close(Self::handler(cx, |this, window, cx| {
-                        this.recording_parts_closed_by_press = !window.last_input_was_keyboard();
-                        this.close_layer(window, cx);
-                    }))
-                    .children(items)
-                    .child(div().h(u(6.0))),
-                ),
-            ))
-            .into_any_element()
-    }
-
     /// The card of a finished recording, in place of the system line that posted it.
     pub(crate) fn render_recording_card(
         &mut self,
@@ -1142,8 +982,13 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (server_id, recording_id) = (row.card.server_id, row.card.recording_id);
+        let shown = matches!(row.card.state, CardState::Shown(_));
+        let (may_remove, removing) = (row.card.may_remove, row.card.removing);
+        // One menu of the card for "⋯", right-click, the menu key and Shift+F10: the
+        // buttons of the card, "Copy link", and "Remove" for a person who may (ADR 0744).
         let (content, actions) = crate::ui::collect_actions(|| {
-            if matches!(row.card.state, CardState::Shown(_)) {
+            let content = self.recording_card_content(index, row, window, cx);
+            if shown {
                 crate::ui::RowAction::new(
                     text::COPY_TARGET_LINK,
                     cx.listener(move |this, _, _, cx| {
@@ -1155,23 +1000,43 @@ impl Shell {
                 )
                 .register();
             }
-            self.recording_card_content(index, row, window, cx)
+            if shown && may_remove {
+                let mut remove = crate::ui::RowAction::new(
+                    text::REMOVE,
+                    cx.listener(move |this, _, window, cx| {
+                        this.ask_to_remove_recording(server_id, recording_id, window, cx);
+                    }),
+                );
+                remove.disabled = removing;
+                remove.register();
+            }
+            content
         });
         let theme = theme(cx);
         let ring =
             crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
         let key = SharedString::from(format!("recording-actions:{recording_id}"));
+        let focus = crate::ui::row_focus(key.clone(), window, cx);
+        let focused = focus.is_focused(window);
         let frame = div()
             .id(key.clone())
+            .relative()
             .w_full()
             .min_w_0()
             .role(Role::Group)
             .aria_label(text::RECORDING)
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
             .focus_visible(move |style| style.shadow(ring))
             .child(content);
-        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
+        crate::ui::bind_row_action_menu(
+            frame,
+            key,
+            crate::ui::RowMenu::overlay(focused).selector("recording-more"),
+            actions,
+            window,
+            cx,
+        )
+        .into_any_element()
     }
 
     fn recording_card_content(
@@ -1197,15 +1062,9 @@ impl Shell {
                 .child(sentence)
                 .into_any_element()
         };
-        let (title, tag): (SharedString, Option<SharedString>) = match &card.state {
-            CardState::Shown(detail) => (
-                text::recording_of(&detail.channel).into(),
-                Some(
-                    text::transcript_state(detail.transcript.state, detail.transcript.failure)
-                        .into(),
-                ),
-            ),
-            _ => (text::RECORDING.into(), None),
+        let title: SharedString = match &card.state {
+            CardState::Shown(detail) => text::recording_of(&detail.channel).into(),
+            _ => text::RECORDING.into(),
         };
         let body: Vec<AnyElement> =
             match &card.state {
@@ -1305,16 +1164,7 @@ impl Shell {
                                     .text_size(u(12.5))
                                     .ink(colors.ink_3)
                                     .child(SharedString::from(row.time.clone())),
-                            )
-                            .when_some(tag, |header, tag| {
-                                header.child(
-                                    div()
-                                        .flex_none()
-                                        .text_size(u(12.5))
-                                        .ink(colors.ink_3)
-                                        .child(tag),
-                                )
-                            }),
+                            ),
                     )
                     .child(
                         div()
@@ -1381,56 +1231,23 @@ impl Shell {
                 .into_any_element()
         });
         let mut actions: Vec<AnyElement> = Vec::new();
-        if let Some(video) = detail.video {
-            let stem = detail
-                .files
-                .iter()
-                .find(|file| file.segment_id == video)
-                .map(|file| file.stem.clone())
-                .unwrap_or_default();
-            let held = card.clone();
+        if matches!(
+            detail.transcript.state,
+            TranscriptState::Ready | TranscriptState::Partial
+        ) {
             actions.push(
-                Button::new(("open-recording", index))
-                    .icon(Icon::Open)
-                    .icon_colour(colors.cypress_ink)
-                    .label(text::OPEN)
-                    .tooltip(text::OPEN_RECORDING)
-                    .selector("open-recording")
+                Button::new(("recording-transcript", index))
+                    .icon(Icon::Document)
+                    .label(text::TRANSCRIPT)
+                    .tooltip(text::OPEN_TRANSCRIPT)
+                    .selector("recording-transcript")
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.save_recorded(
-                            &held,
-                            RecordedFile::Segment(video),
-                            stem.clone(),
-                            true,
-                            cx,
-                        );
+                        this.open_transcript(server_id, recording_id, None, cx);
                     }))
                     .into_any_element(),
             );
         }
         if !detail.parts.is_empty() {
-            let parts_open =
-                matches!(&self.layer, Layer::RecordingParts(open) if *open == recording_id);
-            let list = parts_open.then(|| self.render_recording_parts(card, detail, window, cx));
-            actions.push(
-                div()
-                    .relative()
-                    .flex_none()
-                    .child(
-                        Button::new(("recording-parts", index))
-                            .icon(Icon::List)
-                            .label(text::transcripts::parts(detail.parts.len()))
-                            .tooltip(text::transcripts::PARTS_HELP)
-                            .selector("recording-parts")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_recording_parts(recording_id, window, cx);
-                            })),
-                    )
-                    .children(list)
-                    .into_any_element(),
-            );
-        }
-        if !detail.files.is_empty() {
             actions.push(
                 div()
                     .relative()
@@ -1439,7 +1256,7 @@ impl Shell {
                         Button::new(("download-recording", index))
                             .icon(Icon::Download)
                             .icon_colour(colors.cypress_ink)
-                            .label(text::DOWNLOAD)
+                            .label(text::FILES)
                             .tooltip(text::RECORDING_FILES)
                             .selector("download-recording")
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1450,33 +1267,6 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        actions.push(div().flex_1().into_any_element());
-        // The removal: offered to a person whose roles hold the permission, and stated
-        // as not allowed to another person.
-        actions.push(if card.may_remove {
-            Button::new(("remove-recording", index))
-                .icon(Icon::Trash)
-                .label(if card.removing {
-                    text::RECORDING_REMOVING
-                } else {
-                    text::REMOVE
-                })
-                .tooltip(text::REMOVE_RECORDING)
-                .disabled(card.removing)
-                .selector("remove-recording")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.ask_to_remove_recording(server_id, recording_id, window, cx);
-                }))
-                .into_any_element()
-        } else {
-            Button::new(("remove-recording", index))
-                .icon(Icon::Trash)
-                .label(text::REMOVE)
-                .tooltip(text::RECORDING_REMOVE_NEEDS_PERMISSION)
-                .disabled(true)
-                .selector("remove-recording")
-                .into_any_element()
-        });
         // The files that are saved, and what happened to each.
         let mut downloads: Vec<AnyElement> = Vec::new();
         for (position, file) in detail.files.iter().enumerate() {
@@ -1518,17 +1308,44 @@ impl Shell {
             ));
         }
         let length = detail.length.map(text::media_length);
+        let open_video = detail.video.map(|video| {
+            let stem = detail
+                .files
+                .iter()
+                .find(|file| file.segment_id == video)
+                .map(|file| file.stem.clone())
+                .unwrap_or_default();
+            let held = card.clone();
+            move |this: &mut Self, cx: &mut Context<Self>| {
+                this.save_recorded(&held, RecordedFile::Segment(video), stem.clone(), true, cx);
+            }
+        });
         let top = div()
             .flex()
             .gap(u(14.0))
             .p(u(8.0))
             .child(
-                // The place of the picture of the video: the client has no player, and
-                // "Open" plays the file with the player of the system.
+                // The place of the picture of the video opens it with the player of the
+                // system: the client has no player.
                 div()
+                    .id(("open-recording", index))
                     .relative()
                     .flex()
                     .flex_none()
+                    .when_some(open_video, |thumb, open| {
+                        let ring =
+                            crate::ui::focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
+                        thumb
+                            .debug_selector(|| "open-recording".to_owned())
+                            .role(Role::Button)
+                            .aria_label(text::OPEN_RECORDING)
+                            .tooltip(crate::ui::tooltip(text::OPEN_RECORDING))
+                            .cursor_pointer()
+                            .focusable()
+                            .tab_stop(true)
+                            .focus_visible(move |style| style.shadow(ring))
+                            .on_click(cx.listener(move |this, _, _, cx| open(this, cx)))
+                    })
                     .items_center()
                     .justify_center()
                     .w(u(160.0))
@@ -1617,9 +1434,14 @@ impl Shell {
                     })
                     .child(line(text::recording_files(detail)))
                     .children(job)
-                    .children(detail.files.iter().filter_map(|file| {
-                        let problem = file.problem.as_ref()?;
-                        Some(line(format!("{}: {problem}", file_title(file))))
+                    .children(detail.video_late.map(|late| {
+                        div()
+                            .id("recording-video-late")
+                            .debug_selector(|| "recording-video-late".to_owned())
+                            .text_size(u(13.5))
+                            .line_height(u(20.0))
+                            .ink(colors.ink_2)
+                            .child(SharedString::from(text::video_begins_late(late)))
                     }))
                     .child(
                         div()
@@ -1669,7 +1491,7 @@ impl Shell {
                 }))
                 .into_any_element(),
         );
-        body.extend(self.card_transcript(card, &detail.transcript, theme, window, cx));
+        body.push(self.card_transcript(card, &detail.transcript, theme, cx));
         body
     }
 
@@ -2030,10 +1852,7 @@ impl Shell {
                     .icon(Icon::X)
                     .tooltip(text::CLOSE_TRANSCRIPT)
                     .selector("close-transcript")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state
-                            .update(cx, |state, cx| state.close_transcript(cx));
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.close_side_view(cx))),
             );
         let note = |sentence: &'static str| {
             div()

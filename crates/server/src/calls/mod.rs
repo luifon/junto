@@ -3,7 +3,6 @@
 
 pub mod admission;
 pub mod entry;
-pub mod speaking;
 pub mod store;
 
 use std::cell::RefCell;
@@ -34,15 +33,13 @@ pub struct Calls {
     failing_after: u32,
     wake: Notify,
     work: Mutex<Work>,
-    /// The requests of a device that change a call, its reports about its own state and its
-    /// reports about who speaks are limited per session, by the hash of its token.
+    /// The requests of a device that change a call and its reports about its own state are
+    /// limited per session, by the hash of its token.
     pub actions: RateLimiter<[u8; 32]>,
     pub state_reports: RateLimiter<[u8; 32]>,
-    pub speaking_reports: RateLimiter<[u8; 32]>,
     /// The notifications of the media server that start a check, all together.
     pub notifications: RateLimiter<()>,
     seen_notifications: Mutex<SeenNotifications>,
-    pub(crate) speaking: Mutex<speaking::Marks>,
 }
 
 /// What the admission check has to do and what it found.
@@ -177,10 +174,8 @@ impl Calls {
             }),
             actions: RateLimiter::with_capacity(limits.calls.actions, entries),
             state_reports: RateLimiter::with_capacity(limits.calls.state_reports, entries),
-            speaking_reports: RateLimiter::with_capacity(limits.calls.speaking_reports, entries),
             notifications: RateLimiter::with_capacity(limits.calls.notifications, 1),
             seen_notifications: Mutex::new(SeenNotifications::default()),
-            speaking: Mutex::new(speaking::Marks::default()),
         }
     }
 

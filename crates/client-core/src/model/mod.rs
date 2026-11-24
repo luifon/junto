@@ -110,8 +110,8 @@ fn usable_group(
     group: &junto_protocol::message::GroupConversation,
     own: junto_protocol::ids::AccountId,
 ) -> bool {
-    !group.name.trim().is_empty()
-        && group.name.chars().count() <= 80
+    // A group may have no name (ADR 0302): the window names it by its people.
+    group.name.chars().count() <= 80
         && !group.name.chars().any(char::is_control)
         && (1..=10).contains(&group.account_ids.len())
         && group.account_ids.contains(&own)
@@ -195,9 +195,6 @@ pub struct CallModel {
     /// with a place in a call that hides who is inside, until the server has seen its
     /// device in the room.
     pub participants: Vec<CallParticipant>,
-    /// The people who speak now, as the last `call_speaking` told it (ADR 0513). A
-    /// snapshot does not carry the marks, so the list is empty until the next change.
-    pub speaking: Vec<AccountId>,
     /// The recording of the call that is starting or runs (ADR 0601). A reader shows the
     /// recording indicator while it is present. A recording that has ended leaves the
     /// state; its later changes are notices.
@@ -214,7 +211,6 @@ impl CallModel {
             meeting: None,
             hides_occupants,
             participants: Vec::new(),
-            speaking: Vec::new(),
             recording: None,
         }
     }
@@ -228,7 +224,6 @@ impl CallModel {
             meeting: call.meeting,
             hides_occupants: call.hides_occupants,
             participants: call.participants,
-            speaking: Vec::new(),
             recording: call
                 .recording
                 .filter(|recording| recording.state.is_active()),
@@ -783,14 +778,7 @@ impl ServerModel {
         let read_at = read_at.unwrap_or(self.cursor.position);
         self.own_grant =
             (loaded.meeting_grant == Some(true)).then(|| (loaded.own.identity.clone(), read_at));
-        let speaking = self
-            .call_at(&loaded.call.place)
-            .filter(|held| held.id == loaded.call.id)
-            .map(|held| held.speaking.clone())
-            .unwrap_or_default();
-        let mut call = CallModel::of(loaded.call);
-        call.speaking = speaking;
-        self.put_call(call);
+        self.put_call(CallModel::of(loaded.call));
     }
 
     pub(crate) fn put_call(&mut self, call: CallModel) {

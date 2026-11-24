@@ -34,9 +34,88 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         self.selection.thread = Some((server_id, channel_id, root_id));
+        self.selection.threads = None;
         self.selection.pins = None;
         self.known.fork = None;
         self.changed(cx);
+    }
+
+    /// Shows the threads of a workspace that the account follows in the side panel, in place
+    /// of the other lists (ADR 0741).
+    pub fn open_followed_threads(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: junto_client_core::protocol::ids::WorkspaceId,
+        cx: &mut Context<Self>,
+    ) {
+        self.selection.threads = Some((server_id, workspace_id));
+        self.selection.thread = None;
+        self.selection.pins = None;
+        self.selection.notices = None;
+        self.selection.transcript = None;
+        self.known.transcript_line = None;
+        self.known.fork = None;
+        if let Some(search) = &mut self.known.search {
+            search.open = false;
+        }
+        self.changed(cx);
+    }
+
+    pub fn close_followed_threads(&mut self, cx: &mut Context<Self>) {
+        self.selection.threads = None;
+        self.changed(cx);
+    }
+
+    /// Reads the page of the followed threads of the workspace after the listed ones.
+    /// Reads the followed threads of the side panel "Threads" again after a failed read.
+    /// Why the followed threads of the forward dialog are missing from its destinations.
+    pub(crate) fn forward_threads_failure(&self) -> Option<super::followed::ListFailure> {
+        self.known.followed.forward_failure()
+    }
+
+    /// The workspaces of the forward dialog that have further followed threads, with their
+    /// names, for the rows that read them (ADR 0740).
+    pub(crate) fn forward_threads_with_more(
+        &self,
+    ) -> Vec<(junto_client_core::protocol::ids::WorkspaceId, String)> {
+        let followed = &self.known.followed;
+        let Some(model) = followed
+            .forward_server
+            .and_then(|server_id| self.client.server(server_id))
+            .and_then(|server| server.live().view().model)
+        else {
+            return Vec::new();
+        };
+        followed
+            .forward_with_more()
+            .into_iter()
+            .filter_map(|workspace_id| {
+                let workspace = model
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace.id == workspace_id)?;
+                Some((workspace_id, workspace.workspace.name.clone()))
+            })
+            .collect()
+    }
+
+    /// The person reads the followed threads of the forward dialog again.
+    pub(crate) fn retry_forward_threads(&mut self, cx: &mut Context<Self>) {
+        if self.known.followed.retry_forward() {
+            self.changed(cx);
+        }
+    }
+
+    pub fn retry_followed_threads(&mut self, cx: &mut Context<Self>) {
+        if self.known.followed.workspace.retry() {
+            self.changed(cx);
+        }
+    }
+
+    pub fn read_more_followed_threads(&mut self, cx: &mut Context<Self>) {
+        if self.known.followed.workspace.expand() {
+            self.changed(cx);
+        }
     }
 
     pub fn close_thread(&mut self, cx: &mut Context<Self>) {
@@ -53,6 +132,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         self.selection.pins = Some((server_id, channel_id));
+        self.selection.threads = None;
         self.selection.thread = None;
         self.changed(cx);
     }

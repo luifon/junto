@@ -647,10 +647,13 @@ pub(crate) mod testing {
             capabilities: junto_protocol::server::Capabilities {
                 afk_channel: true,
                 channel_topics: true,
+                workspace_threads: true,
                 message_format: junto_protocol::message::DocumentFormat {
                     event_revision: junto_protocol::events::EVENT_REVISION,
                 },
                 search: junto_protocol::discovery::SearchCapabilities::ALL,
+                status_text: true,
+                device_link_relay: true,
             },
         }
     }

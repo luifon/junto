@@ -66,14 +66,14 @@ pub const REQUEST: &str = "Transcribe";
 pub const REQUEST_AGAIN: &str = "Transcribe again";
 pub const REQUEST_HELP: &str = "Ask the server to write the transcript of this recording";
 pub const REQUESTING: &str = "Asking…";
-pub const REQUEST_NEEDS: &str = "You do not hold “manage recordings” in this workspace.";
 
 // The parts of a recording.
 pub const PARTS: &str = "Parts";
 pub const PARTS_HELP: &str = "Every file of this recording with the time range that it holds";
 
 // The language of a new recording.
-pub const LANGUAGE_MENU: &str = "Choose the spoken language to start recording";
+pub const LANGUAGE_MENU: &str = "Language of this recording";
+pub const FIND_LANGUAGE: &str = "Find a language";
 pub const DETECT: &str = "Detect the language of each sentence";
 pub const DETECT_HELP: &str = "For speech in more than one language";
 pub const ONE_LANGUAGE: &str = "One language for the whole recording";
@@ -371,6 +371,17 @@ pub fn changed_name_range(name: &str) -> std::ops::Range<usize> {
 pub fn named_name_range(name: &str) -> std::ops::Range<usize> {
     let start = "Named by ".len();
     start..start + name.len()
+}
+
+pub const RECORD_IN_ANOTHER_LANGUAGE: &str = "Record in another language";
+
+/// The name of the spoken language of recordings by its code, "Detect the language of each
+/// sentence" for `auto`, or the code when this build does not know it.
+pub fn recording_language_name(code: &str) -> String {
+    if code == "auto" {
+        return DETECT.to_owned();
+    }
+    language_name(code).map_or_else(|| code.to_owned(), str::to_owned)
 }
 
 #[cfg(test)]

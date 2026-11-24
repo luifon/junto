@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
     },
-    "version": "0.2.1"
+    "version": "0.3.0"
   },
   "paths": {
     "/api/server": {
@@ -449,12 +449,198 @@
         ]
       }
     },
+    "/api/v1/account/device-link-relay": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "The offer for the calling device, from the device that approved it.",
+        "operationId": "read_offer",
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayOffer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/account/device-link-relay/answer": {
+      "put": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Writes the answer of the calling device, which replaces its earlier answer. The device\nthat approved it is told.",
+        "operationId": "write_answer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnswerRelay"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/account/device-link-relays/{device_id}": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "The answer of the new device `device_id`, for the device that approved it.",
+        "operationId": "read_answer",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/DeviceId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayAnswer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Ends the relay of the new device `device_id`. Either of its two devices ends it.",
+        "operationId": "end",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/DeviceId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/account/device-links/approve": {
       "post": {
         "tags": [
           "account"
         ],
-        "summary": "Adds the device behind a link code to the caller's account. The approval names the public\nkey of the new device.",
+        "summary": "Adds the device behind a link code to the caller's account. The approval names the public\nkey of the new device. With an offer it also creates the relay of the link, in the same\ntransaction (ADR 0104).",
         "operationId": "approve_device_link",
         "requestBody": {
           "content": {
@@ -931,6 +1117,59 @@
                   "type": "string"
                 },
                 "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/account/status-text": {
+      "put": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Sets or removes the status text of the caller's account. The people who watch the\naccount read its presence again.",
+        "operationId": "set_status_text",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetStatusText"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetStatusText"
+                }
               }
             }
           },
@@ -1700,6 +1939,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -1747,6 +1998,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -1813,6 +2076,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -1904,6 +2179,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -1972,6 +2259,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -2049,6 +2348,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -2141,6 +2452,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2205,6 +2528,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2260,6 +2595,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -2609,6 +2956,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2666,6 +3025,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -2731,6 +3102,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2782,6 +3165,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -2849,6 +3244,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2890,6 +3297,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -2939,6 +3358,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -3021,6 +3452,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3083,6 +3526,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -3155,6 +3610,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3206,6 +3673,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -3282,6 +3761,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3332,6 +3823,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -3408,49 +3911,11 @@
                 "null"
               ]
             }
-          }
-        ],
-        "responses": {
-          "204": {
-            "headers": {
-              "junto-event-cursor": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
-              }
-            }
           },
-          "default": {
-            "description": "An error. The field `error.code` states which one.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
           {
-            "session": []
-          }
-        ]
-      }
-    },
-    "/api/v1/call/speaking": {
-      "put": {
-        "tags": [
-          "calls"
-        ],
-        "summary": "Reports whether the person speaks. The server relays a mark, not a level, to the people\nwho may see who is in the voice channel, at most once per second for one call.",
-        "operationId": "report_speaking",
-        "parameters": [
-          {
-            "name": "Junto-Group-Conversations",
+            "name": "Junto-Group-Names",
             "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -3460,16 +3925,6 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ReportSpeaking"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "204": {
             "headers": {
@@ -3511,6 +3966,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -3571,6 +4038,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -3908,6 +4387,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3973,6 +4464,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4031,6 +4534,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -4133,6 +4648,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4198,6 +4725,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4247,6 +4786,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -4312,6 +4863,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4361,6 +4924,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -4434,6 +5009,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4493,6 +5080,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -4566,6 +5165,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4623,6 +5234,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -4689,6 +5312,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -4779,6 +5414,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4836,6 +5483,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -5008,6 +5667,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -5076,6 +5747,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -5233,6 +5916,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -5288,6 +5983,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -5369,6 +6076,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -5424,6 +6143,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -5551,6 +6282,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -6038,6 +6781,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6054,6 +6809,59 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/FollowedThreads"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/channels/{channel_id}/viewers": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "The members of the workspace of a channel who can see the channel. The caller sees the\nchannel. Each member is checked by the permission function, as a request of that member\nwould be.",
+        "operationId": "get_channel_viewers",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelViewers"
                 }
               }
             }
@@ -6095,6 +6903,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -6168,6 +6988,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6218,6 +7050,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -6293,6 +7137,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -6450,6 +7306,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6505,6 +7373,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -6586,6 +7466,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6641,6 +7533,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -6715,6 +7619,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -6858,6 +7774,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6923,6 +7851,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6965,6 +7905,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -7019,6 +7971,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -7124,6 +8088,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -7288,6 +8264,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7324,6 +8312,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -7399,6 +8399,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7455,6 +8467,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -7525,6 +8549,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -7609,6 +8645,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7659,6 +8707,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -7732,6 +8792,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7792,6 +8864,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -7893,6 +8977,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7950,6 +9046,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -8024,6 +9132,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -8684,6 +9804,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -8739,6 +9871,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -8818,6 +9962,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -8868,6 +10024,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -8949,6 +10117,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -8997,6 +10177,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -9054,6 +10246,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -9129,6 +10333,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -9237,6 +10453,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -9377,6 +10605,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -9432,6 +10672,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -9514,6 +10766,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -9587,6 +10851,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -9637,6 +10913,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -9699,6 +10987,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -9780,6 +11080,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -9844,6 +11156,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -9919,6 +11243,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -10017,6 +11353,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -10067,6 +11415,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -10142,6 +11502,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -11058,6 +12430,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -11572,6 +12956,100 @@
         ]
       }
     },
+    "/api/v1/server/recording-settings": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "The settings of the recordings of the server: the spoken language of a recording that\nnames none. Every account of the server reads them.",
+        "operationId": "get_recording_settings",
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingSettings"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Sets the spoken language of a recording that names none. The caller is an administrator\nof the server.",
+        "operationId": "set_recording_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordingSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingSettings"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/snapshot": {
       "get": {
         "tags": [
@@ -11596,6 +13074,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -11772,6 +13262,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -12047,6 +13549,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -12102,6 +13616,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -13248,6 +14774,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -13303,6 +14841,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -13838,7 +15388,8 @@
         "tags": [
           "workspaces"
         ],
-        "summary": "The workspace permissions that are allowed to or denied to one member.",
+        "summary": "Retired: a workspace has no permission rule for one member any more. Every request is\nrefused with `retired`.",
+        "description": "Workspace permission rules for one member were removed in Junto 0.3.0: each one became a role of that member. Use a role, or a rule of a channel or a category.",
         "operationId": "get_member_permissions",
         "parameters": [
           {
@@ -13859,19 +15410,12 @@
           }
         ],
         "responses": {
-          "200": {
-            "headers": {
-              "junto-event-cursor": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
-              }
-            },
+          "410": {
+            "description": "An error. The field `error.code` states which one.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PersonPermissions"
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -13887,17 +15431,14 @@
             }
           }
         },
-        "security": [
-          {
-            "session": []
-          }
-        ]
+        "deprecated": true
       },
       "put": {
         "tags": [
           "workspaces"
         ],
-        "summary": "Sets the workspace permissions that are allowed to and denied to one member. Two empty\nsets remove them. The caller outranks the member and holds what the change adds in the\nworkspace and in every channel where it adds it (ADR 0306).",
+        "summary": "Retired: a workspace has no permission rule for one member any more. Every request is\nrefused with `retired`.",
+        "description": "Workspace permission rules for one member were removed in Junto 0.3.0: each one became a role of that member. Use a role, or a rule of a channel or a category.",
         "operationId": "set_member_permissions",
         "parameters": [
           {
@@ -13917,30 +15458,13 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetChannelOverride"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "200": {
-            "headers": {
-              "junto-event-cursor": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
-              }
-            },
+          "410": {
+            "description": "An error. The field `error.code` states which one.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PersonPermissions"
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -13956,17 +15480,14 @@
             }
           }
         },
-        "security": [
-          {
-            "session": []
-          }
-        ]
+        "deprecated": true
       },
       "patch": {
         "tags": [
           "workspaces"
         ],
-        "summary": "Changes one workspace permission of one member.",
+        "summary": "Retired: a workspace has no permission rule for one member any more. Every request is\nrefused with `retired`.",
+        "description": "Workspace permission rules for one member were removed in Junto 0.3.0: each one became a role of that member. Use a role, or a rule of a channel or a category.",
         "operationId": "change_member_permission",
         "parameters": [
           {
@@ -13986,30 +15507,13 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChangeChannelOverride"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "200": {
-            "headers": {
-              "junto-event-cursor": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
-              }
-            },
+          "410": {
+            "description": "An error. The field `error.code` states which one.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PersonPermissions"
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -14025,11 +15529,7 @@
             }
           }
         },
-        "security": [
-          {
-            "session": []
-          }
-        ]
+        "deprecated": true
       }
     },
     "/api/v1/workspaces/{workspace_id}/members/{account_id}/removal": {
@@ -14251,6 +15751,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -14307,6 +15819,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -14387,6 +15911,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -14437,6 +15973,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -14499,6 +16047,18 @@
             "name": "Junto-Group-Conversations",
             "in": "header",
             "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
             "required": false,
             "schema": {
               "type": [
@@ -14993,6 +16553,109 @@
           }
         ]
       }
+    },
+    "/api/v1/workspaces/{workspace_id}/threads": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "The threads of a workspace that the caller follows in the channels whose history it\nreads: unread ones first, each group with the newest reply first, in pages (ADR 0413).\nThe caller is a member of the workspace.",
+        "operationId": "workspace_followed",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "before",
+            "in": "path",
+            "description": "The value `next` of the page before.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "From 1 to 200. Absent: 50.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Names",
+            "in": "header",
+            "description": "optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceThreads"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -15147,6 +16810,17 @@
           },
           "presence": {
             "$ref": "#/components/schemas/Presence"
+          },
+          "status_text": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StatusText",
+                "description": "The status text of the account, for a caller who may see the account. Absent when\nthe account has none or its end time has passed."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -15292,6 +16966,19 @@
           }
         }
       },
+      "AnswerRelay": {
+        "type": "object",
+        "description": "What the new device writes: its answer to the offer, which replaces an earlier one.",
+        "required": [
+          "answer"
+        ],
+        "properties": {
+          "answer": {
+            "$ref": "#/components/schemas/Sealed"
+          }
+        },
+        "additionalProperties": false
+      },
       "ApplyStructureChanges": {
         "type": "object",
         "description": "`POST /api/v1/structure/changes`: the changes of one plan. The server applies all of them\nor none, and none when `revision` is not the current revision of the structure.",
@@ -15325,6 +17012,17 @@
           },
           "public_key": {
             "$ref": "#/components/schemas/PublicKey"
+          },
+          "relay": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sealed",
+                "description": "The offer for the new device: the server keeps it in a relay of the link, which the\ntwo devices read and answer until it ends (ADR 0104). Only for a server that states\n`capabilities.device_link_relay`; an older server ignores the field."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -18242,11 +19940,23 @@
           "channel_topics": {
             "type": "boolean"
           },
+          "device_link_relay": {
+            "type": "boolean",
+            "description": "The approval of a device link takes an offer, which the server keeps in a relay for\nthe two devices (`/api/v1/account/device-link-relay`)."
+          },
           "message_format": {
             "$ref": "#/components/schemas/DocumentFormat"
           },
           "search": {
             "$ref": "#/components/schemas/SearchCapabilities"
+          },
+          "status_text": {
+            "type": "boolean",
+            "description": "The account has a status text with an end time (`PUT /api/v1/account/status-text`)."
+          },
+          "workspace_threads": {
+            "type": "boolean",
+            "description": "The server lists the followed threads of a workspace\n(`GET /api/v1/workspaces/{workspace_id}/threads`, ADR 0413)."
           }
         }
       },
@@ -18774,6 +20484,25 @@
           },
           "synced": {
             "type": "boolean"
+          }
+        }
+      },
+      "ChannelViewers": {
+        "type": "object",
+        "description": "The members of the workspace of a channel who can see it: the permission function\nallows them \"view channel\" there (ADR 0790).",
+        "required": [
+          "channel_id",
+          "account_ids"
+        ],
+        "properties": {
+          "account_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          "channel_id": {
+            "$ref": "#/components/schemas/ChannelId"
           }
         }
       },
@@ -19352,6 +21081,17 @@
           "document"
         ],
         "properties": {
+          "comment": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Document",
+                "description": "The new comment of a forward. Absent: the comment stays; a document without blocks\nremoves it (ADR 0408)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "document": {
             "$ref": "#/components/schemas/Document"
           }
@@ -19459,6 +21199,7 @@
           "recordings_full",
           "range_not_satisfiable",
           "method_not_allowed",
+          "retired",
           "timeout",
           "busy",
           "unavailable",
@@ -20197,6 +21938,13 @@
             "properties": {
               "may_unban": {
                 "type": "boolean"
+              },
+              "workspace_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspaceId"
+                },
+                "description": "The workspaces of the account that the caller sees, in the order of their\nidentifiers. A server before release 0.3.0 states none."
               }
             }
           }
@@ -20340,6 +22088,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "comment": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Document",
+                "description": "The comment that the sender of a forward wrote with it, kept apart from the forwarded\ncontent in `document` (ADR 0408). Absent for every other message."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "created_at": {
@@ -21180,32 +22939,6 @@
           }
         }
       },
-      "PersonPermissions": {
-        "type": "object",
-        "description": "The workspace permissions that are allowed to or denied to one member in a workspace,\nafter the member's roles (ADR 0301).",
-        "required": [
-          "account_id",
-          "allow",
-          "deny"
-        ],
-        "properties": {
-          "account_id": {
-            "$ref": "#/components/schemas/AccountId"
-          },
-          "allow": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/WorkspacePermission"
-            }
-          },
-          "deny": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/WorkspacePermission"
-            }
-          }
-        }
-      },
       "Presence": {
         "type": "string",
         "enum": [
@@ -21686,6 +23419,19 @@
         "type": "string",
         "format": "uuid"
       },
+      "RecordingSettings": {
+        "type": "object",
+        "description": "The settings of the recordings of a server (ADR 0604).",
+        "required": [
+          "language"
+        ],
+        "properties": {
+          "language": {
+            "type": "string",
+            "description": "The spoken language of a recording that names none: a language code of two or\nthree lower-case letters, or `auto`. English on a new server."
+          }
+        }
+      },
       "RecordingState": {
         "type": "string",
         "description": "The state of a recording. The states follow each other in this order; the last three are\nfinal.",
@@ -21816,6 +23562,63 @@
               "$ref": "#/components/schemas/WorkspaceId"
             },
             "description": "The workspaces that the account entered with this redemption."
+          }
+        }
+      },
+      "RelayAnswer": {
+        "type": "object",
+        "description": "What the approving device reads: the answer of the new device, when it wrote one.",
+        "required": [
+          "new_device_id",
+          "new_public_key",
+          "expires_at"
+        ],
+        "properties": {
+          "answer": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sealed"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "new_device_id": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "new_public_key": {
+            "$ref": "#/components/schemas/PublicKey"
+          }
+        }
+      },
+      "RelayOffer": {
+        "type": "object",
+        "description": "What the new device reads: the offer of the device that approved it.",
+        "required": [
+          "old_device_id",
+          "old_public_key",
+          "offer",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "offer": {
+            "$ref": "#/components/schemas/Sealed"
+          },
+          "old_device_id": {
+            "$ref": "#/components/schemas/DeviceId",
+            "description": "The device that approved this one; its key on this server sealed the offer."
+          },
+          "old_public_key": {
+            "$ref": "#/components/schemas/PublicKey"
           }
         }
       },
@@ -21977,17 +23780,6 @@
             "format": "int32",
             "description": "The share that the report is about, below `MAX_SHARES`. Absent: slot 0, as a client\nfrom before several shares reports its one share.",
             "minimum": 0
-          }
-        }
-      },
-      "ReportSpeaking": {
-        "type": "object",
-        "required": [
-          "speaking"
-        ],
-        "properties": {
-          "speaking": {
-            "type": "boolean"
           }
         }
       },
@@ -22227,6 +24019,13 @@
           }
         }
       },
+      "Sealed": {
+        "type": "string",
+        "description": "1 to 65536 bytes in base64url without padding, sealed by the sending device",
+        "maxLength": 87384,
+        "minLength": 2,
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
       "SearchCapabilities": {
         "type": "object",
         "properties": {
@@ -22418,6 +24217,17 @@
             "type": "string",
             "description": "`video/mp4` for the composite and `audio/ogg` for an audio track."
           },
+          "missing_sound": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SoundGap",
+                "description": "The longest continuous stretch of sound that the composite lacks, on the timeline of\nthe recording, with the problem `sound_missing`. Absent from a server before it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "problems": {
             "type": "array",
             "items": {
@@ -22513,6 +24323,17 @@
               "$ref": "#/components/schemas/AttachmentId"
             },
             "description": "The completed uploads that the message holds. The message lists them in this order."
+          },
+          "comment": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Document",
+                "description": "The comment of a forward: only with a document that holds a forward origin\n(ADR 0408)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "document": {
             "$ref": "#/components/schemas/Document"
@@ -22849,6 +24670,23 @@
           }
         }
       },
+      "SetStatusText": {
+        "type": "object",
+        "description": "The new status text of the caller's account, or `null` to remove it.",
+        "properties": {
+          "status_text": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StatusText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "SetThreadFollow": {
         "type": "object",
         "description": "The choice of an account to follow a thread or not.",
@@ -23073,6 +24911,24 @@
           }
         }
       },
+      "SoundGap": {
+        "type": "object",
+        "description": "A stretch of time on the timeline of a recording.",
+        "required": [
+          "from",
+          "until"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "SpeakerSeparation": {
         "type": "string",
         "description": "Whether the lines of a segment of shared sound have speaker labels (ADR 0614).",
@@ -23104,7 +24960,7 @@
               "string",
               "null"
             ],
-            "description": "The language of the speech, as a Whisper language code of two or three lower-case\nletters. Absent or `auto`: the language of each speech clip is detected (ADR 0603)."
+            "description": "The language of the speech, as a Whisper language code of two or three lower-case\nletters, `auto`: the language of each speech clip is detected (ADR 0603), or\n[`DEFAULT_LANGUAGE`]: the default language of the recordings of the server\n([`RecordingSettings`]). Absent: `auto`, as a client of API version 1 before the\ndefault language sends it (ADR 0604)."
           }
         }
       },
@@ -23146,6 +25002,27 @@
           },
           "sha256": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "StatusText": {
+        "type": "object",
+        "description": "A short text that an account shows with its status, with an optional end time after\nwhich the server removes it.",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "One line of 1 to 100 characters without control characters."
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
           }
         },
         "additionalProperties": false
@@ -25033,6 +26910,48 @@
           },
           "workspace": {
             "$ref": "#/components/schemas/Workspace"
+          }
+        }
+      },
+      "WorkspaceThread": {
+        "type": "object",
+        "description": "One followed thread of a workspace, with its channel.",
+        "required": [
+          "channel_id",
+          "state"
+        ],
+        "properties": {
+          "channel_id": {
+            "$ref": "#/components/schemas/ChannelId"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ThreadState"
+          }
+        }
+      },
+      "WorkspaceThreads": {
+        "type": "object",
+        "description": "One page of the threads of a workspace that the caller follows, unread ones first\n(ADR 0413).",
+        "required": [
+          "threads",
+          "more"
+        ],
+        "properties": {
+          "more": {
+            "type": "boolean"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `before` to read the next page. Absent on the last page."
+          },
+          "threads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceThread"
+            }
           }
         }
       }

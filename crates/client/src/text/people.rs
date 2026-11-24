@@ -10,9 +10,10 @@ pub const PICTURE_HELP: &str = "A new account on a server starts with this pictu
 pub const NO_PICTURE: &str = "No picture is set. Junto draws a generated picture for you.";
 pub const PICTURE_NOT_SHOWN: &str =
     "The picture is stored. This window cannot draw it, and a server may not accept it.";
-pub const PICTURE_TOO_LARGE: &str = "The picture is larger than 2 MiB. Choose a smaller picture.";
+pub const PICTURE_TOO_LARGE: &str =
+    "After cutting, the picture is larger than 2 MiB. Choose a smaller zoom or another file.";
 pub const PICTURE_UNSUPPORTED: &str =
-    "The file is not a PNG, JPEG or WebP picture. Choose a file in one of these formats.";
+    "The file is not a PNG, JPEG, WebP or GIF picture. Choose a file in one of these formats.";
 pub const PICTURE_UNREADABLE: &str =
     "The file could not be read. Check that the file exists and that you may open it.";
 

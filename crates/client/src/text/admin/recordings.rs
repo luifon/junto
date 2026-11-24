@@ -14,7 +14,7 @@ pub const HELP: &str = "The recordings of the calls of this workspace that your 
      to your download folder. This page does not play or remove a recording.";
 pub const NO_RECORDINGS: &str = "This workspace has no recording that your account can see.";
 pub const LOAD_OLDER: &str = "Load older";
-pub const READ_AGAIN: &str = "Read again";
+pub const READ_AGAIN: &str = "Try again";
 pub const BOUND: &str = "The page shows the newest 2,000 recordings. It reads no older one.";
 pub const UNKNOWN_CHANNEL: &str = "A channel that is not shown";
 pub const AN_ACCOUNT: &str = "an account";

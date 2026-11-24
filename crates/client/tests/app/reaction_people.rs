@@ -32,7 +32,7 @@ fn reaction_people_show_names_and_follow_reaction_changes(cx: &mut TestAppContex
             admin.handle.account().unwrap()
         ))
     });
-    window.click_named(format!("reaction-people:{}", sent.id));
+    window.open_who_reacted(sent.id);
     window.until("the roster shows both people", |window| {
         window.shows_named(format!(
             "reaction-person:{}",
@@ -134,6 +134,7 @@ fn reaction_people_switch_emoji_and_work_in_conversations_and_threads(cx: &mut T
                 document: document("a private confirmation"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -149,7 +150,7 @@ fn reaction_people_switch_emoji_and_work_in_conversations_and_threads(cx: &mut T
     window.until("both reactions are drawn", |window| {
         window.shows_named(format!("reaction:{}:1", sent.id))
     });
-    window.click_named(format!("reaction-people:{}", sent.id));
+    window.open_who_reacted(sent.id);
     window.click_named("reaction-emoji:🎉".to_owned());
     window.until("each emoji has its own roster", |window| {
         window.shows_named(format!("reaction-person:{own}"))
@@ -189,9 +190,9 @@ fn reaction_people_switch_emoji_and_work_in_conversations_and_threads(cx: &mut T
     // The follow state of the thread arrives from the server after the replies, and its bar
     // above the root moves the replies down: the press waits until the panel is complete.
     window.until("the thread shows its follow state and its root", |window| {
-        window.shows("follow-bar") && window.shows("thread-root")
+        window.shows("thread-follow-control") && window.shows("thread-root")
     });
-    window.click_named(format!("reaction-people:{reply}"));
+    window.open_who_reacted(reply);
     window.until("the thread roster is shown", |window| {
         window.shows_named(format!("reaction-person:{author}"))
     });
@@ -230,10 +231,7 @@ fn reaction_people_page_forward_and_back_through_the_roster(cx: &mut TestAppCont
         state.set_reaction_page_size(1, cx)
     });
     window.until_message("three confirmations");
-    window.until("the roster control appears", |window| {
-        window.shows_named(format!("reaction-people:{}", sent.id))
-    });
-    window.click_named(format!("reaction-people:{}", sent.id));
+    window.open_who_reacted(sent.id);
     window.until("the first page lists its reactor", |window| {
         window.shows_named(format!("reaction-person:{author}"))
     });
@@ -285,10 +283,7 @@ fn a_reactor_opens_its_profile_and_shows_current_presence(cx: &mut TestAppContex
         .run(admin.handle.api().add_reaction(sent.id, "👍"))
         .unwrap();
     window.until_message("a reviewed plan");
-    window.until("the roster control is drawn", |window| {
-        window.shows_named(format!("reaction-people:{}", sent.id))
-    });
-    window.click_named(format!("reaction-people:{}", sent.id));
+    window.open_who_reacted(sent.id);
     window.until("the reactor is listed", |window| {
         window.shows_named(format!("reaction-person:{author}"))
     });
@@ -371,10 +366,7 @@ fn external_link_closes_reactor_overlays(cx: &mut TestAppContext, profile: bool)
         .run(admin.handle.api().add_reaction(sent.id, "👍"))
         .unwrap();
     window.until_message("a reviewed plan");
-    window.until("the roster control is drawn", |window| {
-        window.shows_named(format!("reaction-people:{}", sent.id))
-    });
-    window.click_named(format!("reaction-people:{}", sent.id));
+    window.open_who_reacted(sent.id);
     window.until("the reactor profile control is drawn", |window| {
         window.shows_named(format!("reaction-profile:{author}"))
     });
@@ -443,7 +435,8 @@ fn an_external_message_link_closes_the_reactor_profile_and_roster(cx: &mut TestA
 }
 
 /// The first reaction that arrives while the menu of a message is open moves no item of the
-/// menu: "Who reacted" stays in it while the message has no reaction, disabled (ADR 0730).
+/// menu: whether "Who reacted" is in the group of the reactions is decided when the menu
+/// opens, and a message without reactions has none (ADR 0730, ADR 0790).
 #[gpui::test]
 fn the_first_reaction_that_arrives_while_a_message_menu_is_open_moves_no_item(
     cx: &mut TestAppContext,
@@ -456,32 +449,8 @@ fn the_first_reaction_that_arrives_while_a_message_menu_is_open_moves_no_item(
     let sent = admin.send(&world, channel, document("a plan to confirm"));
     window.until_message("a plan to confirm");
     window.right_click_message(sent.id);
-    let before = window.cx.debug_bounds("message-mark-read").unwrap();
-    assert!(window.shows("message-reaction-people"));
-    // A screen reader states that the item takes no action now.
-    let nodes = window.a11y_nodes(junto_client::text::WHO_REACTED);
-    assert!(
-        nodes.iter().any(|node| node["aria"]["disabled"] == true
-            && node["aria"]["description"] == junto_client::text::NO_REACTIONS_YET),
-        "the item is not disabled with its reason in the accessibility tree: {nodes:?}"
-    );
-    window.click("message-reaction-people");
-    assert!(
-        window.shows("message-mark-read"),
-        "a press on the disabled item leaves the menu open"
-    );
-    // The keys of the menu reach the item, and Enter on it does nothing.
-    let mut steps = 0;
-    while window.a11y_focused()["aria"]["label"] != junto_client::text::WHO_REACTED {
-        assert!(steps < 12, "the down key does not reach the disabled item");
-        window.press("down");
-        steps += 1;
-    }
-    window.press("enter");
-    assert!(
-        window.shows("message-mark-read"),
-        "Enter on the disabled item closed the menu"
-    );
+    let before = window.cx.debug_bounds("message-reply").unwrap();
+    assert!(!window.shows("message-reaction-people"));
     world
         .run(admin.handle.api().add_reaction(sent.id, "👍"))
         .unwrap();
@@ -491,11 +460,19 @@ fn the_first_reaction_that_arrives_while_a_message_menu_is_open_moves_no_item(
             .iter()
             .any(|row| row.message.id == sent.id && !row.message.reactions.is_empty())
     });
-    assert_eq!(window.cx.debug_bounds("message-mark-read"), Some(before));
-    let nodes = window.a11y_nodes(junto_client::text::WHO_REACTED);
+    window.settle();
+    assert!(!window.shows("message-reaction-people"));
+    assert_eq!(window.cx.debug_bounds("message-reply"), Some(before));
+    window.press("escape");
+    window.right_click_message(sent.id);
+    window.until("the menu opened again offers Who reacted", |window| {
+        window.shows("message-reaction-people")
+    });
+    let who = window.cx.debug_bounds("message-reaction-people").unwrap();
+    let reply = window.cx.debug_bounds("message-reply").unwrap();
     assert!(
-        !nodes.is_empty() && nodes.iter().all(|node| node["aria"]["disabled"].is_null()),
-        "the item is still disabled after the first reaction: {nodes:?}"
+        who.bottom() <= reply.top(),
+        "Who reacted is in the group of the reactions"
     );
     window.click("message-reaction-people");
     let author = admin.handle.account().unwrap();

@@ -4,19 +4,17 @@ use crate::harness::{World, member, selector};
 use crate::messages::document;
 
 #[gpui::test]
-fn a_read_only_value_in_settings_has_a_copy_control(cx: &mut TestAppContext) {
+fn the_version_in_about_has_a_copy_button(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Acme Studio");
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
     window.in_shell(|shell, window, cx| shell.open_version_settings(window, cx));
     window.settle();
-    let bounds = window.cx.debug_bounds("version-build").unwrap();
-    window.move_pointer(point(bounds.left() + px(8.0), bounds.center().y));
     window
         .cx
         .write_to_clipboard(ClipboardItem::new_string("old".to_owned()));
-    window.click("copy-text-value");
+    window.click("copy-version");
     let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
     assert_eq!(copied, env!("CARGO_PKG_VERSION"));
     assert!(window.shows("copied-confirmation"));
@@ -34,12 +32,6 @@ fn selected_rich_text_keeps_unicode_and_omits_display_padding(cx: &mut TestAppCo
         .cx
         .debug_bounds(selector(format!("message:{}", row.message.id)))
         .unwrap();
-    window.move_pointer(point(bounds.left() + px(110.0), bounds.bottom() - px(12.0)));
-    window.click("copy-text-value");
-    assert_eq!(
-        window.cx.read_from_clipboard().unwrap().text().unwrap(),
-        "run()"
-    );
     window
         .cx
         .write_to_clipboard(ClipboardItem::new_string("old".to_owned()));
@@ -62,7 +54,9 @@ fn selected_rich_text_keeps_unicode_and_omits_display_padding(cx: &mut TestAppCo
 }
 
 #[gpui::test]
-fn copying_a_named_link_uses_its_address(cx: &mut TestAppContext) {
+fn hovering_text_shows_no_copy_control_and_the_message_bar_copies_the_text(
+    cx: &mut TestAppContext,
+) {
     let world = World::new();
     let server = world.server("Acme Studio");
     let admin = world.owner(&server);
@@ -74,13 +68,14 @@ fn copying_a_named_link_uses_its_address(cx: &mut TestAppContext) {
         .debug_bounds(selector(format!("message:{}", row.message.id)))
         .unwrap();
     window.move_pointer(point(bounds.left() + px(65.0), bounds.bottom() - px(12.0)));
+    assert!(!window.shows("copy-text-value"));
     window
         .cx
         .write_to_clipboard(ClipboardItem::new_string("old".to_owned()));
-    window.click("copy-text-value");
+    window.click_named(format!("copy-message:{}", row.message.id));
     assert_eq!(
         window.cx.read_from_clipboard().unwrap().text().unwrap(),
-        "https://example.test/guide"
+        "the guide"
     );
 }
 
@@ -319,34 +314,6 @@ fn history_selection_masks_concealed_text_and_a_source_edit_invalidates_it(
 }
 
 #[gpui::test]
-fn hovering_an_adjacent_paragraph_copies_that_paragraph(cx: &mut TestAppContext) {
-    let world = World::new();
-    let server = world.server("Acme Studio");
-    let admin = world.owner(&server);
-    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
-    window.write("Earlier paragraph\n\nLater paragraph");
-    window.until_message("Earlier paragraph Later paragraph");
-    let earlier = window
-        .in_shell(|shell, _, _| shell.readonly_text_point("Earlier paragraph", 2))
-        .unwrap();
-    window.move_pointer(earlier);
-    assert!(window.shows("copy-text-value"));
-    let later = window
-        .in_shell(|shell, _, _| shell.readonly_text_point("Later paragraph", 2))
-        .unwrap();
-    assert!(
-        later.y > earlier.y && later.y - earlier.y < px(40.0),
-        "the paragraphs must be adjacent"
-    );
-    window.move_pointer(later);
-    window.click("copy-text-value");
-    assert_eq!(
-        window.cx.read_from_clipboard().unwrap().text().unwrap(),
-        "Later paragraph"
-    );
-}
-
-#[gpui::test]
 fn mention_profiles_and_presence_keep_message_selection_plain(cx: &mut TestAppContext) {
     use junto_client_core::protocol::message::{Block, Document, Inline};
     let world = World::new();
@@ -396,42 +363,5 @@ fn mention_profiles_and_presence_keep_message_selection_plain(cx: &mut TestAppCo
     assert_eq!(
         window.cx.read_from_clipboard().unwrap().text().unwrap(),
         "café @Member run()"
-    );
-}
-
-#[gpui::test]
-fn moving_to_the_next_message_moves_its_copy_control_away_from_its_actions(
-    cx: &mut TestAppContext,
-) {
-    use junto_client_core::protocol::WorkspacePermission;
-    let world = World::new();
-    let (_server, admin, _directory, mut window, channel, _) =
-        crate::threads::with_root(cx, &world);
-    admin.allow_everyone(&world, &[WorkspacePermission::ManageMessages]);
-    let first = admin.send(&world, channel, document("First point"));
-    let second = admin.send(&world, channel, document("Second point"));
-    window.until_message("Second point");
-    window.until("the next message offers pin", |window| {
-        window
-            .messages()
-            .iter()
-            .any(|row| row.message.id == second.id && row.can_pin)
-    });
-    window.hover_named(format!("message:{}", first.id));
-    assert!(window.shows("copy-text-value"));
-    window.hover_named(format!("message:{}", second.id));
-    let copy = window.cx.debug_bounds("copy-text-value").unwrap();
-    let pin = window
-        .cx
-        .debug_bounds(selector(format!("pin:{}", second.id)))
-        .unwrap();
-    assert!(
-        !copy.contains(&pin.center()),
-        "copy {copy:?} covers pin {pin:?}"
-    );
-    window.click("copy-text-value");
-    assert_eq!(
-        window.cx.read_from_clipboard().unwrap().text().unwrap(),
-        "Second point"
     );
 }

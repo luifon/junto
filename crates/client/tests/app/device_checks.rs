@@ -313,8 +313,19 @@ fn channel_pair_and_group_calls_offer_a_guarded_check_before_joining(cx: &mut Te
         .find(|channel| channel.kind == ChannelKind::Voice)
         .unwrap();
     window.click_channel(&channel.name);
-    window.click("check-call-devices");
-    assert!(window.shows("prejoin-dialog"));
+    // "Join call" carries the arrow of the device check. Its press opens only its menu:
+    // nothing joins.
+    assert!(window.shows("join-call") && !window.shows("check-call-devices"));
+    window.click("join-call-check");
+    assert!(window.shows("join-check-menu"));
+    assert!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.media_calls().call.is_none()
+                && state.media_calls().joining.is_none())
+    );
+    window.click("join-after-check");
+    assert!(window.shows("prejoin-dialog") && !window.shows("join-check-menu"));
     window.click_in_device_check("preview-camera");
     assert!(
         window.state.read_with(&window.cx, |state, _| matches!(
@@ -343,7 +354,8 @@ fn channel_pair_and_group_calls_offer_a_guarded_check_before_joining(cx: &mut Te
         window.shows_named(format!("direct-row:{}", pair.id))
     });
     window.click_named(format!("direct-row:{}", pair.id));
-    window.click("check-direct-devices");
+    window.click("conversation-devices");
+    window.click("join-after-check");
     assert!(window.shows("prejoin-dialog"));
     window.click_in_device_check("cancel-device-check");
     let group = world
@@ -356,7 +368,8 @@ fn channel_pair_and_group_calls_offer_a_guarded_check_before_joining(cx: &mut Te
         window.shows_named(format!("direct-row:{}", group.id))
     });
     window.click_named(format!("direct-row:{}", group.id));
-    window.click("check-group-devices");
+    window.click("conversation-devices");
+    window.click("join-after-check");
     window.click_in_device_check("preview-camera");
     window.until("group prejoin preview", |window| {
         window.shows("camera-preview-picture")
@@ -611,7 +624,7 @@ fn in_a_call_the_device_lists_of_the_settings_open_and_choose_the_devices(cx: &m
         window.shows("call-tab-members")
     });
     assert!(!window.shows("call-tab-settings"));
-    window.click("open-call-settings");
+    window.open_call_devices();
     assert!(window.shows("settings-page-settings-section-voice-and-video"));
     window.until("the device choices are read", |window| {
         window.state.read_with(&window.cx, |state, _| {

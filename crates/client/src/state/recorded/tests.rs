@@ -44,6 +44,7 @@ fn file(media_type: &str, bytes: u64, picture: Option<(u32, u32)>) -> SegmentFil
         problems: Vec::new(),
         silent: false,
         recovered: false,
+        missing_sound: None,
     }
 }
 
@@ -762,4 +763,33 @@ fn recording_wall_clocks_use_the_cycle_while_durations_and_file_stems_stay_stabl
             .filter_map(|part| part.span.as_deref())
             .all(|span| span.contains(" AM"))
     );
+}
+
+/// A video whose first job was replaced begins after the recording, and the card states it;
+/// the stretch of sound that the video lacks is stated by its place in the recording
+/// (ADR 0606).
+#[test]
+fn a_card_states_a_late_video_and_the_place_of_missing_sound() {
+    let mut scene = scene();
+    let video = scene.segments[0].file.as_mut().unwrap();
+    video.starts_at = Some(started() + Duration::seconds(23));
+    video.check = FileCheck::Failed;
+    video.problems = vec![FileProblem::SoundMissing];
+    video.missing_sound = Some(junto_client_core::protocol::recording::SoundGap {
+        from: started() + Duration::seconds(185),
+        until: started() + Duration::seconds(188),
+    });
+    let open = scene.open(RecordingState::PartlyFailed, TranscriptState::Ready);
+    let detail = scene.detail(&open);
+    assert_eq!(detail.video_late, Some(std::time::Duration::from_secs(23)));
+    let problem = detail.files[0].problem.clone().unwrap();
+    assert!(
+        problem.ends_with("from 3:05 to 3:08 of the recording."),
+        "{problem}"
+    );
+
+    // A video that begins with the recording states nothing.
+    let scene = self::scene();
+    let open = scene.open(RecordingState::Ready, TranscriptState::Ready);
+    assert_eq!(scene.detail(&open).video_late, None);
 }

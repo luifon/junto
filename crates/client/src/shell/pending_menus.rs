@@ -137,7 +137,7 @@ impl Shell {
                 let mut actions = vec![self.pending_action(
                     target,
                     if target.upload.is_some() {
-                        text::COPY_NAME
+                        text::COPY_FILE_NAME
                     } else {
                         text::COPY_TEXT
                     },

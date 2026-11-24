@@ -3,13 +3,12 @@
 
 use std::time::{Duration as Wait, Instant};
 
+use junto_protocol::WorkspacePermission as W;
 use junto_protocol::call::{CallInvitation, CallJoin, CallMove, LeaveReason};
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Event, Level};
 use junto_protocol::ids::AccountId;
-use junto_protocol::{WorkspacePermission, WorkspacePermission as W};
 use junto_server::calls::admission::Outcome;
-use junto_server::calls::speaking;
 use junto_server::config::RateLimit;
 use junto_server::media::ParticipantKind;
 use reqwest::{Method, StatusCode};
@@ -315,11 +314,6 @@ async fn an_account_that_lost_sight_of_the_channel_reads_and_changes_nothing_of_
         ),
         (Method::DELETE, "/api/v1/call/screen-share", Value::Null),
         (Method::PUT, "/api/v1/call/hand", Value::Null),
-        (
-            Method::PUT,
-            "/api/v1/call/speaking",
-            json!({ "speaking": true }),
-        ),
     ] {
         let body = (!body.is_null()).then_some(&body);
         let reply = server
@@ -599,7 +593,6 @@ async fn every_request_that_changes_a_call_is_limited() {
     let server = TestServer::start_for_calls_with(|config| {
         config.limits.calls.actions = three;
         config.limits.calls.state_reports = three;
-        config.limits.calls.speaking_reports = three;
     })
     .await;
     let scene = Scene::on(server).await;
@@ -638,11 +631,6 @@ async fn every_request_that_changes_a_call_is_limited() {
         ),
         (Method::PUT, "/api/v1/call/hand".to_owned(), none.clone()),
         (Method::DELETE, "/api/v1/call/hand".to_owned(), none.clone()),
-        (
-            Method::PUT,
-            "/api/v1/call/speaking".to_owned(),
-            json!({ "speaking": true }),
-        ),
         (
             Method::PATCH,
             format!("/api/v1/channels/{voice}/call/settings"),
@@ -868,154 +856,16 @@ async fn an_outage_of_the_media_server_does_not_count_as_absence() {
     assert!(restarted.occupants(ben, voice).await.is_empty());
 }
 
-/// Finding 9: the set of speakers that the server sends follows the blocks, the own mute and
-/// the people in the call, also while the reports do not change.
+/// ADR 0513: the speaking report of a 0.2 client is a path that the server does not have.
 #[tokio::test]
-async fn speaking_marks_follow_a_block_while_the_person_keeps_reporting() {
+async fn the_retired_speaking_report_is_an_unknown_path() {
     let scene = Scene::start().await;
-    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
-    let voice = scene.voice.id;
-    server.enter_call(ann, voice).await;
-    let mut to_ben = server.full_stream(ben).await;
-    async fn step(
-        server: &TestServer,
-        speaker: &Member,
-        viewer: &Member,
-        stream: &mut crate::stream_support::Stream,
-    ) -> Vec<Vec<AccountId>> {
-        server.clock.advance(Duration::seconds(1));
-        server
-            .put(
-                speaker,
-                "/api/v1/call/speaking",
-                &json!({ "speaking": true }),
-            )
-            .await
-            .empty(StatusCode::NO_CONTENT);
-        speaking::publish(&server.state).await.unwrap();
-        server
-            .call_events(viewer, stream)
-            .await
-            .into_iter()
-            .filter_map(|event| match event {
-                Event::CallSpeaking { account_ids, .. } => Some(account_ids),
-                _ => None,
-            })
-            .collect()
-    }
-    let nobody: Vec<AccountId> = Vec::new();
-    assert_eq!(
-        step(server, ann, ben, &mut to_ben).await,
-        [vec![ann.account_id]]
-    );
-    assert!(step(server, ann, ben, &mut to_ben).await.is_empty());
-
-    let block = format!(
-        "/api/v1/channels/{voice}/call/participants/{}/microphone-block",
-        ann.account_id
-    );
+    let (server, ann) = (&scene.server, &scene.ann);
+    server.enter_call(ann, scene.voice.id).await;
     server
-        .put_empty(owner, &block)
+        .put(ann, "/api/v1/call/speaking", &json!({ "speaking": true }))
         .await
-        .empty(StatusCode::NO_CONTENT);
-    assert_eq!(
-        step(server, ann, ben, &mut to_ben).await,
-        std::slice::from_ref(&nobody)
-    );
-    assert!(step(server, ann, ben, &mut to_ben).await.is_empty());
-    server
-        .delete(owner, &block)
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    assert_eq!(
-        step(server, ann, ben, &mut to_ben).await,
-        [vec![ann.account_id]]
-    );
-
-    let state = |muted: bool| json!({ "muted": muted, "deafened": false });
-    server
-        .put(ann, "/api/v1/call/state", &state(true))
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    assert_eq!(
-        step(server, ann, ben, &mut to_ben).await,
-        std::slice::from_ref(&nobody)
-    );
-    server
-        .put(ann, "/api/v1/call/state", &state(false))
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    assert_eq!(
-        step(server, ann, ben, &mut to_ben).await,
-        [vec![ann.account_id]]
-    );
-
-    server.enter_call(owner, voice).await;
-    server.leave_call(ann).await;
-    server.clock.advance(Duration::seconds(1));
-    speaking::publish(&server.state).await.unwrap();
-    let after: Vec<Event> = server
-        .call_events(ben, &mut to_ben)
-        .await
-        .into_iter()
-        .filter(|event| matches!(event, Event::CallSpeaking { .. }))
-        .collect();
-    assert!(
-        matches!(after.as_slice(), [Event::CallSpeaking { account_ids, .. }] if account_ids.is_empty()),
-        "{after:?}"
-    );
-    let _ = WorkspacePermission::ViewChannel;
-}
-
-/// ADR 0513: the set of speakers holds only people whom the media server lists. A person
-/// whose device left the room without a request is absent after the next check, and is no
-/// speaker while a report of that device still counts.
-#[tokio::test]
-async fn a_person_who_is_absent_from_the_room_is_no_speaker() {
-    let scene = Scene::start().await;
-    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
-    let voice = scene.voice.id;
-    let seat = server.enter_call(ann, voice).await;
-    let mut to_ben = server.full_stream(ben).await;
-    let said = |stream_events: Vec<Event>| -> Vec<Vec<AccountId>> {
-        stream_events
-            .into_iter()
-            .filter_map(|event| match event {
-                Event::CallSpeaking { account_ids, .. } => Some(account_ids),
-                _ => None,
-            })
-            .collect()
-    };
-    let speak = json!({ "speaking": true });
-    server.clock.advance(Duration::seconds(1));
-    server
-        .put(ann, "/api/v1/call/speaking", &speak)
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    speaking::publish(&server.state).await.unwrap();
-    assert_eq!(
-        said(server.call_events(ben, &mut to_ben).await),
-        [vec![ann.account_id]]
-    );
-
-    server.fake().leave(&seat.room, &seat.identity);
-    server.check().await;
-    let absent: bool = sqlx::query_scalar(
-        "select absent_since is not null from call_members where account_id = $1",
-    )
-    .bind(ann.account_id)
-    .fetch_one(&server.db)
-    .await
-    .unwrap();
-    assert!(absent);
-    server.clock.advance(Duration::seconds(1));
-    server
-        .put(ann, "/api/v1/call/speaking", &speak)
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    speaking::publish(&server.state).await.unwrap();
-    let nobody: Vec<AccountId> = Vec::new();
-    assert_eq!(said(server.call_events(ben, &mut to_ben).await), [nobody]);
+        .error(ErrorCode::NotFound);
 }
 
 /// ADR 0510: raising and lowering the own hand counts against the limit of the requests

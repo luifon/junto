@@ -481,13 +481,6 @@ fn acme_model_of(
             })
             .collect(),
     );
-    for channel in &mut studio.channels {
-        if let Some(call) = &mut channel.call
-            && channel.channel.name == "Daily"
-        {
-            call.speaking = vec![person("Ana")];
-        }
-    }
     Arc::new(model)
 }
 
@@ -575,10 +568,13 @@ impl Transport for OneServer {
                 capabilities: junto_client_core::protocol::server::Capabilities {
                     afk_channel: true,
                     channel_topics: true,
+                    workspace_threads: true,
                     message_format: junto_client_core::protocol::message::DocumentFormat {
                         event_revision: junto_client_core::protocol::events::EVENT_REVISION,
                     },
                     search: junto_client_core::protocol::discovery::SearchCapabilities::ALL,
+                    status_text: true,
+                    device_link_relay: true,
                 },
             };
             let body = serde_json::to_vec(&info).map_err(|error| {
@@ -1082,6 +1078,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
         access: Some(MicrophoneAccess::Allowed),
         now: Some(at() + time::Duration::seconds(42 * 60 + 17)),
         can_share: true,
+        muted_speech: Default::default(),
     }
 }
 
@@ -2233,14 +2230,6 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
             .servers(vec![inviting(), harbor()]),
         show_daily_tab(CallTab::Members),
     )?;
-    studio.draw(
-        Screen::call("call-members-invite-picker", in_call(Phase::Connected))
-            .servers(vec![inviting(), harbor()]),
-        |shell, window, cx| {
-            select_channel(shell, "Daily", cx);
-            shell.open(Open::MemberPicker, window, cx);
-        },
-    )?;
     // A person outside asks to enter the call of this device.
     let asked = || {
         let mut server = acme_with_rules(MEMBER, locked);
@@ -2480,6 +2469,21 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
         Screen::call("call-own-microphone-and-sound-off", muted),
         show_daily_tab(CallTab::Members),
     )?;
+    // Speech while muted: the notice above the call bar, and the moment after its check box
+    // was unchecked (ADR 0735).
+    for (name, turned_off) in [
+        ("call-muted-speech", false),
+        ("call-muted-speech-turned-off", true),
+    ] {
+        let mut speaking = in_call(Phase::Connected);
+        speaking.calls.muted = true;
+        speaking.muted_speech = junto_client::state::view::MutedSpeechShown {
+            shown: true,
+            turned_off,
+            fading: false,
+        };
+        studio.draw(Screen::call(name, speaking), show_daily)?;
+    }
     studio.draw(
         Screen::call("call-reconnecting", in_call(Phase::Reconnecting)),
         show_daily,
@@ -2871,12 +2875,8 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
         |shell, window, cx| shell.open(Open::Settings, window, cx),
     )?;
     for (name, section) in [
-        ("settings-picture", SettingsSection::Picture),
-        ("settings-interface", SettingsSection::Interface),
+        ("settings-appearance", SettingsSection::Appearance),
         ("settings-voice", SettingsSection::VoiceAndVideo),
-        // Outside a call the section states what it holds (ADR 0739).
-        ("settings-call-without-a-call", SettingsSection::Call),
-        ("settings-quiet", SettingsSection::Quiet),
         ("settings-notifications", SettingsSection::Notifications),
         ("settings-devices", SettingsSection::Devices),
         ("settings-about", SettingsSection::About),
@@ -3065,6 +3065,11 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
     studio.draw(
         Screen::new("remove-server-question", vec![acme(), waiting()]),
         |shell, window, cx| shell.ask_to_remove(id(2), window, cx),
+    )?;
+    // "Log out" asks first, with what the logout ends and what stays (ADR 0730).
+    studio.draw(
+        Screen::new("log-out-question", vec![acme(), harbor()]),
+        |shell, window, cx| shell.ask_to_log_out(id(1), window, cx),
     )?;
     Ok(())
 }

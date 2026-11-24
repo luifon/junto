@@ -62,25 +62,21 @@ async fn two_people_hear_each_other_and_a_mute_stops_the_sound() {
         .is_ok();
         assert!(seen, "{:?}", *ben.calls.levels().borrow());
 
-        // A person outside the voice channel sees who is inside and who speaks (ADR 0513).
-        model_when(&cal_at, "both speak", |model| {
-            model.call_at(&place).is_some_and(|call| {
-                call.participants.len() == 2
-                    && call.speaking.contains(&ann_id)
-                    && call.speaking.contains(&ben_id)
-            })
+        // A person outside the voice channel sees who is inside (ADR 0513).
+        model_when(&cal_at, "both are inside", |model| {
+            model
+                .call_at(&place)
+                .is_some_and(|call| call.participants.len() == 2)
         })
         .await;
 
         // A mute stops the sound, and the server shows the person as muted.
         ann.calls.set_muted(true);
         ben.until_silent(&ann).await;
-        model_when(&cal_at, "Ann is muted and does not speak", |model| {
-            model.call_at(&place).is_some_and(|call| {
-                call.participant(ann_id).is_some_and(|ann| ann.muted)
-                    && !call.speaking.contains(&ann_id)
-                    && call.speaking.contains(&ben_id)
-            })
+        model_when(&cal_at, "Ann is muted", |model| {
+            model
+                .call_at(&place)
+                .is_some_and(|call| call.participant(ann_id).is_some_and(|ann| ann.muted))
         })
         .await;
         ann.until_heard(&ben).await;

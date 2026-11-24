@@ -3,10 +3,9 @@
 
 use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role, SharedString,
-    StatefulInteractiveElement, Styled, Window, anchored, deferred, div,
+    StatefulInteractiveElement, Styled, Window, anchored, deferred, div, prelude::FluentBuilder,
 };
-use junto_client_core::protocol::WorkspacePermission;
-use junto_client_core::protocol::ids::ServerId;
+use junto_client_core::protocol::ids::{ChannelId, ServerId};
 
 use super::notices::{Excerpt, place_icon, side_panel};
 use super::{Layer, Shell};
@@ -17,16 +16,19 @@ use crate::state::search::{
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, ScrollArea, SelectBox,
-    SideHeader, StatePanel, StyleExt, Toggle,
+    Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, ScrollArea, SideHeader,
+    StatePanel, StyleExt, icon,
 };
 
 /// One of the three filters of a search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterKind {
-    Channel,
+    /// Where the search looks: the server, a channel, the direct messages or a conversation.
+    In,
     Author,
     Date,
+    /// What a message holds: a file, a link, a picture.
+    Has,
 }
 
 /// The width of the search field in the header, in design pixels, in the full and in the
@@ -53,6 +55,11 @@ impl Shell {
         self.search_field.read(cx).value().to_string()
     }
 
+    /// The placeholder of the search field, which names where a new search starts.
+    pub fn search_placeholder(&self, _: &gpui::App) -> String {
+        self.search_placeholder.to_string()
+    }
+
     /// Searches the shown server for the text of the field.
     pub fn submit_search(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let Some(server_id) = self.state.read(cx).view().selected.map(|server| server.id) else {
@@ -60,8 +67,19 @@ impl Shell {
         };
         let text = self.search_text(cx);
         self.members_open = false;
+        // A search that starts from a channel or a conversation starts in it (ADR 0743).
+        let view = self.state.read(cx).view();
+        let shown = view
+            .lists()
+            .and_then(|lists| lists.conversation.as_ref())
+            .map(|conversation| junto_client_core::model::PlaceId::Direct(conversation.id))
+            .or_else(|| {
+                view.workspace()
+                    .and_then(|workspace| workspace.channel.as_ref())
+                    .map(|channel| junto_client_core::model::PlaceId::Channel(channel.id))
+            });
         self.state
-            .update(cx, |state, cx| state.search(server_id, &text, cx));
+            .update(cx, |state, cx| state.search(server_id, &text, shown, cx));
         cx.notify();
     }
 
@@ -73,6 +91,7 @@ impl Shell {
 
     /// Ends the search and empties its field.
     pub fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_custom_dates = false;
         self.state.update(cx, |state, cx| state.close_search(cx));
         self.type_search("", window, cx);
         if matches!(self.layer, Layer::SearchFilter(_)) {
@@ -84,6 +103,9 @@ impl Shell {
     /// Changes the filters of the search and runs it again.
     pub fn set_search_filters(&mut self, filters: Filters, cx: &mut Context<Self>) {
         self.search_date_invalid = false;
+        if !matches!(filters.date, DateFilter::Range { .. }) {
+            self.search_custom_dates = false;
+        }
         self.state
             .update(cx, |state, cx| state.set_search_filters(filters, cx));
         cx.notify();
@@ -167,50 +189,84 @@ impl Shell {
                 .into_any_element()
         };
         let (label, items): (&'static str, Vec<AnyElement>) = match kind {
-            FilterKind::Channel => {
+            FilterKind::In => {
+                let anywhere = Filters {
+                    channel: None,
+                    conversation: None,
+                    direct: false,
+                    ..filters
+                };
                 let mut items = vec![item(
-                    "search-channel:all".to_owned(),
+                    "search-in:server".to_owned(),
                     0,
-                    text::FILTER_ALL_CHANNELS.into(),
-                    filters.channel.is_none(),
-                    Filters {
-                        channel: None,
-                        ..filters
-                    },
+                    text::FILTER_ANYWHERE.into(),
+                    panel.scope.is_none(),
+                    anywhere,
                     cx,
                 )];
-                for (index, (channel_id, name, _)) in panel.channels.iter().enumerate() {
-                    if panel.unreadable.contains(channel_id) {
-                        let selector = format!("search-channel-refused:{channel_id}");
-                        items.push(
-                            div()
-                                .flex_none()
-                                .debug_selector(move || selector.clone())
-                                .child(
-                                    MenuItem::new(("filter", index + 1), name.clone())
-                                        .icon(Icon::Lock)
-                                        .disabled(true)
-                                        .detail(text::not_permitted(
-                                            WorkspacePermission::ReadMessageHistory,
-                                        )),
-                                )
-                                .into_any_element(),
-                        );
+                let mut index = 1;
+                for (workspace_id, name, channels) in &panel.workspaces {
+                    if channels.is_empty() {
                         continue;
                     }
+                    let group = name.clone();
+                    let workspace_id = *workspace_id;
+                    items.push(
+                        div()
+                            .flex_none()
+                            .debug_selector(move || format!("search-in-group:{workspace_id}"))
+                            .child(crate::ui::menu_label(group, false, cx))
+                            .into_any_element(),
+                    );
+                    for (channel_id, name, _) in channels {
+                        items.push(item(
+                            format!("search-in:channel:{channel_id}"),
+                            index,
+                            format!("#{name}").into(),
+                            filters.channel == Some(*channel_id),
+                            Filters {
+                                channel: Some(*channel_id),
+                                ..anywhere
+                            },
+                            cx,
+                        ));
+                        index += 1;
+                    }
+                }
+                // A server without the filters of conversations offers none (ADR 0743).
+                let conversations = panel
+                    .capabilities
+                    .is_some_and(|supported| supported.filters);
+                if conversations {
+                    items.push(crate::ui::menu_separator(cx).into_any_element());
                     items.push(item(
-                        format!("search-channel:{channel_id}"),
-                        index + 1,
-                        name.clone().into(),
-                        filters.channel == Some(*channel_id),
+                        "search-in:direct".to_owned(),
+                        index,
+                        text::DIRECT_MESSAGES.into(),
+                        filters.direct,
                         Filters {
-                            channel: Some(*channel_id),
-                            ..filters
+                            direct: true,
+                            ..anywhere
                         },
                         cx,
                     ));
+                    index += 1;
+                    for (conversation_id, name) in &panel.conversations {
+                        items.push(item(
+                            format!("search-in:conversation:{conversation_id}"),
+                            index,
+                            name.clone().into(),
+                            filters.conversation == Some(*conversation_id),
+                            Filters {
+                                conversation: Some(*conversation_id),
+                                ..anywhere
+                            },
+                            cx,
+                        ));
+                        index += 1;
+                    }
                 }
-                (text::FILTER_CHANNEL, items)
+                (text::FILTER_IN, items)
             }
             FilterKind::Author => {
                 let mut items = vec![item(
@@ -239,9 +295,8 @@ impl Shell {
                 }
                 (text::FILTER_AUTHOR, items)
             }
-            FilterKind::Date => (
-                text::FILTER_DATE,
-                DateFilter::ALL
+            FilterKind::Date => {
+                let mut items: Vec<AnyElement> = DateFilter::ALL
                     .into_iter()
                     .enumerate()
                     .map(|(index, date)| {
@@ -254,8 +309,66 @@ impl Shell {
                             cx,
                         )
                     })
-                    .collect(),
-            ),
+                    .collect();
+                let custom = matches!(filters.date, DateFilter::Range { .. });
+                items.push(
+                    div()
+                        .flex_none()
+                        .debug_selector(|| "search-date-custom".to_owned())
+                        .child(
+                            MenuItem::new("filter-custom-dates", text::FILTER_CUSTOM_RANGE)
+                                .icon(if custom { Icon::Check } else { Icon::Minus })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.search_custom_dates = true;
+                                    this.close_layer(window, cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element(),
+                );
+                (text::FILTER_DATE, items)
+            }
+            FilterKind::Has => {
+                let options: [(&'static str, &'static str, bool, Filters); 3] = [
+                    (
+                        "search-has-file",
+                        text::FILTER_HAS_FILE,
+                        filters.has_file,
+                        Filters {
+                            has_file: !filters.has_file,
+                            ..filters
+                        },
+                    ),
+                    (
+                        "search-has-link",
+                        text::FILTER_HAS_LINK,
+                        filters.has_link,
+                        Filters {
+                            has_link: !filters.has_link,
+                            ..filters
+                        },
+                    ),
+                    (
+                        "search-has-picture",
+                        text::FILTER_HAS_PICTURE,
+                        filters.has_picture,
+                        Filters {
+                            has_picture: !filters.has_picture,
+                            ..filters
+                        },
+                    ),
+                ];
+                (
+                    text::FILTER_HAS,
+                    options
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (selector, title, on, next))| {
+                            item(selector.to_owned(), index, title.into(), on, next, cx)
+                        })
+                        .collect(),
+                )
+            }
         };
         div()
             .absolute()
@@ -285,7 +398,9 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The filters of a search, under the header of its panel.
+    /// The filters of a search in one line of chips under the header of its panel: In,
+    /// From, Date, Has and Mentions me (ADR 0743). Each chip opens the menu of its choices;
+    /// the chip of In carries a button that removes the place.
     fn render_filters(
         &mut self,
         panel: &SearchPanel,
@@ -293,203 +408,217 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
+        let filters = panel.filters;
         let open = match &self.layer {
             Layer::SearchFilter(kind) => Some(*kind),
             _ => None,
         };
-        let boxes: [(FilterKind, &'static str, SharedString, &'static str); 3] = [
+        // Why the server takes no filter now, as each chip states it.
+        let held: Option<&'static str> = match panel.capabilities {
+            Some(supported)
+                if supported.filters && (!panel.text.is_empty() || supported.filter_only) =>
+            {
+                None
+            }
+            Some(supported) if supported.filters => Some(text::FILTERS_NEED_TEXT),
+            Some(_) => Some(text::FILTERS_UNSUPPORTED),
+            None => Some(text::FILTERS_UNCONFIRMED),
+        };
+        let has: Vec<&'static str> = [
+            (filters.has_file, text::FILTER_HAS_FILE),
+            (filters.has_link, text::FILTER_HAS_LINK),
+            (filters.has_picture, text::FILTER_HAS_PICTURE),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect();
+        let chips: [(FilterKind, &'static str, Option<String>, &'static str); 4] = [
             (
-                FilterKind::Channel,
-                text::FILTER_CHANNEL,
-                panel
-                    .channel
-                    .as_ref()
-                    .map_or(text::FILTER_ALL_CHANNELS.into(), |(_, name)| {
-                        name.clone().into()
-                    }),
-                "search-channel",
+                FilterKind::In,
+                text::FILTER_IN,
+                panel.scope.clone(),
+                "search-in",
             ),
             (
                 FilterKind::Author,
                 text::FILTER_AUTHOR,
-                panel
-                    .author
-                    .as_ref()
-                    .map_or(text::FILTER_ANYONE.into(), |(_, name)| name.clone().into()),
+                panel.author.as_ref().map(|(_, name)| name.clone()),
                 "search-author",
             ),
             (
                 FilterKind::Date,
                 text::FILTER_DATE,
-                text::date_filter(panel.date).into(),
+                (filters.date != DateFilter::default())
+                    .then(|| text::date_filter(panel.date).to_owned()),
                 "search-date",
+            ),
+            (
+                FilterKind::Has,
+                text::FILTER_HAS,
+                (!has.is_empty()).then(|| has.join(", ")),
+                "search-has",
             ),
         ];
         let mut row = div()
             .flex()
+            .flex_wrap()
             .flex_none()
+            .items_center()
             .gap(u(6.0))
             .pt(u(8.0))
             .px(u(14.0))
-            .pb(u(10.0))
+            .pb(u(8.0))
             .bg(Hsla::from(colors.limestone))
             .border_b_1()
             .border_color(Hsla::from(colors.rule));
-        for (kind, label, value, selector) in boxes {
+        for (kind, name, value, selector) in chips {
             let menu = (open == Some(kind)).then(|| self.render_filter_menu(kind, panel, cx));
+            let chosen = value.is_some();
+            let label: SharedString = match &value {
+                Some(value) => format!("{name}: {value}").into(),
+                None => name.into(),
+            };
+            let removable = kind == FilterKind::In && chosen;
             row = row.child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .mb(u(3.0))
-                            .text_size(u(12.5))
-                            .line_height(u(16.0))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .ink(colors.bronze)
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .child(
-                                SelectBox::new(selector, label, value)
-                                    .selector(selector)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_search_filter(kind, window, cx);
-                                    })),
-                            )
-                            .children(menu),
-                    ),
-            );
-        }
-        let filters = panel.filters;
-        let mut content = div().flex().flex_col().gap(u(6.0)).px(u(14.0)).pb(u(8.0));
-        let options: [(&'static str, &'static str, bool, Filters); 5] = [
-            (
-                "search-has-file",
-                "Has a file",
-                filters.has_file,
-                Filters {
-                    has_file: !filters.has_file,
-                    ..filters
-                },
-            ),
-            (
-                "search-has-link",
-                "Has a link",
-                filters.has_link,
-                Filters {
-                    has_link: !filters.has_link,
-                    ..filters
-                },
-            ),
-            (
-                "search-has-picture",
-                "Has a picture",
-                filters.has_picture,
-                Filters {
-                    has_picture: !filters.has_picture,
-                    ..filters
-                },
-            ),
-            (
-                "search-mentions-me",
-                "Mentions me",
-                filters.mentions_me,
-                Filters {
-                    mentions_me: !filters.mentions_me,
-                    ..filters
-                },
-            ),
-            (
-                "search-direct",
-                "Direct messages",
-                filters.direct,
-                Filters {
-                    direct: !filters.direct,
-                    ..filters
-                },
-            ),
-        ];
-        for (selector, title, on, next) in options {
-            content = content.child(
-                div()
+                    .relative()
                     .flex()
+                    .flex_none()
                     .items_center()
-                    .justify_between()
-                    .child(title)
                     .child(
-                    Toggle::new(selector, title, on, (text::ON, text::OFF))
-                        .held(match panel.capabilities {
-                            Some(supported)
-                                if supported.filters
-                                    && (!panel.text.is_empty() || supported.filter_only) =>
-                            {
-                                None
-                            }
-                            Some(supported) if supported.filters => Some(
-                                "Enter text: this server does not support filter-only searches.",
-                            ),
-                            Some(_) => Some("This server does not support these search filters."),
-                            None => Some("Server search support has not been confirmed."),
-                        })
-                        .selector(selector)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_search_filters(next, cx);
-                        })),
-                ),
+                        Button::new(selector)
+                            .kind(if chosen {
+                                ButtonKind::Default
+                            } else {
+                                ButtonKind::Ghost
+                            })
+                            .label(label)
+                            .icon(Icon::ChevronDown)
+                            .selector(selector)
+                            .disabled(kind == FilterKind::Has && held.is_some())
+                            .when_some(held.filter(|_| kind == FilterKind::Has), |chip, reason| {
+                                chip.tooltip(reason)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_search_filter(kind, window, cx);
+                            })),
+                    )
+                    .when(removable, |chip| {
+                        chip.child(
+                            Button::new("search-in-remove")
+                                .kind(ButtonKind::Ghost)
+                                .icon(Icon::X)
+                                .tooltip(text::FILTER_IN_REMOVE)
+                                .selector("search-in-remove")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.set_search_filters(
+                                        Filters {
+                                            channel: None,
+                                            conversation: None,
+                                            direct: false,
+                                            ..filters
+                                        },
+                                        cx,
+                                    );
+                                })),
+                        )
+                    })
+                    .children(menu),
             );
         }
-        content = content
-            .child(
-                div()
-                    .flex()
-                    .gap(u(6.0))
-                    .child(
-                        div().flex_1().min_w_0().child("From").child(
-                            Field::new(&self.search_from, "From date").selector("search-from"),
+        row = row.child(
+            Button::new("search-mentions-me")
+                .kind(if filters.mentions_me {
+                    ButtonKind::Default
+                } else {
+                    ButtonKind::Ghost
+                })
+                .label(text::FILTER_MENTIONS_ME)
+                .when(filters.mentions_me, |chip| chip.icon(Icon::Check))
+                .selector("search-mentions-me")
+                .disabled(held.is_some())
+                .when_some(held, |chip, reason| chip.tooltip(reason))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_search_filters(
+                        Filters {
+                            mentions_me: !filters.mentions_me,
+                            ..filters
+                        },
+                        cx,
+                    );
+                })),
+        );
+        // "Custom range…" of the Date menu, or a range that is set, shows the two dates.
+        let custom = self.search_custom_dates || matches!(filters.date, DateFilter::Range { .. });
+        let mut content = div().flex().flex_col().gap(u(6.0));
+        if custom {
+            content = content
+                .px(u(14.0))
+                .py(u(8.0))
+                .border_b_1()
+                .border_color(Hsla::from(colors.rule))
+                .child(
+                    div()
+                        .flex()
+                        .gap(u(6.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(text::FILTER_FROM_DATE)
+                                .child(
+                                    Field::new(&self.search_from, text::FILTER_FROM_DATE)
+                                        .selector("search-from"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(text::FILTER_THROUGH_DATE)
+                                .child(
+                                    Field::new(&self.search_through, text::FILTER_THROUGH_DATE)
+                                        .selector("search-through"),
+                                ),
                         ),
-                    )
-                    .child(div().flex_1().min_w_0().child("Through").child(
-                        Field::new(&self.search_through, "Through date").selector("search-through"),
-                    )),
-            )
-            .child(
-                Button::new("search-apply-dates")
-                    .label("Apply date range")
-                    .selector("search-apply-dates")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let format = time::macros::format_description!("[year]-[month]-[day]");
-                        let from =
-                            time::Date::parse(this.search_from.read(cx).value().trim(), format);
-                        let through =
-                            time::Date::parse(this.search_through.read(cx).value().trim(), format);
-                        if let (Ok(from), Ok(through)) = (from, through)
-                            && from <= through
-                            && through.next_day().is_some()
-                        {
-                            this.search_date_invalid = false;
-                            this.set_search_filters(
-                                Filters {
-                                    date: DateFilter::Range { from, through },
-                                    ..filters
-                                },
-                                cx,
+                )
+                .child(
+                    Button::new("search-apply-dates")
+                        .label(text::FILTER_APPLY_DATES)
+                        .selector("search-apply-dates")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let format = time::macros::format_description!("[year]-[month]-[day]");
+                            let from =
+                                time::Date::parse(this.search_from.read(cx).value().trim(), format);
+                            let through = time::Date::parse(
+                                this.search_through.read(cx).value().trim(),
+                                format,
                             );
-                        } else {
-                            this.search_date_invalid = true;
-                            cx.notify();
-                        }
-                    })),
-            );
-        if self.search_date_invalid {
-            content = content.child(
-                div()
-                    .debug_selector(|| "search-date-invalid".to_owned())
-                    .child("Enter dates as YYYY-MM-DD, with From on or before Through."),
-            );
+                            if let (Ok(from), Ok(through)) = (from, through)
+                                && from <= through
+                                && through.next_day().is_some()
+                            {
+                                this.search_date_invalid = false;
+                                this.set_search_filters(
+                                    Filters {
+                                        date: DateFilter::Range { from, through },
+                                        ..filters
+                                    },
+                                    cx,
+                                );
+                            } else {
+                                this.search_date_invalid = true;
+                                cx.notify();
+                            }
+                        })),
+                );
+            if self.search_date_invalid {
+                content = content.child(
+                    div()
+                        .debug_selector(|| "search-date-invalid".to_owned())
+                        .child(text::FILTER_DATES_INVALID),
+                );
+            }
         }
         div()
             .flex()
@@ -575,6 +704,16 @@ impl Shell {
             .server(server_id)
             .and_then(|server| server.owner());
         let copied = row.text.clone();
+        let id: SharedString = format!(
+            "search-actions:{owner:?}:{target:?}:{}:{:?}:{:?}:{:?}",
+            panel.text,
+            panel.channel.as_ref().map(|(id, _)| id),
+            panel.author.as_ref().map(|(id, _)| id),
+            panel.filters
+        )
+        .into();
+        let focus = crate::ui::row_focus(id.clone(), window, cx);
+        let focused = focus.is_focused(window);
         let (frame, actions) = crate::ui::collect_actions(|| {
             crate::ui::RowAction::new(
                 action.clone(),
@@ -621,8 +760,7 @@ impl Shell {
                 .border_t_1()
                 .border_color(Hsla::from(colors.rule_soft))
                 .cursor_pointer()
-                .focusable()
-                .tab_stop(true)
+                .track_focus(&focus)
                 .hover(move |style| style.bg(Hsla::from(colors.row_hover)))
                 .focus_visible(move |style| style.shadow(ring))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -630,15 +768,15 @@ impl Shell {
                 }))
                 .child(shown.element(theme, cx))
         });
-        let id: SharedString = format!(
-            "search-actions:{owner:?}:{target:?}:{}:{:?}:{:?}:{:?}",
-            panel.text,
-            panel.channel.as_ref().map(|(id, _)| id),
-            panel.author.as_ref().map(|(id, _)| id),
-            panel.filters
+        crate::ui::bind_row_action_menu(
+            frame,
+            id,
+            crate::ui::RowMenu::overlay(focused),
+            actions,
+            window,
+            cx,
         )
-        .into();
-        crate::ui::bind_action_menu(frame, id, actions, window, cx).into_any_element()
+        .into_any_element()
     }
 
     /// Goes to what a result of a search names.
@@ -702,27 +840,83 @@ impl Shell {
             _ if files => format!("{found} files").into(),
             _ => text::results_for(found, panel.more, &panel.text).into(),
         };
-        let header = SideHeader::new(if files { "Files" } else { text::SEARCH })
-            .title_bar()
-            .icon(if files {
-                Icon::FolderOpen
-            } else {
-                Icon::Search
+        let header = SideHeader::new(if files {
+            text::search::FILES
+        } else {
+            text::SEARCH
+        })
+        .title_bar()
+        .icon(if files {
+            Icon::FolderOpen
+        } else {
+            Icon::Search
+        })
+        .note(note)
+        .trailing(
+            Button::new("close-search")
+                .kind(ButtonKind::Ghost)
+                .icon(Icon::X)
+                .tooltip(text::CLOSE_SEARCH)
+                .selector("close-search")
+                .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
+        );
+        // The Files panel of a voice channel has the tabs Files and Recordings (ADR 0784).
+        let voice_channel = panel
+            .channel
+            .as_ref()
+            .filter(|_| files)
+            .and_then(|(channel_id, _)| {
+                panel
+                    .channels
+                    .iter()
+                    .find(|(id, ..)| id == channel_id)
+                    .filter(|(.., kind)| {
+                        *kind == junto_client_core::protocol::structure::ChannelKind::Voice
+                    })
+                    .map(|(id, ..)| *id)
             })
-            .note(note)
-            .trailing(
-                Button::new("close-search")
-                    .kind(ButtonKind::Ghost)
-                    .icon(Icon::X)
-                    .tooltip(text::CLOSE_SEARCH)
-                    .selector("close-search")
-                    .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
+            .zip(
+                self.view
+                    .as_ref()
+                    .and_then(|view| view.workspace())
+                    .map(|w| w.id),
             );
-        let filters = (!files).then(|| self.render_filters(panel, &theme, cx));
-        let unsupported = panel.capabilities.filter(|supported| !files && !supported.filters).map(|_| {
-            Notice::new("This server does not support content, mention or direct-message filters. Text search and its channel, author and date filters remain available.")
-                .selector("search-filters-unsupported")
+        let recordings_tab = voice_channel.is_some() && self.files_recordings;
+        let tabs = voice_channel.map(|(channel_id, workspace_id)| {
+            let server_id = panel.server_id;
+            let files_tab =
+                crate::ui::Tab::new("files-tab-files", Icon::FolderOpen, text::FILES_TAB)
+                    .on(!recordings_tab)
+                    .selector("files-tab-files")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.files_recordings = false;
+                        cx.notify();
+                    }));
+            let recordings =
+                crate::ui::Tab::new("files-tab-recordings", Icon::Record, text::RECORDINGS_TAB)
+                    .on(recordings_tab)
+                    .selector("files-tab-recordings")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.files_recordings = true;
+                        this.search_scroll.set_offset(gpui::Point::default());
+                        this.state.update(cx, |state, cx| {
+                            state.show_channel_recordings(server_id, workspace_id, channel_id, cx)
+                        });
+                    }));
+            div().flex_none().px(u(10.0)).child(crate::ui::TabRow::new(
+                "files-tabs",
+                text::FILES_TABS,
+                [files_tab, recordings],
+            ))
         });
+        let filters = (!files).then(|| self.render_filters(panel, &theme, cx));
+        let unsupported = panel
+            .capabilities
+            .filter(|supported| !files && !supported.filters)
+            .map(|_| {
+                Notice::new(text::search::SOME_FILTERS_UNSUPPORTED)
+                    .selector("search-filters-unsupported")
+            });
         let again = |cx: &mut Context<Self>| {
             Button::new("search-again")
                 .icon(Icon::Retry)
@@ -764,133 +958,155 @@ impl Shell {
                     ),
             )
         });
-        let body: AnyElement = match &panel.state {
-            SearchShown::Searching if found == 0 => div()
-                .id("search-running")
-                .debug_selector(|| "search-running".to_owned())
-                .px(u(14.0))
-                .pt(u(12.0))
-                .typeface(theme.types.small, &theme)
-                .ink(colors.ink_2)
-                .child(text::SEARCHING)
-                .into_any_element(),
-            SearchShown::Nothing => {
-                let empty = StatePanel::new(
-                    if !files && panel.text.is_empty() && panel.filters == Filters::default() {
-                        "Choose search filters"
-                    } else if files && panel.previous_files {
-                        "No older files"
-                    } else if files {
-                        "No files"
+        let recordings =
+            voice_channel
+                .filter(|_| recordings_tab)
+                .map(|(channel_id, workspace_id)| {
+                    self.render_channel_recordings(
+                        panel.server_id,
+                        workspace_id,
+                        channel_id,
+                        &theme,
+                        cx,
+                    )
+                });
+        let body: AnyElement = match (&panel.state, recordings) {
+            (_, Some(recordings)) => recordings,
+            (state, None) => match state {
+                SearchShown::Searching if found == 0 => div()
+                    .id("search-running")
+                    .debug_selector(|| "search-running".to_owned())
+                    .px(u(14.0))
+                    .pt(u(12.0))
+                    .typeface(theme.types.small, &theme)
+                    .ink(colors.ink_2)
+                    .child(text::SEARCHING)
+                    .into_any_element(),
+                SearchShown::Nothing => {
+                    let empty = StatePanel::new(
+                        if !files && panel.text.is_empty() && panel.filters == Filters::default() {
+                            text::search::CHOOSE_FILTERS
+                        } else if files && panel.previous_files {
+                            text::search::NO_OLDER_FILES
+                        } else if files {
+                            text::search::NO_FILES
+                        } else {
+                            text::SEARCH_NOTHING_TITLE
+                        },
+                        if !files && panel.text.is_empty() && panel.filters == Filters::default() {
+                            text::search::CHOOSE_FILTERS_HELP
+                        } else if files && panel.previous_files {
+                            text::search::NO_OLDER_FILES_HELP
+                        } else if files {
+                            text::search::NO_FILES_HELP
+                        } else {
+                            text::SEARCH_NOTHING
+                        },
+                    )
+                    .selector("search-nothing");
+                    if files && panel.previous_files {
+                        empty
+                            .action(
+                                Button::new("previous-files")
+                                    .label(text::search::NEWER_FILES)
+                                    .selector("previous-files")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.search_scroll.set_offset(gpui::Point::default());
+                                        this.state.update(cx, |state, cx| state.previous_files(cx));
+                                    })),
+                            )
+                            .into_any_element()
                     } else {
-                        text::SEARCH_NOTHING_TITLE
-                    },
-                    if !files && panel.text.is_empty() && panel.filters == Filters::default() {
-                        "Choose a filter or enter text to search."
-                    } else if files && panel.previous_files {
-                        "No older files are available. You can return to newer files."
-                    } else if files {
-                        "Files shared here will appear in this list."
-                    } else {
-                        text::SEARCH_NOTHING
-                    },
-                )
-                .selector("search-nothing");
-                if files && panel.previous_files {
-                    empty
-                        .action(
+                        empty.into_any_element()
+                    }
+                }
+                SearchShown::Refused(reason) => {
+                    StatePanel::new(text::SEARCH_REFUSED_TITLE, reason.clone())
+                        .icon(Icon::Warning)
+                        .selector("search-refused")
+                        .into_any_element()
+                }
+                SearchShown::Failed(reason) => {
+                    StatePanel::new(text::SEARCH_FAILED_TITLE, reason.clone())
+                        .icon(Icon::Warning)
+                        .selector("search-failed")
+                        .action(again(cx))
+                        .into_any_element()
+                }
+                SearchShown::Searching | SearchShown::Results => {
+                    // One list in the order of the server: the rows of a later page join it
+                    // after the rows before, and no listed row moves (ADR 0730, ADR 0743).
+                    let mut rows: Vec<AnyElement> = Vec::with_capacity(panel.results.len());
+                    let mut transcripts = 0;
+                    for (index, row) in panel.results.iter().enumerate() {
+                        let number = match row.target {
+                            ResultTarget::Message(_) => index,
+                            ResultTarget::Transcript { .. } => {
+                                transcripts += 1;
+                                transcripts - 1
+                            }
+                        };
+                        rows.push(self.render_result(
+                            (index, number),
+                            row,
+                            panel,
+                            &theme,
+                            window,
+                            cx,
+                        ));
+                        rows.extend(self.listed_files(panel.server_id, row, &theme, window, cx));
+                    }
+                    // "Show more results" stands under the list, at a place of its own while
+                    // results are listed: a page that arrives does not move it.
+                    let more = div().flex().flex_none().px(u(14.0)).py(u(8.0)).child(
+                        Button::new("more-results")
+                            .label(if panel.reading_more {
+                                text::READING_MORE_RESULTS
+                            } else {
+                                if files {
+                                    text::search::OLDER_FILES
+                                } else {
+                                    text::SHOW_MORE_RESULTS
+                                }
+                            })
+                            .disabled(panel.reading_more || !panel.can_read_more)
+                            .selector("more-results")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if files {
+                                    this.search_scroll.set_offset(gpui::Point::default());
+                                }
+                                this.state
+                                    .update(cx, |state, cx| state.read_more_results(cx));
+                            })),
+                    );
+                    let previous = files.then(|| {
+                        div().flex().flex_none().px(u(14.0)).child(
                             Button::new("previous-files")
-                                .label("Newer files")
+                                .label(text::search::NEWER_FILES)
                                 .selector("previous-files")
+                                .disabled(!panel.previous_files || panel.reading_more)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.search_scroll.set_offset(gpui::Point::default());
                                     this.state.update(cx, |state, cx| state.previous_files(cx));
                                 })),
                         )
+                    });
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .children(previous)
+                        .child(
+                            ScrollArea::new("search-results", &self.search_scroll, text::SEARCH)
+                                .selector("search-results")
+                                .children(rows)
+                                .child(div().flex_none().h(u(6.0))),
+                        )
+                        .child(more)
                         .into_any_element()
-                } else {
-                    empty.into_any_element()
                 }
-            }
-            SearchShown::Refused(reason) => {
-                StatePanel::new(text::SEARCH_REFUSED_TITLE, reason.clone())
-                    .icon(Icon::Warning)
-                    .selector("search-refused")
-                    .into_any_element()
-            }
-            SearchShown::Failed(reason) => {
-                StatePanel::new(text::SEARCH_FAILED_TITLE, reason.clone())
-                    .icon(Icon::Warning)
-                    .selector("search-failed")
-                    .action(again(cx))
-                    .into_any_element()
-            }
-            SearchShown::Searching | SearchShown::Results => {
-                // One list in the order of the server: the rows of a later page join it
-                // after the rows before, and no listed row moves (ADR 0730, ADR 0743).
-                let mut rows: Vec<AnyElement> = Vec::with_capacity(panel.results.len());
-                let mut transcripts = 0;
-                for (index, row) in panel.results.iter().enumerate() {
-                    let number = match row.target {
-                        ResultTarget::Message(_) => index,
-                        ResultTarget::Transcript { .. } => {
-                            transcripts += 1;
-                            transcripts - 1
-                        }
-                    };
-                    rows.push(self.render_result((index, number), row, panel, &theme, window, cx));
-                    rows.extend(self.listed_files(panel.server_id, row, &theme, window, cx));
-                }
-                // "Show more results" stands under the list, at a place of its own while
-                // results are listed: a page that arrives does not move it.
-                let more = div().flex().flex_none().px(u(14.0)).py(u(8.0)).child(
-                    Button::new("more-results")
-                        .label(if panel.reading_more {
-                            text::READING_MORE_RESULTS
-                        } else {
-                            if files {
-                                "Older files"
-                            } else {
-                                text::SHOW_MORE_RESULTS
-                            }
-                        })
-                        .disabled(panel.reading_more || !panel.can_read_more)
-                        .selector("more-results")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if files {
-                                this.search_scroll.set_offset(gpui::Point::default());
-                            }
-                            this.state
-                                .update(cx, |state, cx| state.read_more_results(cx));
-                        })),
-                );
-                let previous = files.then(|| {
-                    div().flex().flex_none().px(u(14.0)).child(
-                        Button::new("previous-files")
-                            .label("Newer files")
-                            .selector("previous-files")
-                            .disabled(!panel.previous_files || panel.reading_more)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.search_scroll.set_offset(gpui::Point::default());
-                                this.state.update(cx, |state, cx| state.previous_files(cx));
-                            })),
-                    )
-                });
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .children(previous)
-                    .child(
-                        ScrollArea::new("search-results", &self.search_scroll, text::SEARCH)
-                            .selector("search-results")
-                            .children(rows)
-                            .child(div().flex_none().h(u(6.0))),
-                    )
-                    .child(more)
-                    .into_any_element()
-            }
+            },
         };
         side_panel(
             &theme,
@@ -907,6 +1123,7 @@ impl Shell {
             ),
         )
         .child(header)
+        .children(tabs)
         .children(filters)
         .children(unsupported)
         .child(
@@ -915,6 +1132,321 @@ impl Shell {
                 .children(archive_failed),
         )
         .child(body)
+        .into_any_element()
+    }
+
+    /// The tab "Recordings" of the Files panel of a voice channel (ADR 0784): its
+    /// recordings, newest first, each with its transcript, its card in the chat and its
+    /// files.
+    /// The files of a recording of the tab "Recordings", each with a control that saves it,
+    /// and the downloads with their progress, as the card of the recording has them.
+    fn render_channel_recording_files(
+        &mut self,
+        index: usize,
+        card: &crate::state::recorded::RecordingCard,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::state::RecordedFile;
+        use crate::state::recorded::{CardState, FileKind};
+        let colors = theme.colors;
+        let (server_id, recording_id) = (card.server_id, card.recording_id);
+        let panel = div()
+            .flex()
+            .flex_col()
+            .gap(u(4.0))
+            .debug_selector(move || format!("channel-recording-files:{recording_id}"));
+        let detail = match &card.state {
+            CardState::Shown(detail) => detail,
+            _ => {
+                return panel
+                    .child(
+                        div()
+                            .typeface(theme.types.small, theme)
+                            .ink(colors.ink_2)
+                            .child(text::RECORDING_READING),
+                    )
+                    .into_any_element();
+            }
+        };
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (position, file) in detail.files.iter().enumerate() {
+            let (segment_id, stem) = (file.segment_id, file.stem.clone());
+            let title = super::recorded::file_title(file);
+            rows.push(
+                div()
+                    .debug_selector(move || {
+                        format!("channel-recording-file:{recording_id}:{position}")
+                    })
+                    .child(
+                        Button::new(("channel-recording-file", index * 1000 + position))
+                            .kind(ButtonKind::Ghost)
+                            .icon(match file.kind {
+                                FileKind::Video => Icon::Play,
+                                FileKind::Microphone => Icon::Microphone,
+                                FileKind::ShareSound => Icon::Screen,
+                            })
+                            .label(format!("{title} · {}", text::file_size(file.bytes)))
+                            .when_some(file.problem.clone(), |button, problem| {
+                                button.tooltip(problem)
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.save_recording_file(
+                                        server_id,
+                                        recording_id,
+                                        RecordedFile::Segment(segment_id),
+                                        &stem,
+                                        false,
+                                        cx,
+                                    );
+                                });
+                            })),
+                    )
+                    .into_any_element(),
+            );
+            if let Some(progress) = &file.download
+                && progress.stage != junto_client_core::transfers::DownloadStage::Cancelled
+            {
+                let control = self.recorded_download(
+                    card,
+                    RecordedFile::Segment(segment_id),
+                    index * 1000 + position,
+                    progress,
+                    theme,
+                    cx,
+                );
+                rows.push(Self::download_row(title, control, position, theme));
+            }
+        }
+        panel.children(rows).into_any_element()
+    }
+
+    fn render_channel_recordings(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: junto_client_core::protocol::ids::WorkspaceId,
+        channel_id: ChannelId,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme.colors;
+        let state = self.state.read(cx);
+        // The list of this channel, read for the account that the device has now. A tab
+        // that stays open while another voice channel is shown reads that channel.
+        let Some(list) = state
+            .channel_recordings_of(server_id, workspace_id, channel_id)
+            .cloned()
+        else {
+            let app = self.state.downgrade();
+            cx.defer(move |cx| {
+                let _ = app.update(cx, |state, cx| {
+                    if state
+                        .channel_recordings_of(server_id, workspace_id, channel_id)
+                        .is_none()
+                    {
+                        state.show_channel_recordings(server_id, workspace_id, channel_id, cx);
+                    }
+                });
+            });
+            return div().into_any_element();
+        };
+        let files_card = list
+            .files_open
+            .and_then(|recording_id| state.channel_recording_card(recording_id));
+        let address = state.server(server_id).map(|server| server.entry().address);
+        let rows: Vec<AnyElement> = list
+            .recordings
+            .iter()
+            .enumerate()
+            .map(|(index, recording)| {
+                let id = recording.id;
+                let when = self.state.read(cx).recording_time(recording);
+                let length = recording
+                    .recording_since
+                    .zip(recording.ended_at)
+                    .and_then(|(since, ended)| std::time::Duration::try_from(ended - since).ok())
+                    .map(text::admin::recordings::length);
+                let detail = [Some(text::recording_state_word(recording.state).to_owned()), length]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let address = address.clone();
+                let saved = matches!(
+                    recording.state,
+                    junto_client_core::protocol::recording::RecordingState::Ready
+                        | junto_client_core::protocol::recording::RecordingState::PartlyFailed
+                );
+                let files = files_card
+                    .as_ref()
+                    .filter(|card| card.recording_id == id)
+                    .map(|card| self.render_channel_recording_files(index, card, theme, cx));
+                div()
+                    .id(("channel-recording", index))
+                    .role(Role::ListItem)
+                    .aria_label(format!("{}, {when}", text::RECORDING))
+                    .debug_selector(move || format!("channel-recording:{id}"))
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .gap(u(4.0))
+                    .px(u(14.0))
+                    .py(u(8.0))
+                    .border_t_1()
+                    .border_color(Hsla::from(colors.rule_soft))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(u(7.0))
+                            .typeface(theme.types.control_strong, theme)
+                            .child(icon(Icon::Record, 14.0, colors.cinnabar))
+                            .child(div().min_w_0().truncate().child(when)),
+                    )
+                    .child(
+                        div()
+                            .typeface(theme.types.small, theme)
+                            .ink(colors.ink_2)
+                            .child(detail),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(u(6.0))
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("channel-recording-card:{id}"))
+                                    .child(
+                                        Button::new(("channel-recording-card", index))
+                                            .kind(ButtonKind::Ghost)
+                                            .label(text::OPEN_RECORDING_CARD)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(address) = &address {
+                                                    this.state.update(cx, |state, cx| {
+                                                        state.open_recording_link(address, id, cx);
+                                                    });
+                                                }
+                                            })),
+                                    ),
+                            )
+                            .when(
+                                recording.transcript
+                                    != junto_client_core::protocol::transcript::TranscriptState::None,
+                                |actions| {
+                                    actions.child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("channel-recording-transcript:{id}")
+                                            })
+                                            .child(
+                                                Button::new(("channel-recording-transcript", index))
+                                                    .kind(ButtonKind::Ghost)
+                                                    .label(text::TRANSCRIPT)
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.state.update(cx, |state, cx| {
+                                                            state.open_transcript(
+                                                                server_id,
+                                                                workspace_id,
+                                                                channel_id,
+                                                                id,
+                                                                None,
+                                                                cx,
+                                                            );
+                                                        });
+                                                    })),
+                                            ),
+                                    )
+                                },
+                            )
+                            // The files of the recording, saved through the flow of its card
+                            // (ADR 0784).
+                            .when(saved, |actions| {
+                                actions.child(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("channel-recording-download:{id}")
+                                        })
+                                        .child(
+                                            Button::new(("channel-recording-download", index))
+                                                .kind(ButtonKind::Ghost)
+                                                .icon(Icon::Download)
+                                                .label(text::DOWNLOAD)
+                                                .tooltip(text::RECORDING_FILES)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.state.update(cx, |state, cx| {
+                                                        state.toggle_channel_recording_files(id, cx);
+                                                    });
+                                                })),
+                                        ),
+                                )
+                            }),
+                    )
+                    .children(files)
+                    .into_any_element()
+            })
+            .collect();
+        let end: AnyElement = if list.reading {
+            div()
+                .px(u(14.0))
+                .py(u(8.0))
+                .typeface(theme.types.small, theme)
+                .ink(colors.ink_2)
+                .debug_selector(|| "channel-recordings-reading".to_owned())
+                .child(text::READING_RECORDINGS)
+                .into_any_element()
+        } else if let Some(failed) = list.failed.clone() {
+            div()
+                .px(u(14.0))
+                .py(u(8.0))
+                .child(
+                    Notice::error(failed)
+                        .selector("channel-recordings-failed")
+                        .action(
+                            Button::new("channel-recordings-retry")
+                                .label(text::TRY_AGAIN)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| {
+                                        state.show_channel_recordings(
+                                            server_id,
+                                            workspace_id,
+                                            channel_id,
+                                            cx,
+                                        );
+                                    });
+                                })),
+                        ),
+                )
+                .into_any_element()
+        } else if list.recordings.is_empty() && list.older.is_none() {
+            StatePanel::new(text::NO_RECORDINGS_TITLE, text::NO_RECORDINGS)
+                .selector("channel-recordings-empty")
+                .into_any_element()
+        } else if list.older.is_some() {
+            div()
+                .px(u(14.0))
+                .py(u(8.0))
+                .child(
+                    Button::new("channel-recordings-older")
+                        .label(text::OLDER_RECORDINGS)
+                        .selector("channel-recordings-older")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state
+                                .update(cx, |state, cx| state.read_older_channel_recordings(cx));
+                        })),
+                )
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+        ScrollArea::new(
+            "channel-recordings",
+            &self.search_scroll,
+            text::RECORDINGS_TAB,
+        )
+        .selector("channel-recordings")
+        .children(rows)
+        .child(end)
         .into_any_element()
     }
 }

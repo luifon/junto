@@ -55,7 +55,7 @@ impl Window {
     /// Opens the administration through the menu of the server.
     #[track_caller]
     pub(crate) fn open_administration(&mut self) {
-        self.click("server-menu-button");
+        self.open_server_menu();
         self.click("menu-administration");
         assert!(self.shows("admin"));
     }
@@ -207,18 +207,21 @@ fn an_administrator_manages_workspaces_and_channels_in_the_window(cx: &mut TestA
     });
     until_model(&world, &other, "the first state", |_| true);
 
-    // The pages of the owner.
+    // The pages of the owner. Server settings open at the overview of the server; the
+    // workspaces have their page.
     window.open_administration();
+    window.click("admin-nav-workspaces");
     let view = window.admin().unwrap();
-    let Scope::Server { nav, page, .. } = &view.scope else {
+    let Scope::Server { page, .. } = &view.scope else {
         panic!("the administration of the server is open");
     };
     assert!(
-        nav.iter()
+        view.nav
+            .iter()
             .any(|group| group.pages.contains(&AdminPage::Tokens))
     );
     let ServerPage::Workspaces(page) = page else {
-        panic!("the first page is the page of the workspaces");
+        panic!("the page of the workspaces is open");
     };
     assert!(page.may_create && page.may_manage && page.is_owner);
     let default = page.rows.iter().find(|row| row.is_default).unwrap().id;
@@ -242,14 +245,14 @@ fn an_administrator_manages_workspaces_and_channels_in_the_window(cx: &mut TestA
         .unwrap()
         .id;
 
-    // A new name.
-    window.click(Box::leak(
-        format!("workspace-rename-{lab}").into_boxed_str(),
-    ));
+    // A new name, on the overview of the workspace that "Open" shows.
+    window.click(selector(format!("workspace-open-{lab}")));
+    crate::admin_pages::click_in_page(&mut window, selector(format!("workspace-rename-{lab}")));
     window.send_form("Laboratory");
     window.until("the workspace has its new name", |window| {
         window.workspace_names().contains(&"Laboratory".to_owned())
     });
+    window.click("admin-nav-workspaces");
 
     // The deletion asks first, and the default workspace offers none.
     window.click(Box::leak(
@@ -272,6 +275,13 @@ fn an_administrator_manages_workspaces_and_channels_in_the_window(cx: &mut TestA
     window.until("the workspace is deleted", |window| {
         !window.workspace_names().contains(&"Laboratory".to_owned())
     });
+    // The deleted workspace was the chosen one: its pages state that the access ended until
+    // another workspace is chosen (ADR 0761).
+    window.until("the selector has no workspace", |window| {
+        window.shows("admin-workspace") && !window.shows("admin-nav-channels")
+    });
+    window.click("admin-workspace");
+    window.click(selector(format!("admin-workspace-{default}")));
 
     // A category and a channel in it; the member gets both.
     window.click("admin-nav-channels");
@@ -313,10 +323,7 @@ fn an_administrator_manages_workspaces_and_channels_in_the_window(cx: &mut TestA
         .id;
 
     // The channel moves out of its category.
-    window.until("the channel has its row", |window| {
-        window.shows(Box::leak(format!("channel-move-{plans}").into_boxed_str()))
-    });
-    window.click(Box::leak(format!("channel-move-{plans}").into_boxed_str()));
+    crate::admin_pages::click_in_page(&mut window, selector(format!("channel-move-{plans}")));
     window.click("channel-group-none");
     window.click("channel-place-0");
     until_model(&world, &other, "the channel without a category", |model| {
@@ -334,12 +341,12 @@ fn an_administrator_manages_workspaces_and_channels_in_the_window(cx: &mut TestA
                 window.admin().map(|view| view.scope),
                 Some(Scope::Server { page: ServerPage::Channels(page), .. })
                     if page.channel(plans).is_some_and(|line| line.category_id.is_none())
-            ) && window.shows(settings)
+            )
         },
     );
 
     // The settings of the channel: a new name, permanent messages, and the archive.
-    window.click(settings);
+    crate::admin_pages::click_in_page(&mut window, settings);
     window.until("the settings of the channel are open", |window| {
         window.shows("channel-nav-overview") && window.shows("channel-rename")
     });
@@ -435,6 +442,7 @@ fn a_form_that_is_sent_twice_makes_one_request(cx: &mut TestAppContext) {
             .count()
     };
     proxy.hold(created);
+    window.click("admin-nav-workspaces");
     window.click("workspace-new");
     window.in_shell(|shell, window, cx| {
         shell.type_admin_name("Lab", window, cx);
@@ -490,35 +498,44 @@ fn an_answer_to_a_form_during_a_press_keeps_the_pressed_control_in_place(cx: &mu
         .find(|workspace| workspace.is_default)
         .unwrap()
         .id;
-    let lab = world
-        .run(owner.api().create_workspace("lab".to_owned()))
+    // A category whose rename form is above its channel and its "New channel".
+    let ideas = world
+        .run(owner.api().create_category(
+            default,
+            &CreateCategory {
+                name: "ideas".to_owned(),
+                position: None,
+            },
+        ))
+        .unwrap()
+        .id;
+    let _plans = world
+        .run(owner.api().create_channel(
+            default,
+            &CreateChannel {
+                topic: String::new(),
+                name: "plans".to_owned(),
+                kind: ChannelKind::Text,
+                category_id: Some(ideas),
+                position: None,
+            },
+        ))
         .unwrap()
         .id;
     window.open_administration();
-    window.click("admin-nav-workspaces");
-    let rename = |id: WorkspaceId| selector(format!("workspace-rename-{id}"));
-    window.until("the workspaces have their rows", |window| {
-        window.shows(rename(default)) && window.shows(rename(lab))
-    });
-    let (form_row, under) = {
-        let default_row = window.cx.debug_bounds(rename(default)).unwrap();
-        let lab_row = window.cx.debug_bounds(rename(lab)).unwrap();
-        if default_row.top() < lab_row.top() {
-            (default, lab)
-        } else {
-            (lab, default)
-        }
-    };
+    window.click("admin-nav-channels");
+    let under = selector(format!("channel-new-{ideas}"));
+    crate::admin_pages::reveal_in_page(&mut window, under);
 
     // The new name reaches the server, and its answer waits at the proxy.
-    window.click(rename(form_row));
-    proxy.hold_answer_ending("PATCH", &format!("/workspaces/{form_row}"));
-    window.send_form("studio");
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-rename-{ideas}")));
+    proxy.hold_answer_ending("PATCH", &format!("/categories/{ideas}"));
+    window.send_form("projects");
     window.until("the answer to the rename waits at the proxy", |_| {
         proxy.answers_waiting() == 1
     });
     window.settle();
-    let before = window.cx.debug_bounds(rename(under)).unwrap();
+    let before = window.cx.debug_bounds(under).unwrap();
 
     // The press starts while the answer waits and ends after the window has drawn it.
     let position = before.center();
@@ -531,11 +548,11 @@ fn an_answer_to_a_form_during_a_press_keeps_the_pressed_control_in_place(cx: &mu
     });
     proxy.release();
     window.until("the window has the answer to the rename", |window| {
-        window.workspace_names().contains(&"studio".to_owned()) && !window.shows("workspace-name")
+        !window.shows("category-name")
     });
     window.settle();
     assert_eq!(
-        window.cx.debug_bounds(rename(under)).unwrap(),
+        window.cx.debug_bounds(under).unwrap(),
         before,
         "the answer moved the control under the form"
     );
@@ -546,7 +563,7 @@ fn an_answer_to_a_form_during_a_press_keeps_the_pressed_control_in_place(cx: &mu
         click_count: 1,
     });
     window.until("the pressed control opened its form", |window| {
-        window.shows("workspace-name")
+        window.shows("channel-name")
     });
 }
 
@@ -596,9 +613,7 @@ fn the_settings_of_a_channel_wait_for_the_answer_to_its_new_name(cx: &mut TestAp
         .id;
     window.open_administration();
     window.click("admin-nav-channels");
-    let settings = selector(format!("channel-settings-{plans}"));
-    window.until("the channel has its row", |window| window.shows(settings));
-    window.click(settings);
+    crate::admin_pages::click_in_page(&mut window, selector(format!("channel-settings-{plans}")));
     window.until("the settings of the channel are open", |window| {
         window.shows("channel-rename") && window.shows("channel-permanent")
     });
@@ -713,9 +728,7 @@ fn a_cancelled_form_of_a_channel_keeps_its_settings_waiting_and_tells_the_refusa
         .id;
     window.open_administration();
     window.click("admin-nav-channels");
-    let settings = selector(format!("channel-settings-{plans}"));
-    window.until("the channel has its row", |window| window.shows(settings));
-    window.click(settings);
+    crate::admin_pages::click_in_page(&mut window, selector(format!("channel-settings-{plans}")));
     window.until("the settings of the channel are open", |window| {
         window.shows("channel-rename") && window.shows("channel-permanent")
     });
@@ -1026,8 +1039,22 @@ fn the_keyboard_reaches_every_place_that_a_drag_reaches(cx: &mut TestAppContext)
             .takes(x, Some(projects), 1)
     );
 
+    // Without "manage channel" the menu of a channel has no "Move to" (ADR 0790).
+    for (channel, offered) in [(x, true), (b, false), (c, false)] {
+        let row = crate::admin_pages::sel("admin-row-channel", channel);
+        crate::admin_pages::reveal_in_page(&mut window, row);
+        window.right_click_row(row);
+        assert!(window.shows(crate::admin_pages::sel("channel-settings", channel)));
+        assert_eq!(
+            window.shows(crate::admin_pages::sel("channel-move", channel)),
+            offered,
+            "{channel}"
+        );
+        window.press("escape");
+    }
+
     // "Move to" offers the same place: the category, and then the place after "b".
-    window.click_named(format!("channel-move-{x}"));
+    crate::admin_pages::click_in_page(&mut window, selector(format!("channel-move-{x}")));
     window.click_named(format!("channel-group-{projects}"));
     assert!(window.shows("channel-place-1"));
     window.click("channel-place-1");
@@ -1075,7 +1102,7 @@ fn a_move_from_an_old_order_is_refused_and_stays_drawn_until_the_person_acts(
         .run(owner.handle.api().update_channel(last, &moved))
         .unwrap();
     proxy.hold_request("PATCH", "/channels/positions");
-    window.click_named(format!("channel-down-{x}"));
+    crate::admin_pages::click_in_page(&mut window, selector(format!("channel-down-{x}")));
     window.until("the page shows the move", |window| {
         group_order(window, None).ends_with(&[next, x, last])
     });
@@ -1146,7 +1173,7 @@ fn a_move_changes_the_order_at_the_press_and_no_row_moves_at_its_answer(cx: &mut
     // "Move to" of "a" puts it after "b". The order changes at the press: "b" takes the
     // place of "a", and the form of "a" goes with "a".
     proxy.hold_request("PATCH", "/channels/positions");
-    window.click_named(format!("channel-move-{a}"));
+    crate::admin_pages::click_in_page(&mut window, selector(format!("channel-move-{a}")));
     window.click("channel-group-none");
     let place = {
         let order = group_order(&mut window, None);
@@ -1160,8 +1187,8 @@ fn a_move_changes_the_order_at_the_press_and_no_row_moves_at_its_answer(cx: &mut
     });
     window.settle();
     let controls = [
-        selector(format!("channel-settings-{b}")),
-        selector(format!("channel-settings-{c}")),
+        selector(format!("menu-button:channel-{b}")),
+        selector(format!("menu-button:channel-{c}")),
     ];
     let bounds = |window: &mut Window| {
         window.settle();
@@ -1210,7 +1237,7 @@ fn a_refused_move_to_keeps_the_height_of_its_form(cx: &mut TestAppContext) {
     });
 
     // "Move to" of "a", after the third of the others.
-    window.click_named(format!("channel-move-{a}"));
+    crate::admin_pages::click_in_page(&mut window, selector(format!("channel-move-{a}")));
     window.click("channel-group-none");
     let place = {
         let order = group_order(&mut window, None);
@@ -1289,7 +1316,7 @@ fn a_refused_move_of_a_channel_that_is_gone_is_stated_on_the_page(cx: &mut TestA
     // "Down" of "x" waits at the proxy while another administrator deletes "x"; the page
     // loses its row, and then the server refuses the move.
     proxy.hold_request("PATCH", "/channels/positions");
-    window.click_named(format!("channel-down-{x}"));
+    crate::admin_pages::click_in_page(&mut window, selector(format!("channel-down-{x}")));
     window.until("the request waits", |_| {
         proxy
             .all()
@@ -1700,9 +1727,16 @@ fn the_private_switch_hides_a_channel_from_the_members_and_shows_it_again(cx: &m
     until_model(&world, &member, "the member has the channel", |model| {
         model.channel(plans).is_some()
     });
+    // The switch is the first part of the page Permissions (ADR 0761).
     let privacy = |window: &mut Window| match window.admin().map(|view| view.scope) {
         Some(Scope::Channel(settings)) => match settings.page {
-            ChannelPageView::Overview(page) => Some(page.privacy),
+            ChannelPageView::Permissions(page) => page.rules.loaded().map(|list| {
+                if junto_client::state::admin::view::overrides::visibility(list).private {
+                    Privacy::Private
+                } else {
+                    Privacy::Open
+                }
+            }),
             _ => None,
         },
         _ => None,
@@ -1722,15 +1756,14 @@ fn the_private_switch_hides_a_channel_from_the_members_and_shows_it_again(cx: &m
 
     window.open_administration();
     window.click("admin-nav-channels");
-    let settings = selector(format!("channel-settings-{plans}"));
-    window.until("the channel has its row", |window| window.shows(settings));
-    window.click(settings);
+    crate::admin_pages::click_in_page(&mut window, selector(format!("channel-settings-{plans}")));
+    window.click("channel-nav-permissions");
     window.until("the switch knows that the channel is open", |window| {
         privacy(window) == Some(Privacy::Open)
     });
 
     // On: the role of everyone may not see the channel, and the member loses it.
-    window.click("channel-private");
+    crate::admin_pages::click_in_page(&mut window, "channel-private");
     window.until("the switch shows a private channel", |window| {
         privacy(window) == Some(Privacy::Private)
     });
@@ -1740,7 +1773,7 @@ fn the_private_switch_hides_a_channel_from_the_members_and_shows_it_again(cx: &m
     });
 
     // Off: the member has the channel again.
-    window.click("channel-private");
+    crate::admin_pages::click_in_page(&mut window, "channel-private");
     window.until("the switch shows an open channel", |window| {
         privacy(window) == Some(Privacy::Open)
     });
@@ -1765,12 +1798,13 @@ fn the_afk_form_changes_the_workspace_timeout_channel_and_enabled_state(cx: &mut
     let workspace = window.view().workspace().unwrap().id;
     let original = world.run(handle.api().afk_settings(workspace)).unwrap();
     window.open_administration();
-    window.click("admin-nav-channels");
-    window.click("afk-settings-open");
+    window.click("admin-nav-workspace-overview");
+    crate::admin_pages::click_in_page(&mut window, "afk-settings-open");
+    // The first choice is five minutes.
     window.until("the AFK form is loaded", |window| {
-        window.shows("afk-time-5")
+        window.shows("afk-time-0")
     });
-    window.click("afk-time-5");
+    crate::admin_pages::click_in_page(&mut window, "afk-time-0");
     window.until("the timeout is saved", |window| {
         window.state.read_with(&window.cx, |state, _| {
             state
@@ -1798,7 +1832,7 @@ fn the_afk_form_changes_the_workspace_timeout_channel_and_enabled_state(cx: &mut
             });
         });
     });
-    window.press_as_drawn("afk-enabled");
+    crate::admin_pages::click_in_page(&mut window, "afk-enabled");
     window.until("AFK is disabled", |window| {
         window.state.read_with(&window.cx, |state, _| {
             state
@@ -1813,7 +1847,7 @@ fn the_afk_form_changes_the_workspace_timeout_channel_and_enabled_state(cx: &mut
         .into_iter()
         .find(|channel| channel.kind == ChannelKind::Voice && channel.id != original.channel_id)
         .unwrap();
-    window.click(selector(format!("afk-channel-{}", voice.id)));
+    crate::admin_pages::click_in_page(&mut window, selector(format!("afk-channel-{}", voice.id)));
     window.until("the AFK channel is changed", |window| {
         window.state.read_with(&window.cx, |state, _| {
             state
@@ -1829,4 +1863,57 @@ fn the_afk_form_changes_the_workspace_timeout_channel_and_enabled_state(cx: &mut
     let settings = world.run(handle.api().afk_settings(workspace)).unwrap();
     assert!(!settings.enabled);
     assert_eq!(settings.channel_id, voice.id);
+}
+
+/// An open form of a workspace goes with the permission: an administrator whose role is
+/// taken away while the rename form is open no longer has the form or its action
+/// (ADR 0790).
+#[gpui::test]
+fn an_open_workspace_form_goes_when_the_permission_goes(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::ServerPermission;
+    use junto_client_core::protocol::roles::CreateServerRole;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let own = window.view().person.account_id.unwrap();
+    let api = admin.handle.api();
+    let role = CreateServerRole {
+        color: None,
+        hoist: false,
+        name: "Administrators".to_owned(),
+        permissions: vec![ServerPermission::Administrator],
+    };
+    let role = world.run(api.create_server_role(&role)).unwrap();
+    world.run(api.assign_server_role(own, role.id)).unwrap();
+    window.until("the menu offers the invite of the role", |window| {
+        window
+            .view()
+            .selected
+            .is_some_and(|server| server.may_invite_people)
+    });
+    let default = world
+        .run(api.workspaces())
+        .unwrap()
+        .into_iter()
+        .find(|workspace| workspace.is_default)
+        .unwrap()
+        .id;
+    // The name is changed on the overview of the workspace that "Open" shows (ADR 0761).
+    window.open_administration();
+    window.click("admin-nav-workspaces");
+    let open = selector(format!("workspace-open-{default}"));
+    window.until("the workspace is listed", |window| window.shows(open));
+    window.click(open);
+    let rename = selector(format!("workspace-rename-{default}"));
+    window.until("the workspace may be renamed", |window| {
+        window.shows(rename)
+    });
+    crate::admin_pages::click_in_page(&mut window, rename);
+    assert!(window.shows("workspace-name"));
+
+    world.run(api.unassign_server_role(own, role.id)).unwrap();
+    window.until("the form and its action are gone", |window| {
+        !window.shows("workspace-name") && !window.shows(rename)
+    });
 }

@@ -26,7 +26,7 @@ pub const REMOVE: &str = "Remove";
 pub const BAN: &str = "Ban";
 pub const UNBAN: &str = "Unban";
 pub const RECOVER: &str = "Recover";
-pub const RECOVER_KEY: &str = "Key of the new device";
+pub const RECOVER_KEY: &str = "Device code";
 pub const RECOVER_KEY_PLACEHOLDER: &str = "The key that the new device shows";
 pub const RECOVER_DEVICE: &str = "Name of the new device";
 pub const RECOVER_DEVICE_PLACEHOLDER: &str = "Name of the device (optional)";
@@ -41,9 +41,6 @@ pub const RECOVER_OWN: &str = "Your own account gets a new device by a link on t
      “Devices” of your account.";
 pub const RECOVER_NOT_ACTIVE: &str = "Only an active account is recovered.";
 pub const RECOVERY_SENT: &str = "Wait until the server has answered the recovery.";
-pub const RECOVERY_HELP: &str = "The server owner recovers an account whose person has lost \
-     every device: the person adds the server on a new device, chooses to link the device, \
-     and gives the owner the key that it shows.";
 
 pub const fn recovery_fault(fault: RecoveryFault) -> &'static str {
     match fault {
@@ -69,10 +66,6 @@ pub fn recovered(at: OffsetDateTime, cycle: junto_client_core::clock::HourCycle)
         crate::text::account::utc(at, cycle)
     )
 }
-pub const REMOVAL_HELP: &str = "A removed account loses its devices, its sessions, its memberships and its roles. The \
-     person can join again with an invite code and gets a new account.";
-pub const BAN_HELP: &str = "The keys of a banned account cannot log in or join again. An unban restores the \
-     account with its memberships and roles.";
 
 /// The filter that shows the banned accounts, with their number.
 pub fn filter_banned(count: usize) -> String {
@@ -195,8 +188,6 @@ pub const fn no_removal(reason: NoRemoval) -> &'static str {
 /// The sentence in the row of a member that role order protects (ADR 0309).
 pub const MEMBER_OUTRANKED: &str = "This member stands at or above your highest role in this workspace. You cannot \
      remove it from the workspace.";
-pub const REMOVE_MEMBER_NEEDS: &str =
-    "Only an administrator can remove a member from this workspace.";
 pub const NO_MEMBERS: &str = "This workspace has no member.";
 pub const MEMBERS_NOT_READ: &str = "The members could not be read.";
 pub const NOT_MEMBERS: &str = "Accounts that are not members";
@@ -205,8 +196,6 @@ pub const ADD_HELP: &str = "An administrator can add an active account of the se
      account gets no role.";
 pub const ALL_ARE_MEMBERS: &str =
     "Every active account of the server is a member of this workspace.";
-pub const ADD_NEEDS: &str = "Only an administrator can add an account to this workspace. Other accounts enter it \
-     with an invite code.";
 
 pub fn members_help(workspace: &str) -> String {
     format!("The members of the workspace “{workspace}” with their roles in it.")
@@ -224,6 +213,9 @@ pub const USES_PLACEHOLDER: &str = "1 to 10000";
 pub const USES_RANGE: &str = "Type a number of uses from 1 to 10000.";
 pub const WORKSPACES: &str = "Workspaces";
 pub const DEFAULT_WORKSPACE: &str = "Default workspace";
+/// Why the switch of the default workspace in the form of a new invite cannot be turned off.
+pub const DEFAULT_IN_EVERY_INVITE: &str =
+    "Every person who joins is a member of the default workspace.";
 pub const INVITE_GRANTS_HELP: &str =
     "A person who joins with the code becomes a member of these workspaces.";
 pub const CHOOSE_WORKSPACE: &str =
@@ -350,4 +342,23 @@ pub const COPY_APP_LINK: &str = "Copy app link";
 pub fn invite_creator_range(name: Option<&str>) -> std::ops::Range<usize> {
     let start = "Created by ".len();
     start..start + name.map_or(0, str::len)
+}
+
+// The items of the menu of an account on the page of the people, each naming its scope.
+pub const SERVER_ROLES: &str = "Server roles…";
+pub const SERVER_PERMISSIONS: &str = "Server permissions…";
+pub const REMOVE_FROM_SERVER: &str = "Remove from server…";
+pub const BAN_FROM_SERVER: &str = "Ban from server…";
+pub const RECOVER_MENU: &str = "Recover onto a new device…";
+pub const MEMBER_OF: &str = "Member of";
+
+/// The group of the menu of a person that holds the actions of the administration.
+pub const MANAGE: &str = "Manage";
+
+pub fn roles_in(workspace: &str) -> String {
+    format!("Roles in {workspace}…")
+}
+
+pub fn remove_from(workspace: &str) -> String {
+    format!("Remove from {workspace}…")
 }

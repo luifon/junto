@@ -19,7 +19,7 @@ use crate::state::AppState;
     get,
     path = "/api/v1/events",
     tag = "events",
-    params(("Junto-Group-Conversations"=Option<String>,Header,description="1 enables group conversation messages and calls; omitted readers receive pairs and channels")),
+    params(("Junto-Group-Conversations"=Option<String>,Header,description="1 enables group conversation messages and calls; omitted readers receive pairs and channels"),("Junto-Group-Names"=Option<String>,Header,description="optional reads a group without a name as it is stored; omitted, a reader of groups gets the names of the other members for such a group")),
     security(("session" = [])),
     responses(
         (status = 101, description = "The connection is now a WebSocket."),
@@ -67,7 +67,7 @@ pub async fn open_event_stream(
         visible,
     )?;
 
-    let groups = crate::messages::groups::supported();
+    let groups = crate::messages::groups::support();
     let link = registration.link().clone();
     let response = upgrade.response();
     let task = tokio::spawn(async move {

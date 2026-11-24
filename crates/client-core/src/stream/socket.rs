@@ -115,24 +115,35 @@ fn invalid(detail: &str) -> OpenError {
     OpenError::Failed(TransportError::new(TransportErrorKind::Interrupted, detail))
 }
 
+/// The request that opens the event stream: the upgrade to a WebSocket, with the headers of
+/// the group conversations that every request of the client carries (ADR 0302).
+fn upgrade_request(
+    client: &reqwest::Client,
+    request: StreamRequest,
+    key: &str,
+) -> reqwest::RequestBuilder {
+    use reqwest::header::{ACCEPT, CONNECTION, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION, UPGRADE};
+    let mut builder = client
+        .get(request.url)
+        .bearer_auth(request.bearer.expose())
+        .header(ACCEPT, "application/json");
+    for (name, value) in crate::api::transport::GROUP_HEADERS {
+        builder = builder.header(name, value);
+    }
+    builder
+        .header(CONNECTION, "upgrade")
+        .header(UPGRADE, "websocket")
+        .header(SEC_WEBSOCKET_VERSION, "13")
+        .header(SEC_WEBSOCKET_KEY, key)
+}
+
 impl StreamTransport for ReqwestStreamTransport {
     fn open(&self, request: StreamRequest) -> OpenFuture {
-        use reqwest::header::{
-            ACCEPT, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION,
-            UPGRADE,
-        };
+        use reqwest::header::{SEC_WEBSOCKET_ACCEPT, UPGRADE};
         let client = self.client.clone();
         Box::pin(async move {
             let key = generate_key();
-            let response = client
-                .get(request.url)
-                .bearer_auth(request.bearer.expose())
-                .header(ACCEPT, "application/json")
-                .header(junto_protocol::message::GROUPS_HEADER, "1")
-                .header(CONNECTION, "upgrade")
-                .header(UPGRADE, "websocket")
-                .header(SEC_WEBSOCKET_VERSION, "13")
-                .header(SEC_WEBSOCKET_KEY, &key)
+            let response = upgrade_request(&client, request, &key)
                 .send()
                 .await
                 .map_err(|error| OpenError::Failed(failure(error)))?;
@@ -240,6 +251,25 @@ mod tests {
         let (near, far) = tokio::io::duplex(64 * 1024);
         let server = WebSocketStream::from_raw_socket(far, Role::Server, None).await;
         (carry(near).await, server)
+    }
+
+    /// A server of 0.2 gives group conversations only to a request whose group header has the
+    /// value 1; a client that reads a group without a name states it in a header of its own.
+    #[test]
+    fn the_event_stream_asks_for_groups_as_a_server_of_0_2_reads_it() {
+        let request = StreamRequest {
+            url: Url::parse("https://chat.example.test/api/v1/events").unwrap(),
+            bearer: SecretToken::new("jst_secret-token".to_owned()),
+        };
+        let built = upgrade_request(&reqwest::Client::new(), request, "key")
+            .build()
+            .unwrap();
+        let headers = built.headers();
+        assert_eq!(headers[junto_protocol::message::GROUPS_HEADER], "1");
+        assert_eq!(
+            headers[junto_protocol::message::GROUP_NAMES_HEADER],
+            junto_protocol::message::GROUP_NAMES_OPTIONAL
+        );
     }
 
     #[test]

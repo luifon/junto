@@ -87,7 +87,7 @@ impl Shell {
                                         .child(
                                             Button::new(("open-listed-file", index))
                                                 .kind(ButtonKind::Ghost)
-                                                .label("Open file")
+                                                .label(text::OPEN_FILE)
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     let address = this
                                                         .state
@@ -110,14 +110,23 @@ impl Shell {
                         )
                 });
                 let key: SharedString = format!("listed-file:{owner:?}:{message}:{id}").into();
+                let focus = crate::ui::row_focus(key.clone(), window, cx);
+                let focused = focus.is_focused(window);
                 let row = div()
                     .id(key.clone())
-                    .focusable()
-                    .tab_stop(true)
+                    .track_focus(&focus)
                     .role(Role::ListItem)
                     .debug_selector(move || format!("listed-file:{id}"))
                     .child(row);
-                crate::ui::bind_action_menu(row, key, actions, window, cx).into_any_element()
+                crate::ui::bind_row_action_menu(
+                    row,
+                    key,
+                    crate::ui::RowMenu::overlay(focused),
+                    actions,
+                    window,
+                    cx,
+                )
+                .into_any_element()
             })
             .collect()
     }

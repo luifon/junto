@@ -637,3 +637,179 @@ async fn observing(server: &TestServer, member: &Member) -> crate::stream_suppor
     );
     stream
 }
+
+fn status_text(page: &PresencePage, account: AccountId) -> Option<String> {
+    page.accounts
+        .iter()
+        .find(|row| row.account_id == account)
+        .unwrap()
+        .status_text
+        .as_ref()
+        .map(|text| text.text.clone())
+}
+
+#[tokio::test]
+async fn a_status_text_is_shown_to_who_may_see_the_account_also_while_invisible_or_offline() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let member = server.join(&owner, "Member").await;
+    let workspace: junto_protocol::structure::Workspace = server
+        .post(&owner, "/api/v1/workspaces", &json!({"name":"Other"}))
+        .await
+        .ok(StatusCode::CREATED);
+    let hidden = server.join_into(&owner, "Separate", &[workspace.id]).await;
+    let until = server.clock.now() + time::Duration::hours(1);
+    let stored: junto_protocol::presence::SetStatusText = server
+        .put(
+            &hidden,
+            "/api/v1/account/status-text",
+            &json!({"status_text": {"text": "  Out of office  ", "until": until
+                .format(&time::format_description::well_known::Rfc3339).unwrap()}}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let stored = stored.status_text.unwrap();
+    assert_eq!(stored.text, "Out of office");
+    assert_eq!(stored.until, Some(until));
+    let page = read(&server, &owner, &[hidden.account_id], false).await;
+    assert_eq!(status(&page, hidden.account_id), Presence::Offline);
+    assert_eq!(
+        status_text(&page, hidden.account_id).as_deref(),
+        Some("Out of office")
+    );
+    let own = read(&server, &hidden, &[hidden.account_id], false).await;
+    assert_eq!(
+        status_text(&own, hidden.account_id).as_deref(),
+        Some("Out of office")
+    );
+    assert_eq!(
+        status_text(
+            &read(&server, &member, &[hidden.account_id], false).await,
+            hidden.account_id
+        ),
+        None
+    );
+    server
+        .put(
+            &hidden,
+            "/api/v1/account/presence",
+            &json!({"choice":"invisible"}),
+        )
+        .await
+        .ok::<Value>(StatusCode::OK);
+    assert_eq!(
+        status_text(
+            &read(&server, &owner, &[hidden.account_id], false).await,
+            hidden.account_id
+        )
+        .as_deref(),
+        Some("Out of office")
+    );
+    server
+        .put(
+            &hidden,
+            "/api/v1/account/status-text",
+            &json!({"status_text": null}),
+        )
+        .await
+        .ok::<Value>(StatusCode::OK);
+    assert_eq!(
+        status_text(
+            &read(&server, &owner, &[hidden.account_id], false).await,
+            hidden.account_id
+        ),
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_status_text_must_be_one_short_line_with_an_end_time_to_come() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let past = (server.clock.now() - time::Duration::minutes(1))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    for body in [
+        json!({"status_text": {"text": "   "}}),
+        json!({"status_text": {"text": "a".repeat(101)}}),
+        json!({"status_text": {"text": "two\nlines"}}),
+        json!({"status_text": {"text": "Away", "until": past}}),
+        json!({"status_text": {"text": "Away", "colour": "red"}}),
+    ] {
+        server
+            .put(&owner, "/api/v1/account/status-text", &body)
+            .await
+            .error(junto_protocol::error::ErrorCode::InvalidRequest);
+    }
+    let longest: junto_protocol::presence::SetStatusText = server
+        .put(
+            &owner,
+            "/api/v1/account/status-text",
+            &json!({"status_text": {"text": "é".repeat(100)}}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(longest.status_text.unwrap().until, None);
+}
+
+#[tokio::test]
+async fn a_status_text_ends_at_its_end_time_and_its_removal_is_told() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let member = server.join(&owner, "Member").await;
+    let until = server.clock.now() + time::Duration::minutes(30);
+    server
+        .put(
+            &member,
+            "/api/v1/account/status-text",
+            &json!({"status_text": {"text": "In a meeting", "until": until
+                .format(&time::format_description::well_known::Rfc3339).unwrap()}}),
+        )
+        .await
+        .ok::<Value>(StatusCode::OK);
+    let mut observer = observing(&server, &owner).await;
+    read(&server, &owner, &[member.account_id], false).await;
+    server.clock.advance(time::Duration::minutes(31));
+    assert_eq!(
+        status_text(
+            &read(&server, &owner, &[member.account_id], false).await,
+            member.account_id
+        ),
+        None
+    );
+    junto_server::maintenance::run_once(&server.state)
+        .await
+        .unwrap();
+    assert_eq!(
+        observer.next().await,
+        Frame::Message(ServerMessage::PresenceChanged {})
+    );
+    let stored: Option<String> =
+        sqlx::query_scalar("select status_text from accounts where id = $1")
+            .bind(member.account_id)
+            .fetch_one(&mut server.test_data().await)
+            .await
+            .unwrap();
+    assert_eq!(stored, None);
+}
+
+#[tokio::test]
+async fn a_changed_status_text_tells_the_people_who_watch_the_account() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let member = server.join(&owner, "Member").await;
+    let mut observer = observing(&server, &owner).await;
+    read(&server, &owner, &[member.account_id], false).await;
+    server
+        .put(
+            &member,
+            "/api/v1/account/status-text",
+            &json!({"status_text": {"text": "On holiday"}}),
+        )
+        .await
+        .ok::<Value>(StatusCode::OK);
+    assert_eq!(
+        observer.next().await,
+        Frame::Message(ServerMessage::PresenceChanged {})
+    );
+}

@@ -16,19 +16,21 @@ mod typing;
 pub use call_keys::KeybindChange;
 pub mod afk;
 mod call_sounds;
+pub mod channel_recordings;
 pub mod contacts;
 mod conversations;
 mod device_checks;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
-mod followed;
+pub(crate) mod followed;
 pub(crate) mod forwarding;
 pub mod linking;
 pub mod logo;
 mod message_links;
 mod messages;
 pub mod moderation;
+pub mod muted_speech;
 pub mod notices;
 mod notifying;
 pub mod people;
@@ -43,6 +45,7 @@ pub mod receipts;
 pub mod recorded;
 mod recorded_work;
 pub mod recording;
+pub mod recording_language;
 pub mod search;
 mod searching;
 pub mod startup;
@@ -54,6 +57,7 @@ pub mod transcript_work;
 mod tray;
 pub mod update_install;
 pub mod view;
+mod viewers;
 
 pub use messages::{AttachRefusal, Measured, measure};
 pub use notifying::MentionSwitch;
@@ -81,7 +85,7 @@ use junto_client_core::protocol::ids::{
 use junto_client_core::settings::{InterfaceSettings, Panel, ThemeChoice};
 use junto_client_core::transfers::{Download, RecordingDownload, Upload};
 use junto_client_core::updates::Version;
-use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
+use junto_client_core::voice::{InputMode, ShareResolution, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
 use junto_client_core::{EntryKey, Owner};
 use junto_media::audio::{DeviceId, Processing, level};
@@ -468,6 +472,16 @@ pub struct AppState {
     mute_holds: HashSet<Option<gpui::EntityId>>,
     /// The calls were told the press of push to mute and not yet its release.
     hold_told: bool,
+    /// When the notice of speech while muted is drawn, and the timer that steps it when
+    /// the drawn notice can change without a change of the levels.
+    muted_speech: muted_speech::MutedSpeech,
+    muted_speech_wake: Option<Task<()>>,
+    /// The windows whose notice has the pointer over it or the focus in its check box.
+    muted_speech_holds: HashSet<gpui::EntityId>,
+    /// The recordings of the voice channel whose Files panel shows them (ADR 0784).
+    channel_recordings: channel_recordings::ChannelRecordings,
+    /// The default spoken language of the recordings of each server (ADR 0604).
+    recording_languages: recording_language::RecordingLanguages,
     /// The places that the window showed, for Back and Forward (ADR 0777).
     history: history::History,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
@@ -580,6 +594,9 @@ pub struct AppState {
     workspace_logos: logo::Logos<logo::WorkspaceKey>,
     /// The workspace whose members the window needs, and the task that reads them.
     members: Option<((ServerId, WorkspaceId), Task<()>)>,
+    /// The members of the workspace that Server settings show, when it is not the shown
+    /// one (ADR 0761).
+    layer_members: Option<((ServerId, WorkspaceId), Task<()>)>,
     /// One task per saved server that wakes on each change of its event stream.
     watchers: HashMap<ServerId, Task<()>>,
     /// One task per server that waits for a decision of another person.
@@ -622,6 +639,8 @@ pub struct AppState {
     message_link_asks: u64,
     message_link_failed: Option<u64>,
     unread_pauses: HashSet<(ServerId, PlaceId)>,
+    /// The channels whose viewers are being read.
+    viewers_asked: HashSet<(ServerId, junto_client_core::protocol::ids::ChannelId)>,
     reactions: reaction_people::Reactions,
     /// The messages of replies that were asked for from the server.
     /// The quoted messages that were asked for, with the number of the read.
@@ -709,6 +728,12 @@ pub struct AppState {
     call_window_active: bool,
     /// The panel of the call window shows the notices of the server of the call.
     call_window_notices: bool,
+    /// The thread, the pin list or the transcript that the panel of the call window shows
+    /// over its chat, of the channel of the call: its own scope, whatever the main window
+    /// shows (ADR 0741).
+    call_window_panel: Option<call_window::CallWindowPanel>,
+    /// The pin list that the call window holds open for that panel.
+    open_call_window_pins: Option<((ServerId, ChannelId), Task<()>)>,
     /// The main area showed the view of the call of this device at the last change.
     call_shown: bool,
     /// The shown server and place and the call of this device at the last change.
@@ -838,6 +863,7 @@ impl AppState {
             junto_client_core::keybinds::Keybinds::default()
         });
         crate::menus::sync_shortcuts(&keybinds, cx);
+        crate::ui::set_bound_keys(&keybinds, cx);
         let (voice, voice_failed) = match client.voice().load() {
             Ok(voice) => (voice, None),
             Err(error) => {
@@ -899,6 +925,7 @@ impl AppState {
                         this.known.media.levels = shown;
                         cx.emit(LevelsChanged);
                     }
+                    this.step_muted_speech(cx);
                 });
                 match told {
                     Updated::Done(()) => {}
@@ -1041,6 +1068,11 @@ impl AppState {
             keybind_global_ready: true,
             mute_holds: HashSet::new(),
             hold_told: false,
+            muted_speech: muted_speech::MutedSpeech::default(),
+            muted_speech_wake: None,
+            muted_speech_holds: HashSet::new(),
+            channel_recordings: Default::default(),
+            recording_languages: Default::default(),
             history: history::History::default(),
             call_window: None,
             call_window_closing: None,
@@ -1106,6 +1138,7 @@ impl AppState {
             logos: logo::Logos::default(),
             workspace_logos: logo::Logos::default(),
             members: None,
+            layer_members: None,
             watchers: HashMap::new(),
             waiting: HashMap::new(),
             notice_readers: HashMap::new(),
@@ -1124,6 +1157,7 @@ impl AppState {
             message_link_asks: 0,
             message_link_failed: None,
             unread_pauses: HashSet::new(),
+            viewers_asked: HashSet::new(),
             reactions: reaction_people::Reactions::default(),
             asked_quotes: HashMap::new(),
             quote_streams: HashMap::new(),
@@ -1165,6 +1199,8 @@ impl AppState {
             startup: startup::StartupState::default(),
             call_window_active: false,
             call_window_notices: false,
+            call_window_panel: None,
+            open_call_window_pins: None,
             call_shown: false,
             shown_with_call: (None, None, None),
             seen: HashMap::new(),
@@ -1315,6 +1351,7 @@ impl AppState {
             self.calls.dismiss_closed();
         }
         self.known.media.calls = view;
+        self.step_muted_speech(cx);
         self.afk_changed(cx);
         if entered {
             // The person is in a call: a request to enter another one is withdrawn, so
@@ -2220,6 +2257,8 @@ impl AppState {
         self.read_quotes_again(server_id);
         self.search_after_reload(server_id, cx);
         self.reaction_people_changed(server_id, None, cx);
+        // A change of who sees a channel may have been missed (ADR 0790).
+        self.forget_channel_viewers(server_id, cx);
         self.changed(cx);
     }
 
@@ -2259,6 +2298,7 @@ impl AppState {
         self.followed_noticed(server_id, notice, cx);
         self.logos_noticed(server_id, notice, cx);
         self.account_noticed(server_id, Some(notice), cx);
+        self.linking_noticed(server_id, notice, cx);
         self.recordings_noticed(server_id, Some(notice), cx);
         let event = match notice {
             Notice::Event { event, .. } => event,
@@ -2299,6 +2339,25 @@ impl AppState {
             self.invalidate_switcher(server_id, cx);
             self.presence_invalidated(server_id, true, cx);
             self.invalidate_profiles(server_id, cx);
+            // A name or a picture does not change who can see a channel.
+            if !matches!(event.as_ref(), Event::AccountProfileUpdated { .. }) {
+                self.forget_channel_viewers(server_id, cx);
+            }
+        }
+        // Who can see which channel can differ after a change of roles, members or rules.
+        if matches!(
+            event.as_ref(),
+            Event::WorkspaceMemberRolesChanged { .. }
+                | Event::WorkspaceRoleCreated { .. }
+                | Event::WorkspaceRoleUpdated { .. }
+                | Event::WorkspaceRoleDeleted { .. }
+                | Event::PermissionRuleSet { .. }
+                | Event::ChannelRulesSynced { .. }
+                | Event::WorkspacePersonPermissionsSet { .. }
+                | Event::ServerPersonPermissionsSet { .. }
+                | Event::ChannelUpdated { .. }
+        ) {
+            self.forget_channel_viewers(server_id, cx);
         }
         if matches!(
             event.as_ref(),
@@ -2570,6 +2629,76 @@ impl AppState {
         }
     }
 
+    /// Steps the notice of speech while muted with the levels and the call of this moment,
+    /// and wakes it again when the drawn notice can change without them (ADR 0735).
+    fn step_muted_speech(&mut self, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let media = &self.known.media;
+        let muted = (media.voice.muted_speech_notice || self.muted_speech.turned_off())
+            && (media.calls.muted || self.holds_mute())
+            && media.calls.call.as_ref().is_some_and(|call| {
+                call.phase == junto_media::calls::Phase::Connected
+                    && call.microphone == MicrophoneState::Running
+            });
+        let heard = view::speech_heard(media.levels.speech_input);
+        if self.muted_speech.step(now, heard, muted) {
+            self.known.media.muted_speech = view::MutedSpeechShown {
+                shown: self.muted_speech.shown(),
+                turned_off: self.muted_speech.turned_off(),
+                fading: self.muted_speech.fading(),
+            };
+            cx.notify();
+        }
+        self.muted_speech_wake = self.muted_speech.wake().map(|at| {
+            cx.spawn(async move |this, cx| {
+                let wait = at.saturating_duration_since(cx.background_executor().now());
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |this, cx| this.step_muted_speech(cx));
+            })
+        });
+    }
+
+    /// "Tell me when I talk while muted", in the notice and in Settings, Voice and video.
+    /// Turned off from the notice, the notice states it for a moment and then goes.
+    pub fn set_muted_speech_notice(&mut self, on: bool, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        if on {
+            self.muted_speech.turn_on();
+        } else {
+            self.muted_speech.turn_off(now);
+        }
+        self.known.media.voice.muted_speech_notice = on;
+        self.write_voice(cx, move |voice| voice.muted_speech_notice = on);
+        self.known.media.muted_speech = view::MutedSpeechShown {
+            shown: self.muted_speech.shown(),
+            turned_off: self.muted_speech.turned_off(),
+            fading: self.muted_speech.fading(),
+        };
+        self.step_muted_speech(cx);
+        cx.notify();
+    }
+
+    /// The pointer is over the notice of speech while muted, or its check box has the
+    /// keyboard focus, in a window: the statement that it was turned off stays.
+    pub fn hold_muted_speech(
+        &mut self,
+        window: gpui::EntityId,
+        held: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = if held {
+            self.muted_speech_holds.insert(window)
+        } else {
+            self.muted_speech_holds.remove(&window)
+        };
+        if changed {
+            let now = cx.background_executor().now();
+            self.muted_speech
+                .hold(!self.muted_speech_holds.is_empty(), now);
+            self.step_muted_speech(cx);
+        }
+    }
+
     pub fn set_sound_off_mutes(&mut self, on: bool, cx: &mut Context<Self>) {
         self.calls.forget_sound_off_close();
         self.change_voice(cx, move |voice| voice.sound_off_mutes = on);
@@ -2727,9 +2856,20 @@ impl AppState {
         }
     }
 
-    pub fn set_talk_key(&mut self, key: TalkKey, cx: &mut Context<Self>) {
+    /// Gives push to talk these keys. The key binding holds them (ADR 0777).
+    pub fn set_talk_keys(
+        &mut self,
+        keys: junto_client_core::global_keys::KeyCombo,
+        cx: &mut Context<Self>,
+    ) {
         self.calls.set_talking(false);
-        self.change_voice(cx, move |voice| voice.talk_key = key);
+        let _ = self.change_keybinds(
+            call_keys::KeybindChange::Set(
+                junto_client_core::keybinds::KeyAction::PushToTalk,
+                Some(keys),
+            ),
+            cx,
+        );
     }
 
     /// Changes a sound setting: the engine uses it at once, and the file is written on a
@@ -2971,6 +3111,7 @@ impl AppState {
         self.reconcile_device_checks(cx);
         self.reconcile_call_pin();
         self.reconcile_direct(cx);
+        self.reconcile_linking(cx);
         self.play_call_sounds();
         let servers = self.client.servers();
         let ids: HashSet<ServerId> = servers.iter().map(ServerHandle::id).collect();
@@ -3050,6 +3191,7 @@ impl AppState {
         self.known.clock = Some(now);
         self.known.today = Some(self.known.zone.local(now).date());
         self.follow_owners();
+        self.follow_channel_recordings_owner();
         let snapshots = self.snapshots();
         self.keep_typing_owners(&snapshots);
         self.settle_conversation_visibility(&snapshots);
@@ -3073,7 +3215,23 @@ impl AppState {
                 server.live().release_members(workspace_id);
             }
             if let Some(key) = wanted {
-                self.load_members(key, cx);
+                self.members = Some((key, self.load_members(key, cx)));
+            }
+        }
+        let layer = self
+            .admin
+            .open
+            .map(|open| open.server_id())
+            .zip(self.admin_workspace())
+            .filter(|key| Some(*key) != wanted);
+        if self.layer_members.as_ref().map(|(key, _)| *key) != layer {
+            if let Some(((server_id, workspace_id), _)) = self.layer_members.take()
+                && let Some(server) = self.client.server(server_id)
+            {
+                server.live().release_members(workspace_id);
+            }
+            if let Some(key) = layer {
+                self.layer_members = Some((key, self.load_members(key, cx)));
             }
         }
         // The side panel belongs to the channel that is shown: a thread or a pin list of
@@ -3171,13 +3329,13 @@ impl AppState {
         cx.notify();
     }
 
-    fn load_members(&mut self, key: (ServerId, WorkspaceId), cx: &mut Context<Self>) {
+    fn load_members(&mut self, key: (ServerId, WorkspaceId), cx: &mut Context<Self>) -> Task<()> {
         let Some(server) = self.client.server(key.0) else {
-            return;
+            return Task::ready(());
         };
         self.known.members_failed.retain(|failed| *failed != key);
         let loading = server.live().load_members(key.1);
-        let task = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let result = loading.await;
             let _ = this.update(cx, |this, cx| {
                 if result.is_err() && !this.known.members_failed.contains(&key) {
@@ -3185,16 +3343,19 @@ impl AppState {
                 }
                 cx.notify();
             });
-        });
-        self.members = Some((key, task));
+        })
     }
 
-    /// Reads the members of the shown workspace again after a read that failed.
+    /// Reads the members of the shown workspace, and of the workspace of Server settings,
+    /// again after a read that failed.
     pub fn reload_members(&mut self, cx: &mut Context<Self>) {
         if let Some((key, _)) = self.members.take() {
-            self.load_members(key, cx);
-            cx.notify();
+            self.members = Some((key, self.load_members(key, cx)));
         }
+        if let Some((key, _)) = self.layer_members.take() {
+            self.layer_members = Some((key, self.load_members(key, cx)));
+        }
+        cx.notify();
     }
 
     /// Contacts again every server that this device is a member of and that has no
@@ -3823,6 +3984,6 @@ pub mod event_alerts;
 mod camera;
 
 mod call_pin;
-mod call_window;
+pub mod call_window;
 
 pub mod role_appearance;

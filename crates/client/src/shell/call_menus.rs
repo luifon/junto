@@ -3,6 +3,7 @@ use gpui::{
     prelude::FluentBuilder,
 };
 use gpui_base::slider::SliderEvent;
+use junto_client_core::keybinds::KeyAction;
 
 use super::{
     Layer, Shell,
@@ -62,8 +63,10 @@ impl Shell {
                 .shares
                 .iter()
                 .find(|share| share.id == *id)
+                // The volume of a watched share is on its line (ADR 0738).
                 .filter(|share| {
-                    share.sound != Some(junto_client_core::protocol::call::ShareAudio::None)
+                    !share.watched
+                        && share.sound != Some(junto_client_core::protocol::call::ShareAudio::None)
                 })
                 .map(|share| share.sound_setting.volume);
         }
@@ -165,11 +168,27 @@ impl Shell {
                             &control.focus,
                             accessible,
                         )
+                        .in_menu()
                         .selector("call-menu-volume"),
                     ),
                 )
                 .into_any_element(),
         )
+    }
+}
+
+impl CallMenuAction {
+    /// The action of the keyboard that does the same, whose keys the menu item shows.
+    fn shortcut(&self) -> Option<junto_client_core::keybinds::KeyAction> {
+        use junto_client_core::keybinds::KeyAction;
+        match self {
+            CallMenuAction::Microphone(_) => Some(KeyAction::ToggleMute),
+            CallMenuAction::Sound(_) => Some(KeyAction::ToggleSoundOff),
+            CallMenuAction::Camera(_) => Some(KeyAction::ToggleCamera),
+            CallMenuAction::Leave => Some(KeyAction::LeaveCall),
+            CallMenuAction::StopWatching(_) => Some(KeyAction::StopWatching),
+            _ => None,
+        }
     }
 }
 
@@ -285,13 +304,20 @@ impl Shell {
         if share.watched {
             items.push(CallControl {
                 id: "call-menu-stop-watching",
-                label: text::STOP_WATCHING,
+                // The own share is stopped on its line; here its preview is put away.
+                label: if *account_id == open.owner.account_id {
+                    text::HIDE_PREVIEW
+                } else {
+                    text::STOP_WATCHING
+                },
                 action: CallMenuAction::StopWatching(*id),
                 disabled: false,
                 detail: None,
             });
         }
-        if *account_id != open.owner.account_id {
+        // The sound of a watched share is on its line; the menu of a share that is not
+        // watched has it (ADR 0738).
+        if *account_id != open.owner.account_id && !share.watched {
             items.push(CallControl {
                 id: "call-menu-mute-share",
                 label: if share.sound_setting.muted {
@@ -325,7 +351,6 @@ impl Shell {
             CameraAction,
             view::{MicrophoneAction, MicrophoneButton},
         };
-        use junto_client_core::protocol::WorkspacePermission;
         let Some(AccountSource::CallOccupant {
             seat, account_id, ..
         }) = &open.source
@@ -364,15 +389,11 @@ impl Shell {
             },
             CallMenuAction::Microphone(controls.microphone_action),
         );
-        microphone.disabled = controls.microphone == MicrophoneButton::NotPermitted;
         microphone.detail = match controls.microphone {
             MicrophoneButton::Held => Some(text::MICROPHONE_HELD.to_owned()),
-            MicrophoneButton::NotPermitted => {
-                Some(text::not_permitted(WorkspacePermission::Speak).to_owned())
-            }
             _ => None,
         };
-        let mut camera = make(
+        let camera = make(
             "call-menu-camera",
             if camera_on {
                 text::TURN_OFF_CAMERA
@@ -381,24 +402,21 @@ impl Shell {
             },
             CallMenuAction::Camera(camera),
         );
-        camera.disabled = call.withheld.camera;
-        camera.detail = call
-            .withheld
-            .camera
-            .then(|| text::not_permitted(WorkspacePermission::Video).to_owned());
-        let mut items = vec![
-            microphone,
-            make(
-                "call-menu-sound",
-                if controls.sound_off {
-                    text::SOUND_OUTPUT_OFF
-                } else {
-                    text::SOUND_OUTPUT_ON
-                },
-                CallMenuAction::Sound(!controls.sound_off),
-            ),
-            camera,
-        ];
+        // An action that the permissions of the channel do not allow is absent (ADR 0790).
+        let speaks = !call.withheld.microphone;
+        let mut items: Vec<_> = speaks.then_some(microphone).into_iter().collect();
+        items.push(make(
+            "call-menu-sound",
+            if controls.sound_off {
+                text::SOUND_OUTPUT_OFF
+            } else {
+                text::SOUND_OUTPUT_ON
+            },
+            CallMenuAction::Sound(!controls.sound_off),
+        ));
+        if !call.withheld.camera {
+            items.push(camera);
+        }
         if camera_on {
             let hidden = self.state.read(cx).voice().hide_own_camera;
             items.push(make(
@@ -440,9 +458,22 @@ impl Shell {
             .into_iter()
             .map(|control| {
                 let context = open.clone();
+                // The key binding of the same action, shown at the end of the item (ADR 0777).
+                let shortcut = match &control.action {
+                    CallMenuAction::Microphone(_) => Some(KeyAction::ToggleMute),
+                    CallMenuAction::Sound(_) => Some(KeyAction::ToggleSoundOff),
+                    CallMenuAction::Camera(_) => Some(KeyAction::ToggleCamera),
+                    CallMenuAction::Leave => Some(KeyAction::LeaveCall),
+                    CallMenuAction::StopWatching(_) => Some(KeyAction::StopWatching),
+                    _ => None,
+                };
                 crate::ui::MenuItem::new(control.id, control.label)
                     .selector(control.id)
+                    .when_some(shortcut, |item, action| item.shortcut(action))
                     .disabled(control.disabled)
+                    .when_some(control.action.shortcut(), |item, action| {
+                        item.shortcut(action)
+                    })
                     .when(
                         matches!(
                             &control.action,
@@ -561,8 +592,7 @@ impl Shell {
         if matches!(
             &open.source,
             Some(AccountSource::CallOccupant {
-                surface: super::account_menus::CallSurface::Member { inside: false }
-                    | super::account_menus::CallSurface::InviteChoice,
+                surface: super::account_menus::CallSurface::Member { inside: false },
                 ..
             })
         ) {
@@ -613,28 +643,21 @@ impl Shell {
         else {
             return Vec::new();
         };
-        let make = |id, label, action, detail: &str| CallControl {
+        let make = |id, label, action| CallControl {
             id,
             label,
             action: CallMenuAction::Participant(action),
             disabled: false,
-            detail: Some(detail.to_owned()),
+            detail: None,
         };
+        // The moderation group in the order of every menu of a person (ADR 0735): speech,
+        // the hand, sound, the move, the disconnection.
         let mut items = Vec::new();
-        if !menu.destinations.is_empty() {
-            items.push(make(
-                "call-menu-move",
-                text::MOVE_TO,
-                ParticipantAction::Move,
-                text::PERMISSION_MOVE,
-            ));
-        }
         if menu.allow_to_speak {
             items.push(make(
                 "call-menu-allow-speak",
                 text::ALLOW_TO_SPEAK,
                 ParticipantAction::AllowSpeak,
-                &text::allow_help(menu.name.as_deref().unwrap_or(text::UNKNOWN_PERSON)),
             ));
         } else if let Some(blocked) = menu.microphone_blocked {
             items.push(make(
@@ -645,8 +668,17 @@ impl Shell {
                     text::MUTE_FOR_EVERYONE
                 },
                 ParticipantAction::Microphone(!blocked),
-                text::PERMISSION_MUTE,
             ));
+        }
+        if let Some(raised) = menu.hand_raised {
+            let mut item = make(
+                "call-menu-lower-hand",
+                text::LOWER_HAND_OF_PERSON,
+                ParticipantAction::LowerHand,
+            );
+            item.disabled = !raised;
+            item.detail = (!raised).then(|| text::NO_RAISED_HAND.to_owned());
+            items.push(item);
         }
         if let Some(blocked) = menu.sound_blocked {
             items.push(make(
@@ -657,29 +689,20 @@ impl Shell {
                     text::BLOCK_SOUND
                 },
                 ParticipantAction::Sound(!blocked),
-                text::PERMISSION_DEAFEN,
             ));
         }
-        if let Some(raised) = menu.hand_raised {
-            let mut item = make(
-                "call-menu-lower-hand",
-                text::LOWER_HAND_OF_PERSON,
-                ParticipantAction::LowerHand,
-                if raised {
-                    text::LOWER_HAND_HELP
-                } else {
-                    text::NO_RAISED_HAND
-                },
-            );
-            item.disabled = !raised;
-            items.push(item);
+        if !menu.destinations.is_empty() {
+            items.push(make(
+                "call-menu-move",
+                text::MOVE_TO,
+                ParticipantAction::Move,
+            ));
         }
         if menu.disconnect {
             items.push(make(
                 "call-menu-disconnect",
                 text::DISCONNECT,
                 ParticipantAction::Disconnect,
-                text::PERMISSION_DISCONNECT,
             ));
         }
         self.call_controls(open, items, cx)

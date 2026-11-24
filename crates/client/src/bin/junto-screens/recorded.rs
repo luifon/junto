@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use junto_client::shell::Shell;
-use junto_client::state::admin::{AdminOpen, AdminPage, RecordingList};
 use junto_client::state::transcript_work::TranscriptChange;
 use junto_client::state::view::{Known, ServerSnapshot};
 use junto_client::text;
@@ -83,6 +82,7 @@ fn segment(
             problems: Vec::new(),
             silent: false,
             recovered: false,
+            missing_sound: None,
         }),
     }
 }
@@ -483,45 +483,6 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     // The page of the recordings of the administration lists the files of the recording
     // in its row, with a download that runs and one that ended.
     studio.draw(
-        Screen::new("admin-recording-files", acme(Some(ready()), |_| {})),
-        move |shell, window, cx| {
-            show(
-                shell,
-                |known| {
-                    known.segment_downloads.insert(
-                        (server_id(), segment_id(0)),
-                        progress(DownloadStage::Receiving, 148_000_000, 361_000_000),
-                    );
-                    known.text_downloads.insert(
-                        (server_id(), recording_id()),
-                        progress(
-                            DownloadStage::Saved("/downloads/Daily transcript.txt".into()),
-                            12_000,
-                            12_000,
-                        ),
-                    );
-                },
-                cx,
-            );
-            let open = AdminOpen::Server {
-                server_id: server_id(),
-                page: AdminPage::Recordings,
-            };
-            shell.open_admin(open, window, cx);
-            let recordings = match ready().detail {
-                Loadable::Loaded(detail) => vec![detail.recording],
-                _ => Vec::new(),
-            };
-            let list =
-                RecordingList::loaded(server_id(), id(10), person("Luca"), recordings, false)
-                    .with_files_open(recording_id());
-            shell
-                .state()
-                .clone()
-                .update(cx, |state, cx| state.show_recording_list_fixture(list, cx));
-        },
-    )?;
-    studio.draw(
         Screen::new("recording-remove-question", acme(Some(ready()), may_remove)),
         |shell, window, cx| {
             show(shell, |_| {}, cx);
@@ -704,13 +665,6 @@ fn draw_changes(studio: &mut Studio) -> Result<(), String> {
             shell.toggle_transcript_details(recording_id(), cx);
             let what = TranscriptChange::Speaker(2);
             shell.open_transcript_form(server_id(), recording_id(), what, None, window, cx);
-        },
-    )?;
-    studio.draw(
-        Screen::new("recording-parts", acme(Some(changed()), |_| {})),
-        |shell, window, cx| {
-            show(shell, |_| {}, cx);
-            shell.open_recording_parts(recording_id(), window, cx);
         },
     )?;
     let mut failed = open(RecordingState::Ready, TranscriptState::Failed);

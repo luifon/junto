@@ -3,7 +3,124 @@ mod writes;
 use junto_client_core::call_window::CallWindowSettings;
 use junto_client_core::window_placement::{WindowPlacement, WindowStore};
 pub(super) use writes::Writes;
+/// What the panel of the call window shows over its chat, with the server and the channel of
+/// the call that it belongs to (ADR 0741).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallWindowPanel {
+    pub server_id: ServerId,
+    pub channel_id: ChannelId,
+    pub shows: CallWindowShows,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallWindowShows {
+    Thread(MessageId),
+    Pins,
+    Transcript(RecordingId),
+}
+
 impl AppState {
+    /// Opens a thread, the pin list or a transcript of the channel of the call in the panel
+    /// of the call window, over its chat. The main window keeps what it shows.
+    pub fn open_in_call_window(&mut self, shows: CallWindowShows, cx: &mut Context<Self>) {
+        let Some(call) = self.media_calls().call else {
+            return;
+        };
+        let CallPlace::Channel { channel_id, .. } = call.target.place else {
+            return;
+        };
+        self.call_window_panel = Some(CallWindowPanel {
+            server_id: call.target.server_id,
+            channel_id,
+            shows,
+        });
+        if let CallWindowShows::Transcript(_) = shows {
+            self.known.transcript_line = None;
+        }
+        self.changed(cx);
+    }
+
+    /// Closes the thread, the pin list or the transcript of the panel of the call window.
+    pub fn close_in_call_window(&mut self, cx: &mut Context<Self>) {
+        if self.call_window_panel.take().is_some() {
+            self.changed(cx);
+        }
+    }
+
+    /// The panel of the call window, while the call window shows the call of its channel.
+    pub(super) fn call_window_panel(&self) -> Option<CallWindowPanel> {
+        self.call_window.as_ref()?;
+        let call = self.media_calls().call?;
+        let panel = self.call_window_panel?;
+        match call.target.place {
+            CallPlace::Channel { channel_id, .. }
+                if call.target.server_id == panel.server_id && channel_id == panel.channel_id =>
+            {
+                Some(panel)
+            }
+            _ => None,
+        }
+    }
+
+    /// Drops the panel of the call window when the call window closed or the call moved to
+    /// another place, and holds its pin list open.
+    pub(super) fn follow_call_window_panel(&mut self, cx: &mut Context<Self>) {
+        if self.call_window_panel.is_some() && self.call_window_panel().is_none() {
+            self.call_window_panel = None;
+        }
+        let wanted = self.call_window_panel().and_then(|panel| {
+            (panel.shows == CallWindowShows::Pins).then_some((panel.server_id, panel.channel_id))
+        });
+        if self.open_call_window_pins.as_ref().map(|(key, _)| *key) == wanted {
+            return;
+        }
+        if let Some(((server_id, channel_id), _)) = self.open_call_window_pins.take()
+            && let Some(server) = self.client.server(server_id)
+        {
+            server.live().release_pins(channel_id);
+        }
+        let Some(key) = wanted else {
+            return;
+        };
+        let Some(server) = self.client.server(key.0) else {
+            return;
+        };
+        let opening = server.live().open_pins(key.1);
+        let task = cx.spawn(async move |this, cx| {
+            let result = opening.await;
+            let _ = this.update(cx, |this, cx| {
+                if matches!(
+                    result,
+                    Err(junto_client_core::live::LoadError::Off
+                        | junto_client_core::live::LoadError::NotInState)
+                ) && this
+                    .open_call_window_pins
+                    .as_ref()
+                    .is_some_and(|(held, _)| *held == key)
+                {
+                    this.open_call_window_pins = None;
+                }
+                cx.notify();
+            });
+        });
+        self.open_call_window_pins = Some((key, task));
+    }
+
+    /// The place of the thread of the panel of the call window, which the window reads.
+    pub(super) fn call_window_thread_place(&self) -> Option<(ServerId, PlaceId)> {
+        let panel = self.call_window_panel()?;
+        match panel.shows {
+            CallWindowShows::Thread(root_id) => Some((
+                panel.server_id,
+                PlaceId::Thread {
+                    channel_id: panel.channel_id,
+                    root_id,
+                },
+            )),
+            _ => None,
+        }
+    }
+
     /// The key of push-to-talk is held in a window or released. A press and a release in
     /// a call with push-to-talk play their sounds (ADR 0707).
     pub fn window_talking(&mut self, window: gpui::EntityId, talking: bool) {
@@ -72,6 +189,7 @@ impl AppState {
         self.call_window = None;
         self.call_window_active = false;
         self.call_window_notices = false;
+        self.call_window_panel = None;
         self.known.call_in_own_window = false;
         self.talking_windows.clear();
         self.calls.set_talking(false);
@@ -195,6 +313,22 @@ impl AppState {
         // The panel of the call window shows the notices of the server of the call when
         // the person opened them there, whatever the main window shows (ADR 0742).
         selection.notices = None;
+        // Its thread, pin list and transcript are its own (ADR 0741).
+        selection.thread = None;
+        selection.pins = None;
+        selection.transcript = None;
+        if let Some(panel) = self.call_window_panel() {
+            let (server_id, channel_id) = (panel.server_id, panel.channel_id);
+            match panel.shows {
+                CallWindowShows::Thread(root_id) => {
+                    selection.thread = Some((server_id, channel_id, root_id));
+                }
+                CallWindowShows::Pins => selection.pins = Some((server_id, channel_id)),
+                CallWindowShows::Transcript(recording_id) => {
+                    selection.transcript = Some((server_id, channel_id, recording_id));
+                }
+            }
+        }
         let snapshots = self.snapshots();
         if let Some(call) = &self.media_calls().call {
             let server_id = call.target.server_id;

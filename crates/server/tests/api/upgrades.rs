@@ -39,7 +39,16 @@ async fn the_server_does_not_migrate_while_a_recording_runs() {
 
     // A server of the same version starts during a recording: no migration waits.
     let started = studio.record().await;
-    assert!(bootstrap::start(&database, "Acme", now).await.is_ok());
+    assert!(
+        bootstrap::start(
+            &database,
+            "Acme",
+            &junto_server::config::Limits::default(),
+            now
+        )
+        .await
+        .is_ok()
+    );
 
     let future = later_version(&["create table recording_guard_probe (id bigint)"]).await;
     let applied = migrations().await;
@@ -92,25 +101,68 @@ async fn a_server_with_a_recorder_does_not_start_without_ffmpeg() {
     assert!(junto_server::prepare(database, config, clock).await.is_ok());
 }
 
-/// The newest migration of the database of `server` is forgotten: the database then has
-/// the schema of the version before.
-async fn forget_the_newest_migration(server: &crate::support::TestServer) -> i64 {
-    // Undo the objects of the unreleased last migration as well as its bookkeeping.
-    sqlx::raw_sql("drop table moderation_notice_devices; drop table moderation_notices")
+/// The table of the rules of single members in a workspace as migrations 42 and 43 left it.
+pub(crate) const WORKSPACE_PERSON_RULES: &str = "create table workspace_person_overrides (
+    workspace_id uuid not null references workspaces(id) on delete cascade,
+    account_id uuid not null references accounts(id) on delete cascade,
+    allow bigint not null check (allow between 0 and 2147483647),
+    deny bigint not null check (deny between 0 and 2147483647),
+    primary key (workspace_id, account_id),
+    check (allow & deny = 0),
+    check (allow | deny <> 0)
+)";
+
+/// The newest migration of the last release (0.2.1).
+const RELEASED_SCHEMA: i64 = 58;
+
+/// The migrations after the last release are undone, the newest first, with their
+/// bookkeeping: the database of `server` then has the schema of the last release, and a start
+/// applies every newer migration in order.
+pub(crate) async fn forget_the_migrations_after_the_release(
+    server: &crate::support::TestServer,
+) -> i64 {
+    let undo = [
+        // 65: a group may have no name.
+        "alter table conversations drop constraint conversation_kind; \
+         alter table conversations add constraint conversation_kind check ( \
+             (name is null and low_account_id is not null and high_account_id is not null) \
+             or (name is not null and char_length(name) between 1 and 80 \
+                 and low_account_id is null and high_account_id is null))",
+        // 64: the comment of a forward, which the search vector of a message reads.
+        "drop index messages_search; \
+         alter table messages drop column search_vector; \
+         alter table messages drop column comment; \
+         alter table messages add column search_vector tsvector generated always as \
+             (to_tsvector('simple', coalesce(message_search_text(document), ''))) stored; \
+         create index messages_search on messages using gin(search_vector)",
+        // 63: the missing sound and the joined job of a recording segment.
+        "alter table recording_segments drop column job_joined, \
+         drop column missing_sound_from, drop column missing_sound_until",
+        // 62: the default language of the recordings of the server.
+        "alter table server_state drop column recording_language",
+        // 61: the relays of the link of a new device.
+        "drop table device_link_relays",
+        // 60: the status text of an account.
+        "drop index accounts_status_text_until; \
+         alter table accounts drop constraint accounts_status_text_shape, \
+         drop column status_text, drop column status_text_until",
+        // 59: the rules of single members in a workspace, which it removed (ADR 0301).
+        WORKSPACE_PERSON_RULES,
+    ];
+    for statement in undo {
+        sqlx::raw_sql(statement).execute(&server.db).await.unwrap();
+    }
+    sqlx::query("delete from _sqlx_migrations where version > $1")
+        .bind(RELEASED_SCHEMA)
         .execute(&server.db)
         .await
         .unwrap();
-    sqlx::query(
-        "delete from _sqlx_migrations
-         where version = (select max(version) from _sqlx_migrations)",
-    )
-    .execute(&server.db)
-    .await
-    .unwrap();
-    sqlx::query_scalar("select max(version) from _sqlx_migrations")
+    let version: i64 = sqlx::query_scalar("select max(version) from _sqlx_migrations")
         .fetch_one(&server.db)
         .await
-        .unwrap()
+        .unwrap();
+    assert_eq!(version, RELEASED_SCHEMA);
+    version
 }
 
 /// ADR 0018: before a migration, the server copies its database on the same PostgreSQL
@@ -132,7 +184,7 @@ async fn the_server_copies_the_database_before_a_migration() {
     let current = copy_before_migration(&options, MigrationCopy::Database).await;
     assert_eq!(current.unwrap(), MigrationCopied::Nothing);
 
-    let version = forget_the_newest_migration(&server).await;
+    let version = forget_the_migrations_after_the_release(&server).await;
     let off = copy_before_migration(&options, MigrationCopy::None).await;
     assert_eq!(off.unwrap(), MigrationCopied::Nothing);
     // The server of the test is connected to the database: PostgreSQL makes no copy, and
@@ -723,7 +775,7 @@ async fn no_copy_is_made_while_a_recording_runs() {
     let studio = Studio::open().await;
     let server = &studio.scene.server;
     studio.record().await;
-    forget_the_newest_migration(server).await;
+    forget_the_migrations_after_the_release(server).await;
     let options = options_of(server);
     let refused = copy_before_migration(&options, MigrationCopy::Database).await;
     assert!(
@@ -744,7 +796,13 @@ async fn the_server_does_not_start_on_a_newer_schema() {
     .execute(&server.db)
     .await
     .unwrap();
-    let refused = bootstrap::start(&database, "Acme", server.clock.now()).await;
+    let refused = bootstrap::start(
+        &database,
+        "Acme",
+        &junto_server::config::Limits::default(),
+        server.clock.now(),
+    )
+    .await;
     let Err(error @ StartError::NewerSchema(99_990_101)) = refused else {
         panic!("the server started on a newer schema");
     };
@@ -793,9 +851,14 @@ async fn an_interrupted_first_start_resumes_without_a_copy_with_an_old_connectio
     )
     .await
     .unwrap();
-    let started = bootstrap::start(&next, "Server", time::OffsetDateTime::now_utc())
-        .await
-        .unwrap();
+    let started = bootstrap::start(
+        &next,
+        "Server",
+        &junto_server::config::Limits::default(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
     assert!(started.owner_code.is_some());
     assert_eq!(comment_of(&name).await.as_deref(), Some("operator comment"));
     assert!(databases_from(format!("{name}_before_")).await.is_empty());
@@ -810,7 +873,7 @@ async fn a_needed_copy_waits_for_an_ended_servers_connection() {
     use sqlx::{ConnectOptions, Connection};
     let mut server = crate::support::TestServer::start().await;
     let options = options_of(&server);
-    forget_the_newest_migration(&server).await;
+    forget_the_migrations_after_the_release(&server).await;
     server.stop().await;
     server.state.database.close().await;
     let old = options.connect().await.unwrap();
@@ -834,7 +897,7 @@ async fn a_mark_on_a_database_with_data_does_not_skip_the_copy() {
     let mut server = crate::support::TestServer::start().await;
     let owner = server.owner().await;
     server.join(&owner, "Stored member").await;
-    forget_the_newest_migration(&server).await;
+    forget_the_migrations_after_the_release(&server).await;
     let name = name_of(&server).await;
     let options = options_of(&server);
     server.stop().await;
@@ -903,7 +966,7 @@ async fn a_copy_that_stays_blocked_ends_with_the_instruction() {
     use sqlx::{ConnectOptions, Connection};
     let mut server = crate::support::TestServer::start().await;
     let options = options_of(&server);
-    forget_the_newest_migration(&server).await;
+    forget_the_migrations_after_the_release(&server).await;
     server.stop().await;
     server.state.database.close().await;
     let old = options.connect().await.unwrap();
@@ -952,9 +1015,14 @@ async fn a_first_start_that_runs_again_gives_one_consistent_result() {
         .await
         .unwrap();
     database.commit_gate().lose_next(2);
-    let started = bootstrap::start(&database, "Server", time::OffsetDateTime::now_utc())
-        .await
-        .unwrap();
+    let started = bootstrap::start(
+        &database,
+        "Server",
+        &junto_server::config::Limits::default(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         database.commit_gate().losses_left(),
         0,

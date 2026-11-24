@@ -88,7 +88,7 @@ fn an_administrator_sets_and_removes_the_logo_and_the_window_of_a_member_follows
     });
     assert!(member.view().servers[0].logo.is_some());
     // The head of the menu of the selected server shows it too.
-    member.click("server-menu-button");
+    member.open_server_menu();
     assert!(member.shows("server-menu") && member.shows("selected-server-logo-0"));
     member.press("escape");
     assert!(!member.shows("server-menu"));
@@ -116,7 +116,7 @@ fn an_administrator_sets_and_removes_the_logo_and_the_window_of_a_member_follows
         |window| !window.shows("server-logo-0"),
     );
     assert_eq!(member.view().servers[0].logo, None);
-    member.click("server-menu-button");
+    member.open_server_menu();
     assert!(member.shows("server-menu") && !member.shows("selected-server-logo-0"));
     member.press("escape");
     assert!(world.run(owner.handle().logo()).unwrap().is_none());
@@ -279,11 +279,12 @@ fn an_administrator_changes_the_limits_of_files_and_the_window_of_a_member_follo
 }
 
 /// True when the administration shows the page of the workspaces.
-fn shows_workspaces_page(window: &mut Window) -> bool {
+/// The overview of the workspace, which holds its logo (ADR 0761).
+fn shows_workspace_overview(window: &mut Window) -> bool {
     matches!(
         window.admin().map(|view| view.scope),
         Some(Scope::Server {
-            page: ServerPage::Workspaces(_),
+            page: ServerPage::WorkspaceOverview(_),
             ..
         })
     )
@@ -316,7 +317,11 @@ fn an_administrator_sets_and_removes_the_logo_of_a_workspace_and_the_workspace_l
     assert!(!owner.shows(row_logo) && !member.shows(row_logo));
 
     owner.open_administration();
-    open_page(&mut owner, "admin-nav-workspaces", shows_workspaces_page);
+    open_page(
+        &mut owner,
+        "admin-nav-workspace-overview",
+        shows_workspace_overview,
+    );
     let remove = selector(format!("workspace-logo-remove-{workspace}"));
     let page_logo = selector(format!("workspace-logo-{workspace}"));
     assert!(owner.shows(selector(format!("workspace-logo-choose-{workspace}"))));

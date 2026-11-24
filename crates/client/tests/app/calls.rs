@@ -259,7 +259,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     window.click("settings-section-voice-and-video");
     assert!(window.shows("settings-dialog"));
     // Voice activation has no key to choose, and offers the sensitivity, off at first.
-    assert!(window.shows("input-mode-0") && !window.shows("talk-key-0"));
+    assert!(window.shows("input-mode-0") && !window.shows("talk-key"));
     assert!(!window.shows("voice-threshold-slider"));
     window.click_in_settings("voice-threshold");
     window.until("the sensitivity is on at its first level", |window| {
@@ -282,7 +282,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     window.until("the switch is asked", |window| {
         window.shows("push-to-talk-question")
     });
-    assert!(!window.shows("talk-key-1"));
+    assert!(!window.shows("talk-key"));
     assert_eq!(voice(&mut window).input_mode, InputMode::VoiceActivation);
     window.click_in_settings("keep-voice-activation");
     window.until("the question closes", |window| {
@@ -291,10 +291,22 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     assert_eq!(voice(&mut window).input_mode, InputMode::VoiceActivation);
     window.click_in_settings("input-mode-1");
     window.click_in_settings("confirm-push-to-talk");
-    window.until("the key of push-to-talk is offered", |window| {
-        window.shows("talk-key-1")
+    window.until("the key of push-to-talk is shown", |window| {
+        window.shows("talk-key") && window.shows("talk-key-change")
     });
-    window.click_in_settings("talk-key-1");
+    // The key is set in Keyboard shortcuts: "Change" opens that section and records the
+    // keys of push to talk.
+    window.click_in_settings("talk-key-change");
+    assert!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.recording_keybind())
+    );
+    window.press("escape");
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_talk_keys(TalkKey::Control.combo(), cx);
+    });
+    window.click("settings-section-voice-and-video");
     window.click_in_settings("noise-suppression");
     window.click_in_settings("echo-cancellation");
     window.click_in_settings("echo-cancellation");
@@ -307,7 +319,6 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
         let voice = voice(window);
         !voice.sound_off_mutes
             && voice.input_mode == InputMode::PushToTalk
-            && voice.talk_key == TalkKey::Control
             && !voice.noise_suppression
             && voice.echo_cancellation
             && voice.automatic_gain
@@ -326,14 +337,17 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     // The file holds what was chosen, and a new start reads it.
     let text = std::fs::read_to_string(voice_file(directory.path())).unwrap();
     assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
-    assert!(text.contains("\"talk_key\": \"control\""), "{text}");
     assert!(text.contains("\"voice_threshold\": -45"), "{text}");
     assert!(text.contains("\"sound_off_mutes\": false"), "{text}");
     let mut window = open(cx, directory.path());
     assert_eq!(voice(&mut window), chosen);
     window.click("app-settings");
     window.click("settings-section-voice-and-video");
-    assert!(window.shows("talk-key-1"));
+    assert!(window.shows("talk-key"));
+    let keys = window
+        .state
+        .read_with(&window.cx, |state, _| state.talk_keys());
+    assert_eq!(keys, Some(TalkKey::Control.combo()));
 }
 
 #[gpui::test]
@@ -1129,7 +1143,8 @@ fn a_very_wide_share_fits_the_stage_at_each_size_of_the_window(cx: &mut TestAppC
     window.click("detach-call");
     let mut detached = window.call_window();
     watched_share_fits(&mut detached, size, "the call window");
-    detached.click("call-fullscreen");
+    detached.click("own-more");
+    detached.click("more-fullscreen");
     for (width, height) in [
         (3440.0, 1440.0),
         (1200.0, 800.0),
@@ -1798,6 +1813,54 @@ fn a_portrait_avatar_is_drawn_in_its_square_in_a_tile(cx: &mut TestAppContext) {
     assert!(
         inside(drawn, tile),
         "the avatar {drawn:?} passes the edge of the tile {tile:?}"
+    );
+}
+
+/// A person in a voice channel of the channel list shows a status text as a second line
+/// inside a row that is that much taller (ADR 0401).
+#[gpui::test]
+fn the_row_of_a_person_in_a_voice_channel_shows_the_status_text(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::presence::StatusText;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let own = window.view().person.account_id.unwrap();
+    let server_id = window.view().selected.unwrap().id;
+    let call = connected_call(&mut window, "Daily");
+    show_call_with_people(&mut window, &world, call, &[own]);
+    let row = crate::harness::selector(format!("occupant:{own}"));
+    window.until("the own row is drawn", |window| window.shows(row));
+    let plain = window.cx.debug_bounds(row).unwrap();
+
+    window.state.update(&mut window.cx, |state, cx| {
+        let status = StatusText {
+            text: "Out of office".to_owned(),
+            until: None,
+        };
+        state.set_status_text(server_id, Some(status), cx);
+    });
+    let line = crate::harness::selector(format!("occupant-status-text:{own}"));
+    window.until("the status text is under the name", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.status_text(server_id, own).is_some()
+        }) && window.shows(line)
+    });
+    window.settle();
+    let (row, line) = (
+        window.cx.debug_bounds(row).unwrap(),
+        window.cx.debug_bounds(line).unwrap(),
+    );
+    assert!(
+        inside(line, row),
+        "the status line {line:?} passes the edge of its row {row:?}"
+    );
+    assert!(
+        row.size.height > plain.size.height,
+        "the row with a status text is not taller: {row:?}, {plain:?}"
     );
 }
 

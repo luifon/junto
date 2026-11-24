@@ -15,12 +15,15 @@ pub const INTERVAL: Duration = Duration::from_secs(60);
 
 /// One kind of row that maintenance changes: the statement works on at most `$2` rows that
 /// are due at `$1` and returns one row for each row it changed.
-const EXPIRED_AT_NOW: [&str; 5] = [
+const EXPIRED_AT_NOW: [&str; 6] = [
     "delete from challenges where id in (
          select id from challenges where expires_at <= $1 limit $2)
      returning 1",
     "delete from device_links where id in (
          select id from device_links where expires_at <= $1 limit $2)
+     returning 1",
+    "delete from device_link_relays where new_device_id in (
+         select new_device_id from device_link_relays where expires_at <= $1 limit $2)
      returning 1",
     "update join_requests set state = 'expired' where id in (
          select id from join_requests
@@ -57,7 +60,9 @@ const ENDED_SESSIONS_PAST_THEIR_LIFETIME: &str = "delete from ended_sessions
          select session_id from ended_sessions where ended_at <= $1 limit $2)
      returning 1";
 
-/// Deletes expired challenges, sessions, access tokens, device links and mutes, marks the join requests that
+/// Deletes expired challenges, sessions, access tokens, device links, relays of device links
+/// and mutes, removes the
+/// status texts whose end time has passed, marks the join requests that
 /// waited too long as expired, deletes denied and expired join requests that are older than
 /// the history period, deletes the stored reasons of sessions that would have expired by now
 /// and private moderation notices with their historical device readers after 30 days,
@@ -78,6 +83,10 @@ pub async fn run_once(app: &AppState) -> ApiResult<()> {
         pass.ran("expired rows", in_batches(app, statement, now).await);
     }
     pass.ran("expired sessions", expire_sessions(app, now).await);
+    pass.ran(
+        "status texts",
+        crate::routes::presence::expire_status_texts(app, now).await,
+    );
     let notice_start = now - crate::routes::moderation_notices::RETENTION;
     pass.ran(
         "private moderation notices",

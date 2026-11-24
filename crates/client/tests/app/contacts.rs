@@ -73,6 +73,7 @@ fn write_to(world: &World, from: &ServerHandle, to: AccountId, text: &str) -> Co
         document: document(text),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(api.send_message(PlaceId::Direct(conversation.id), &message))
@@ -251,9 +252,9 @@ fn an_account_without_a_workspace_keeps_its_direct_conversations(cx: &mut TestAp
             .is_some_and(|lists| lists.workspace.is_none())
             && window.shows("no-workspace")
     });
-    assert!(window.shows("no-workspace-note") && window.shows("notices-row"));
+    assert!(window.shows("no-workspace-note") && window.shows("activity-button"));
 
-    // He writes to an administrator from "New direct message", whose name the window reads
+    // He writes to an administrator from "New message", whose name the window reads
     // from the profile.
     window.search_contacts("Ada");
     window.choose_contact(ada_id);
@@ -269,7 +270,7 @@ fn an_account_without_a_workspace_keeps_its_direct_conversations(cx: &mut TestAp
     assert_eq!(message_count(&world, &admin.handle, with_ada[0].id), 1);
 
     // The other administrator writes to him: the conversation is listed with its unread
-    // sign, the server and the notices count it, and "New direct message" stays where it
+    // sign, the server and the notices count it, and "New message" stays where it
     // is (ADR 0730).
     window.run_tasks();
     let new_direct = window.cx.debug_bounds("new-direct");
@@ -333,32 +334,21 @@ fn the_direct_part_keeps_its_place_when_the_last_workspace_goes_and_comes_back(
     let luca_id = window.view().person.account_id.unwrap();
     let default = default_workspace(&world, &admin.handle);
 
-    // Luca reads the conversation that Ada started, with the member list beside it.
+    // Luca reads the conversation that Ada started.
     let with_ada = write_to(&world, &admin.handle, luca_id, "Hello from Ada");
     let row = crate::harness::selector(format!("direct-row:{with_ada}"));
     window.until("the conversation is listed", |window| window.shows(row));
     window.click(row);
     window.until_message("Hello from Ada");
-    window.click("members-button");
-    window.until("the member list is beside the conversation", |window| {
-        window.shows("side-panel")
-            && window.view().workspace().is_some_and(|workspace| {
-                matches!(
-                    workspace.members,
-                    junto_client::state::view::Members::Loaded(_)
-                )
-            })
-    });
     let parts = [
-        "notices-row",
+        "activity-button",
         "new-direct",
         row,
         "channel-title",
-        "export-conversation",
-        "members-button",
+        "conversation-call",
+        "conversation-profile",
         "message-list",
         "composer",
-        "side-panel",
     ];
     let before = window.bounds_of(&parts);
     assert!(
@@ -366,8 +356,8 @@ fn the_direct_part_keeps_its_place_when_the_last_workspace_goes_and_comes_back(
         "{before:?}"
     );
 
-    // The last workspace goes: the direct section, the conversation, its header and the
-    // side panel stay where they are (ADR 0730). The person reads the conversation, with
+    // The last workspace goes: the direct section, the conversation and its header stay
+    // where they are (ADR 0730). The person reads the conversation, with
     // the pointer on its list: the notice of the removal waits until the pointer leaves it.
     // A change waits for the pointer in the active window only (ADR 0730).
     let list = window.cx.debug_bounds("message-list").unwrap();
@@ -666,7 +656,7 @@ fn a_contact_identity_menu_keeps_its_chooser_and_ends_with_a_replaced_result(
     window.until_offered(account);
     assert!(!window.shows("row-context-menu"));
     window.right_click_named(format!("contact-{account}"));
-    window.click_named("context-action:Write a direct message to Ada".to_owned());
+    window.click_named("context-action:Message".to_owned());
     window.until("the captured person's conversation opens", |window| {
         window
             .conversation_with()

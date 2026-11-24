@@ -264,12 +264,12 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
         ("Ada blocked the microphone of Luca", SystemKind::Plain),
         ("Ada unblocked the microphone of Luca", SystemKind::Plain),
         ("Ada started sharing", SystemKind::Start),
-        ("Ada changed the settings of the room", SystemKind::Plain),
+        ("Ada changed the settings of the call", SystemKind::Plain),
         ("Ada turned meeting mode on", SystemKind::Start),
         ("Ada turned meeting mode off", SystemKind::Plain),
         ("Ada stopped sharing", SystemKind::Plain),
-        ("Ada locked the room", SystemKind::Plain),
-        ("Ada unlocked the room", SystemKind::Plain),
+        ("Ada locked the call", SystemKind::Plain),
+        ("Ada unlocked the call", SystemKind::Plain),
         // Luca leaves first, while Ada is inside; the departure of Ada ends the call, whose
         // line states its length.
         ("Luca left the call", SystemKind::Plain),

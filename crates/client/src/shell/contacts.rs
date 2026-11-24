@@ -151,9 +151,12 @@ impl Shell {
             }
             // The element is named by the account, so that a press that starts on one
             // account and ends on another after an answer chooses nobody.
+            // With people chosen, a press on a row chooses it too; without, it opens the
+            // conversation with that person (ADR 0741).
             let group_mode = self.groups.mode.is_some();
             let selected = self.groups.selected.contains_key(&account_id);
             let name = row.name.clone();
+            let chosen_name = row.name.clone();
             let choice = ChannelRow::new(
                 ("contact", account_id.as_uuid().as_u128() as u64),
                 Icon::Person,
@@ -177,11 +180,30 @@ impl Shell {
                     this.close_layer(window, cx);
                 }
             }));
+            let choose = Button::new(("contact-choose", account_id.as_uuid().as_u128() as u64))
+                .kind(crate::ui::ButtonKind::Ghost)
+                .icon(if selected { Icon::Check } else { Icon::Plus })
+                .tooltip(words::CHOOSE)
+                .accessible_label(words::CHOOSE)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if this.groups.mode.is_none() {
+                        this.start_group_choice(window, cx);
+                    }
+                    this.toggle_group_person(account_id, &chosen_name, cx);
+                }));
             let identity = div()
                 .id(("contact-identity", account_id.as_uuid().as_u128() as u64))
+                .flex()
                 .flex_none()
+                .items_center()
                 .debug_selector(move || format!("contact-{account_id}"))
-                .child(choice);
+                .child(div().flex_1().min_w_0().child(choice))
+                .child(
+                    div()
+                        .flex_none()
+                        .debug_selector(move || format!("contact-choose-{account_id}"))
+                        .child(choose),
+                );
             let identity = if let Some(owner) = self
                 .state
                 .read(cx)
@@ -226,53 +248,37 @@ impl Shell {
                 .on_click(cx.listener(|this, _, window, cx| this.close_layer(window, cx)))
                 .into_any_element(),
         ];
-        if self.groups.mode.is_some() {
-            footer.push(
-                Button::new("group-save")
-                    .label(
-                        if matches!(self.groups.mode, Some(super::groups::Mode::Add(..))) {
-                            words::ADD_SELECTED
-                        } else {
-                            words::CREATE
-                        },
-                    )
-                    .selector("group-save")
-                    .disabled(
-                        self.groups.busy
-                            || self.groups.selected.len()
-                                < if matches!(
-                                    self.groups.mode,
-                                    Some(super::groups::Mode::Create(_))
-                                ) {
-                                    2
-                                } else {
-                                    1
-                                },
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| this.save_group(false, window, cx)))
-                    .into_any_element(),
-            );
-        } else {
-            footer.push(
-                Button::new("new-group")
-                    .label(words::NEW)
-                    .selector("new-group")
-                    .on_click(cx.listener(|this, _, window, cx| this.open_group_create(window, cx)))
-                    .into_any_element(),
-            );
-            footer.push(
-                Button::new("manage-group-memberships")
-                    .label(words::MANAGE)
-                    .selector("manage-group-memberships")
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_group_memberships(window, cx)),
-                    )
-                    .into_any_element(),
-            );
-        }
+        let adding = matches!(self.groups.mode, Some(super::groups::Mode::Add(..)));
+        let chosen = self.groups.selected.len();
+        footer.push(
+            Button::new("group-save")
+                .label(if adding {
+                    words::ADD_SELECTED
+                } else {
+                    words::START
+                })
+                .kind(crate::ui::ButtonKind::Primary)
+                .selector("group-save")
+                .disabled(self.groups.busy || chosen == 0)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    // One person gives a conversation of two, more a group (ADR 0741).
+                    let single = (!adding && this.groups.selected.len() == 1)
+                        .then(|| this.groups.selected.keys().next().copied())
+                        .flatten();
+                    match single {
+                        Some(account_id) => {
+                            this.state
+                                .update(cx, |state, cx| state.choose_contact(account_id, cx));
+                            this.close_layer(window, cx);
+                        }
+                        None => this.save_group(false, window, cx),
+                    }
+                }))
+                .into_any_element(),
+        );
         let mut dialog = Dialog::new(
-            if self.groups.mode.is_some() {
-                words::TITLE
+            if adding {
+                words::ADD
             } else {
                 text::NEW_DIRECT_TITLE
             },
@@ -286,15 +292,17 @@ impl Shell {
             div()
                 .typeface(theme.types.notice, &theme)
                 .ink(theme.colors.ink_2)
-                .child(if self.groups.mode.is_some() {
+                .child(if adding {
                     words::PEOPLE_HELP
                 } else {
                     text::NEW_DIRECT_ABOUT
                 }),
         )
+        // Two or more people make a group, whose name is optional (ADR 0302).
         .children(
-            matches!(self.groups.mode, Some(super::groups::Mode::Create(_)))
-                .then(|| Field::new(&self.groups.name, words::NAME).selector("group-name")),
+            (matches!(self.groups.mode, Some(super::groups::Mode::Create(_))) && chosen >= 2).then(
+                || Field::new(&self.groups.name, words::NAME_OPTIONAL).selector("group-name"),
+            ),
         )
         .child(
             div()

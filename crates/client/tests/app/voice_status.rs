@@ -50,7 +50,7 @@ fn voice_status_can_be_edited_copied_and_cleared_and_follows_live_permissions(
         serde_json::to_value(world.run(admin.handle.api().channel(channel)).unwrap()).unwrap();
     assert_eq!(current["voice_status"], "Planning 🚀");
     window.right_click_named(format!("voice-status:{channel}"));
-    window.click("context-action:Copy status");
+    window.click("context-action:Copy voice status");
     assert_eq!(
         window.cx.read_from_clipboard().unwrap().text().unwrap(),
         "Planning 🚀"

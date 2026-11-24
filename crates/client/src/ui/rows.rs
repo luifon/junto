@@ -8,14 +8,39 @@ use gpui::{
 };
 
 use super::{
-    Avatar, Badge, ContextMenuExt, Meter, RecordingMark, StyleExt, focus_ring_inside, icon,
-    selection_mark, tooltip, unread_dot,
+    Avatar, Badge, ContextMenuExt, MENU_ROW, MenuButton, Meter, RecordingMark, StyleExt,
+    focus_ring_inside, icon, selection_mark, tooltip, unread_dot,
 };
 use crate::assets::Icon;
 use crate::theme::{theme, u};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 type MenuHandler = std::rc::Rc<dyn Fn(&mut Window, &mut App) + 'static>;
+
+/// The menu button at the right end of a row with a menu, over what the row shows there.
+fn row_menu_button(
+    row: &ElementId,
+    open: MenuHandler,
+    shown: bool,
+    ground: gpui::Rgba,
+    dark: bool,
+) -> gpui::Div {
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .right(u(6.0))
+        .flex()
+        .items_center()
+        .child(
+            MenuButton::new("row-menu")
+                .selector(format!("menu-button:{row}"))
+                .shown(shown)
+                .ground(ground)
+                .when(dark, MenuButton::dark)
+                .on_open(move |window, cx| open(window, cx)),
+        )
+}
 
 /// One workspace of a server, in the server book or in the menu of a collapsed server.
 #[derive(IntoElement)]
@@ -141,6 +166,7 @@ impl RenderOnce for WorkspaceRow {
             None => self.name.clone(),
         };
         let sign = self.unread.as_ref().map(|sign| sign.element(cx));
+        let id = self.id.clone();
         div()
             .id(self.id)
             .role(Role::ListItem)
@@ -156,7 +182,7 @@ impl RenderOnce for WorkspaceRow {
             .items_center()
             .gap(u(8.0))
             .h(u(theme.metrics.workspace_row_height))
-            .pl(u(if self.in_menu { 12.0 } else { 38.0 }))
+            .pl(u(if self.in_menu { 12.0 } else { 60.0 }))
             .pr(u(10.0))
             .typeface(style, &theme)
             .ink(if self.selected || self.unread.is_some() {
@@ -171,15 +197,16 @@ impl RenderOnce for WorkspaceRow {
             .when(self.open && !self.selected, |row| {
                 row.bg(Hsla::from(colors.basalt_3))
             })
-            .when_some(self.on_menu, |row, open| {
-                row.on_context_menu(move |window, cx| open(window, cx))
+            .when_some(self.on_menu.clone(), |row, open| {
+                row.group(MENU_ROW)
+                    .on_context_menu(move |window, cx| open(window, cx))
             })
             .when(!self.in_menu, |row| {
                 // The branch of the tree line that joins the row to its server.
                 row.child(
                     div()
                         .absolute()
-                        .left(u(24.0))
+                        .left(u(46.0))
                         .top(u(13.0))
                         .w(u(9.0))
                         .h(gpui::px(1.0))
@@ -216,6 +243,15 @@ impl RenderOnce for WorkspaceRow {
             })
             .child(div().flex_1().min_w_0().truncate().child(self.name))
             .children(sign)
+            .when_some(self.on_menu, |row, open| {
+                row.child(row_menu_button(
+                    &id,
+                    open,
+                    self.open || focus.is_focused(window),
+                    colors.basalt_3,
+                    true,
+                ))
+            })
     }
 }
 
@@ -312,13 +348,19 @@ impl RenderOnce for CategoryHeader {
             actions.push(action.clone());
         }
         actions.extend(self.actions);
+        let focus = window
+            .use_keyed_state((id.clone(), "focus"), cx, |_, cx| {
+                cx.focus_handle().tab_stop(true)
+            })
+            .read(cx)
+            .clone();
+        let focused = focus.is_focused(window);
         let frame = div()
             .id(id.clone())
             .relative()
             .role(Role::Group)
             .aria_label(label)
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
             .focus_visible(move |style| style.shadow(ring))
             .flex()
             .flex_none()
@@ -402,7 +444,7 @@ impl RenderOnce for CategoryHeader {
                 ),
             )
         });
-        super::bind_action_menu(frame, id, actions, window, cx)
+        super::bind_row_action_menu(frame, id, super::RowMenu::end(focused), actions, window, cx)
     }
 }
 
@@ -444,6 +486,9 @@ pub struct ChannelRow {
     /// The menu of the row is open.
     open: bool,
     on_menu: Option<MenuHandler>,
+    /// A button that removes the row from the list while the pointer is over it, such as the
+    /// hiding of a conversation, with its tooltip (ADR 0741).
+    on_dismiss: Option<(SharedString, String, MenuHandler)>,
 }
 
 impl ChannelRow {
@@ -468,7 +513,20 @@ impl ChannelRow {
             unavailable: None,
             open: false,
             on_menu: None,
+            on_dismiss: None,
         }
+    }
+
+    /// A button with an X, shown while the pointer is over the row, that removes the row
+    /// from its list, such as "Hide conversation".
+    pub fn on_dismiss(
+        mut self,
+        label: impl Into<SharedString>,
+        selector: String,
+        handler: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_dismiss = Some((label.into(), selector, std::rc::Rc::new(handler)));
+        self
     }
 
     /// The menu of the row is open: the row is drawn as the one that the menu is about.
@@ -631,6 +689,7 @@ impl RenderOnce for ChannelRow {
                     .into_any_element(),
             })
             .collect();
+        let id = self.id.clone();
         div()
             .id(self.id)
             .role(Role::ListItem)
@@ -687,8 +746,9 @@ impl RenderOnce for ChannelRow {
             .when(self.open && !self.selected, |row| {
                 row.bg(Hsla::from(colors.limestone_hover))
             })
-            .when_some(self.on_menu, |row, open| {
-                row.on_context_menu(move |window, cx| open(window, cx))
+            .when_some(self.on_menu.clone(), |row, open| {
+                row.group(MENU_ROW)
+                    .on_context_menu(move |window, cx| open(window, cx))
             })
             .child(match self.avatar {
                 Some(seed) => Avatar::new(seed, 16.0)
@@ -740,6 +800,54 @@ impl RenderOnce for ChannelRow {
                         .children(states),
                 )
             })
+            .when_some(self.on_dismiss, |row, (label, selector, dismiss)| {
+                let ground = if self.selected {
+                    colors.limestone_lo
+                } else {
+                    colors.limestone_hover
+                };
+                row.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right(u(32.0))
+                        .flex()
+                        .items_center()
+                        .invisible()
+                        .group_hover(MENU_ROW, |style| style.visible())
+                        .child({
+                            div()
+                                .rounded(u(4.0))
+                                .bg(Hsla::from(ground))
+                                .debug_selector(move || selector)
+                                .child(
+                                    super::Button::new("row-dismiss")
+                                        .kind(super::ButtonKind::Ghost)
+                                        .icon(Icon::X)
+                                        .tooltip(label.clone())
+                                        .accessible_label(label)
+                                        .on_click(move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            dismiss(window, cx);
+                                        }),
+                                )
+                        }),
+                )
+            })
+            .when_some(self.on_menu, |row, open| {
+                row.child(row_menu_button(
+                    &id,
+                    open,
+                    self.open || focus.is_focused(window),
+                    if self.selected {
+                        colors.limestone_lo
+                    } else {
+                        colors.limestone_hover
+                    },
+                    false,
+                ))
+            })
     }
 }
 
@@ -776,11 +884,17 @@ impl OccupantMark {
     }
 }
 
+/// The height of the line of a status text under the name of a person in a voice channel,
+/// in design pixels.
+pub const OCCUPANT_STATUS_LINE: f32 = 15.0;
+
 /// One person in a voice channel.
 #[derive(IntoElement)]
 pub struct OccupantRow {
     id: ElementId,
     name: SharedString,
+    /// The status text of the person, under the name, with the selector of its line.
+    status: Option<(SharedString, SharedString)>,
     seed: u128,
     picture: Option<std::sync::Arc<gpui::RenderImage>>,
     presence: Option<junto_client_core::protocol::presence::Presence>,
@@ -798,6 +912,7 @@ impl OccupantRow {
         Self {
             id: id.into(),
             name: name.into(),
+            status: None,
             seed,
             picture: None,
             presence: None,
@@ -834,6 +949,17 @@ impl OccupantRow {
         self
     }
 
+    /// The status text of the person, as a second line of [`OCCUPANT_STATUS_LINE`] under
+    /// the name (ADR 0401).
+    pub fn status_text(
+        mut self,
+        status: Option<SharedString>,
+        selector: impl Into<SharedString>,
+    ) -> Self {
+        self.status = status.map(|status| (status, selector.into()));
+        self
+    }
+
     pub fn marks(mut self, marks: Vec<OccupantMark>) -> Self {
         self.marks = marks;
         self
@@ -864,6 +990,10 @@ impl RenderOnce for OccupantRow {
         let theme = theme(cx);
         let colors = theme.colors;
         let mut label = self.name.to_string();
+        if let Some((status, _)) = &self.status {
+            label.push_str(", ");
+            label.push_str(status);
+        }
         for mark in &self.marks {
             label.push_str(", ");
             label.push_str(mark.label());
@@ -902,6 +1032,7 @@ impl RenderOnce for OccupantRow {
                 .tooltip(tooltip(label))
                 .child(drawn)
         });
+        let id = self.id.clone();
         div()
             .id(self.id)
             .role(Role::ListItem)
@@ -909,11 +1040,17 @@ impl RenderOnce for OccupantRow {
             .when_some(self.selector, |row, selector| {
                 row.debug_selector(move || selector.to_string())
             })
+            .relative()
             .flex()
             .flex_none()
             .items_center()
             .gap(u(8.0))
-            .h(u(theme.metrics.occupant_row_height))
+            .h(u(theme.metrics.occupant_row_height
+                + if self.status.is_some() {
+                    OCCUPANT_STATUS_LINE
+                } else {
+                    0.0
+                }))
             .pl(u(37.0))
             .pr(u(10.0))
             .typeface(theme.types.control, &theme)
@@ -921,10 +1058,11 @@ impl RenderOnce for OccupantRow {
             .ink(colors.ink_2)
             .hover(move |style| style.bg(Hsla::from(colors.limestone_hover)))
             .when(self.open, |row| row.bg(Hsla::from(colors.limestone_hover)))
-            .when_some(self.on_menu, |row, open| {
+            .when_some(self.on_menu.clone(), |row, open| {
                 let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
                 let (by_click, by_key) = (open.clone(), open);
-                row.track_focus(&focus)
+                row.group(MENU_ROW)
+                    .track_focus(&focus)
                     .children(super::reveal::report(&focus, window))
                     .focus_visible(move |style| style.shadow(ring))
                     .on_context_menu(move |window, cx| by_click(window, cx))
@@ -945,12 +1083,28 @@ impl RenderOnce for OccupantRow {
                     .when_some(self.profile, |avatar, profile| avatar.profile(profile)),
             )
             .child(
-                div().flex_1().min_w_0().child(match self.profile {
-                    Some(target) => super::ProfileName::new("person-name", self.name, target)
-                        .role_color(self.name_color)
-                        .into_any_element(),
-                    None => div().truncate().child(self.name).into_any_element(),
-                }),
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(match self.profile {
+                        Some(target) => super::ProfileName::new("person-name", self.name, target)
+                            .role_color(self.name_color)
+                            .into_any_element(),
+                        None => div().truncate().child(self.name).into_any_element(),
+                    })
+                    .when_some(self.status, |column, (status, selector)| {
+                        column.child(
+                            div()
+                                .debug_selector(move || selector.to_string())
+                                .typeface(theme.types.small, &theme)
+                                .line_height(u(OCCUPANT_STATUS_LINE))
+                                .ink(colors.ink_2)
+                                .truncate()
+                                .child(status),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -960,5 +1114,14 @@ impl RenderOnce for OccupantRow {
                     .gap(u(7.0))
                     .children(marks),
             )
+            .when_some(self.on_menu, |row, open| {
+                row.child(row_menu_button(
+                    &id,
+                    open,
+                    self.open || focus.is_focused(window),
+                    colors.limestone_hover,
+                    false,
+                ))
+            })
     }
 }

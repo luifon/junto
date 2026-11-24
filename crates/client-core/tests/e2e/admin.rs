@@ -49,6 +49,7 @@ fn message(text: &str) -> SendMessage {
         document: document(text),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     }
 }
 

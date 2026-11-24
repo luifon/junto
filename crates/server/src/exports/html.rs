@@ -276,6 +276,10 @@ pub fn message(message: &Message, names: &Names) -> String {
         let _ = write!(out, " <a href=\"#m-{reply_to}\">reply</a>");
     }
     out.push_str("</header>\n");
+    // The comment of a forward stands above the forwarded content (ADR 0408).
+    if let Some(comment) = &message.comment {
+        document(comment, names, &mut out);
+    }
     if let Some(text) = &message.document {
         document(text, names, &mut out);
     }
@@ -339,7 +343,12 @@ pub fn mentioned(messages: &[Message]) -> (Vec<AccountId>, Vec<WorkspaceRoleId>)
         _ => {}
     };
     for message in messages {
-        for (node, _) in message.document.iter().flat_map(Document::inlines) {
+        for (node, _) in message
+            .comment
+            .iter()
+            .chain(message.document.iter())
+            .flat_map(Document::inlines)
+        {
             take(node);
         }
     }
@@ -388,6 +397,7 @@ mod tests {
             pinned: false,
             files_removed_by_retention: false,
             reply_authors: Vec::new(),
+            comment: None,
         }
     }
 

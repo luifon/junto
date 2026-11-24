@@ -462,7 +462,7 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
     });
 
     // Nobody has a camera: the setting leaves out both tiles and says so.
-    window.click("open-call-settings");
+    window.open_call_devices();
     window.click_in_settings("hide-without-video");
     window.press("escape");
     window.until("both tiles are hidden", |window| {
@@ -552,7 +552,7 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
     });
 
     // The setting is turned off: both tiles return.
-    window.click("open-call-settings");
+    window.open_call_devices();
     window.click_in_settings("hide-without-video");
     window.press("escape");
     window.until("both tiles return", |window| {

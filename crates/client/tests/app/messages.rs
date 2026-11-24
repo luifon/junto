@@ -33,6 +33,7 @@ impl Admin {
             document,
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world
             .run(
@@ -108,10 +109,17 @@ impl Window {
     }
 
     /// Types a text into the composer and sends it with Enter.
+    /// Types a text into the editor of the main area that has the keyboard and sends it with
+    /// Enter: the editor of a row while a message is edited, the composer otherwise.
     pub fn write(&mut self, text: &str) {
         self.in_shell(|shell, window, cx| {
-            shell.type_message(Pane::Main, text, window, cx);
-            shell.focus_composer(Pane::Main, window, cx);
+            let pen = if shell.compose_state(Pane::Main).1.is_some() {
+                junto_client::shell::Pen::Edit(Pane::Main)
+            } else {
+                junto_client::shell::Pen::Compose(Pane::Main)
+            };
+            shell.type_message(pen, text, window, cx);
+            shell.focus_composer(pen, window, cx);
         });
         self.press("enter");
     }
@@ -288,17 +296,24 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
         (None, None)
     );
 
-    // The arrow up in an empty composer edits the last own message; the composer holds
-    // its text with the marks, and Enter saves.
+    // The arrow up in an empty composer edits the last own message in its row; the editor
+    // of the row holds its text with the marks, and Enter saves (ADR 0740).
     window.in_shell(|shell, window, cx| shell.focus_composer(Pane::Main, window, cx));
     window.press("up");
     assert_eq!(
         window.in_shell(|shell, _, _| shell.compose_state(Pane::Main)),
         (None, Some(reply.message.id))
     );
+    assert!(window.shows_named(format!("message-editor:{}", reply.message.id)));
+    assert_eq!(
+        window.in_shell(
+            |shell, _, cx| shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+        ),
+        "Thank you"
+    );
     assert_eq!(
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
-        "Thank you"
+        ""
     );
     window.press("escape");
     assert_eq!(
@@ -308,7 +323,9 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
     window
         .in_shell(|shell, window, cx| shell.edit_message(Pane::Main, hello.message.id, window, cx));
     assert_eq!(
-        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        window.in_shell(
+            |shell, _, cx| shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+        ),
         "Hello **world**, see `main.rs`"
     );
     window.write("Hello *everyone*");
@@ -585,9 +602,7 @@ fn the_unread_signs_follow_other_channels_and_end_when_the_messages_are_read(
             .any(|row| row.message.id == last && row.mentions_own)
     );
     window.until("the messages are read", |window| {
-        if window.shows("mark-as-read") {
-            window.click("mark-as-read");
-        }
+        window.mark_shown_as_read();
         unread(window, voice.id) == (0, 0)
     });
     let view = window.view();
@@ -661,9 +676,7 @@ fn a_new_account_can_mark_positions_seen_by_the_previous_account(cx: &mut TestAp
     window.until("the unread sign", |window| unread(window) == 3);
     window.click_channel(&voice.name);
     window.until("the chat is read by the first account", |window| {
-        if window.shows("mark-as-read") {
-            window.click("mark-as-read");
-        }
+        window.mark_shown_as_read();
         unread(window) == 0
     });
 
@@ -682,9 +695,7 @@ fn a_new_account_can_mark_positions_seen_by_the_previous_account(cx: &mut TestAp
     });
     window.click_channel(&voice.name);
     window.until("the chat is read by the new account", |window| {
-        if window.shows("mark-as-read") {
-            window.click("mark-as-read");
-        }
+        window.mark_shown_as_read();
         unread(window) == 0
     });
 }
@@ -715,6 +726,7 @@ fn a_quoted_message_that_is_not_loaded_follows_its_changes(cx: &mut TestAppConte
         document: document("an answer"),
         reply_to: Some(quoted.id),
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(api.send_message(PlaceId::Channel(channel_id), &answer))
@@ -1098,6 +1110,7 @@ fn the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server(
             document: document("A chart"),
             reply_to: None,
             attachments: vec![attachment_id],
+            comment: None,
         };
         admin
             .handle
@@ -1519,6 +1532,7 @@ fn an_administrator_deletes_one_permanent_message_of_another_person(cx: &mut Tes
             document: document(text),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world
             .run(luca.api().send_message(PlaceId::Channel(general), &message))
@@ -1541,7 +1555,8 @@ fn an_administrator_deletes_one_permanent_message_of_another_person(cx: &mut Tes
         cx.simulate_mouse_move(bounds.center(), None::<MouseButton>, Modifiers::none())
     });
     window.settle();
-    window.click_named(format!("delete:{}", wrong.id));
+    window.right_click_message(wrong.id);
+    window.click("message-delete");
     assert!(window.shows("confirm-delete-message") && window.shows("confirm-delete-permanent"));
     window.click("delete-message");
     window.until(
@@ -1708,6 +1723,7 @@ fn scrolling_up_reads_the_older_history_of_a_channel(cx: &mut TestAppContext) {
                 document: document(text),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             };
             world
                 .run(
@@ -1886,6 +1902,7 @@ fn a_moderator_deletes_an_ordinary_message_of_another_person(cx: &mut TestAppCon
             document: document(text),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world.run(luca.api().send_message(place, &message)).unwrap()
     };
@@ -1898,10 +1915,12 @@ fn a_moderator_deletes_an_ordinary_message_of_another_person(cx: &mut TestAppCon
     });
     assert!(!row.own && !row.message.permanent && !row.can_edit);
 
-    // The bar of the message under the pointer has Delete; the question names no
-    // permanent message, and Delete removes the message.
+    // The menu of the message has Delete, the last item and not on the bar; the question
+    // names no permanent message, and Delete removes the message.
     window.hover_message(wrong.id);
-    window.click_named(format!("delete:{}", wrong.id));
+    assert!(!window.shows_named(format!("delete:{}", wrong.id)));
+    window.click_named(format!("message-more:{}", wrong.id));
+    window.click("message-delete");
     assert!(window.shows("confirm-delete-message"));
     assert!(!window.shows("confirm-delete-permanent"));
     window.click("delete-message");
@@ -2090,7 +2109,7 @@ fn a_file_dialog_answered_after_the_server_was_added_again_attaches_nothing(
 
     // Meanwhile the person removes the server from this device, adds it again, and the
     // phone links this device to the account.
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.click("menu-remove-server");
     window.click("confirm");
     window.until("the server is removed", |window| {
@@ -2111,7 +2130,7 @@ fn a_file_dialog_answered_after_the_server_was_added_again_attaches_nothing(
     world
         .run(phone.api().approve_device_link(code, public_key))
         .unwrap();
-    window.click("dialog-close");
+    window.click("link-all-close");
     window.until("the channel is shown for the same account", |window| {
         window.view().person.account_id == Some(luca)
             && window
@@ -2181,7 +2200,11 @@ fn the_tabs_of_the_emoji_picker_do_not_cover_each_other(cx: &mut TestAppContext)
     for (width, height) in [(1440.0, 900.0), (720.0, 480.0)] {
         window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height))));
         window.in_shell(|shell, window, cx| {
-            shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+            shell.open_emoji_picker(
+                EmojiTarget::Compose(junto_client::shell::Pen::Compose(Pane::Main)),
+                window,
+                cx,
+            );
         });
         assert!(window.shows("emoji-picker"));
         // The picker paints the name of its open group once, above the grid, and each tab
@@ -2318,7 +2341,11 @@ fn an_emoji_that_the_fonts_do_not_draw_is_shown_by_its_short_code(cx: &mut TestA
     );
 
     window.in_shell(|shell, window, cx| {
-        shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+        shell.open_emoji_picker(
+            EmojiTarget::Compose(junto_client::shell::Pen::Compose(Pane::Main)),
+            window,
+            cx,
+        );
         shell.open_emoji_group(8, cx);
     });
     assert!(window.shows("emoji-group-flags"));
@@ -2345,7 +2372,11 @@ fn an_open_picker_keeps_its_emoji_when_a_measurement_arrives(cx: &mut TestAppCon
     let grinning = "\u{1f600}";
     let cell = format!("emoji:{grinning}");
     window.in_shell(|shell, window, cx| {
-        shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+        shell.open_emoji_picker(
+            EmojiTarget::Compose(junto_client::shell::Pen::Compose(Pane::Main)),
+            window,
+            cx,
+        );
     });
     assert!(window.shows_named(cell.clone()));
     window.in_shell(|_, _, cx| {
@@ -2361,7 +2392,11 @@ fn an_open_picker_keeps_its_emoji_when_a_measurement_arrives(cx: &mut TestAppCon
     );
     window.press("escape");
     window.in_shell(|shell, window, cx| {
-        shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+        shell.open_emoji_picker(
+            EmojiTarget::Compose(junto_client::shell::Pen::Compose(Pane::Main)),
+            window,
+            cx,
+        );
     });
     assert!(window.shows("emoji-picker"));
     assert!(
@@ -2446,7 +2481,7 @@ fn pending_message_and_file_menus_copy_retry_and_expire_with_the_outbox(cx: &mut
         "Keep these notes"
     );
     window.right_click_named(format!("waiting-file:{id}:0"));
-    window.click("context-action:Copy name");
+    window.click("context-action:Copy file name");
     assert_eq!(
         window.cx.read_from_clipboard().unwrap().text().unwrap(),
         "notes.txt"
@@ -2503,7 +2538,7 @@ fn a_file_waiting_for_upload_has_a_copy_and_discard_menu(cx: &mut TestAppContext
     let id = pending_id(&mut window);
     window.right_click_named(format!("waiting-file:{id}:0"));
     assert!(!window.shows("context-action:Send again"));
-    window.click("context-action:Copy name");
+    window.click("context-action:Copy file name");
     assert_eq!(
         window.cx.read_from_clipboard().unwrap().text().unwrap(),
         "waiting.txt"

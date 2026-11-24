@@ -93,6 +93,7 @@ fn a_message_link_opens_a_direct_conversation(cx: &mut TestAppContext) {
                 document: document("the private message"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

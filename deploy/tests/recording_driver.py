@@ -1098,6 +1098,16 @@ def phase_recording(scene: Scene, arguments: argparse.Namespace) -> None:
     if any(not segment.get("file") for segment in segments):
         raise Failed("a segment has no file; the files cannot be examined")
     composite = next(segment for segment in segments if segment["source"] == "composite")
+    # ADR 0606: the composite follows the drift of each microphone file and lacks no
+    # continuous stretch of sound of more than 2 seconds.
+    report.check(
+        "the composite lacks no stretch of the sound of a microphone",
+        composite["file"].get("missing_sound") is None and "sound_missing" not in composite["file"]["problems"],
+        composite["file"],
+    )
+    # ADR 0604: a start request without a language detects the language of each sentence, as
+    # in API version 1 before the default language of the server.
+    report.check("a start without a language takes `auto`", recording.get("language") == "auto", recording.get("language"))
     by_account = {segment["account_id"]: segment for segment in segments if segment["source"] != "composite"}
     audio = {
         "A": by_account[scene.owner.account_id],
@@ -1344,6 +1354,13 @@ def phase_recorder_lost(scene: Scene, arguments: argparse.Namespace) -> None:
     report.info(f"recorder lost: final state {recording['state']}, segments {summary}")
     report.check("the recording with lost jobs is partly failed", recording["state"] == "partly_failed", recording["state"])
     lost_segments = [segment for segment in segments if segment["id"] in first_ids]
+    # ADR 0606: only a start attempt that never recorded is excused by the job that replaced
+    # it. These jobs had recorded, so their loss counts although each source has a later file.
+    report.check(
+        "the lost jobs had recorded, so the jobs that replaced them do not make the recording ready",
+        all(segment.get("started_at") for segment in lost_segments),
+        summary,
+    )
     later = [segment for segment in segments if segment["id"] not in first_ids]
     report.check(
         "the four segments of the killed recorder failed with `recorder_lost`",

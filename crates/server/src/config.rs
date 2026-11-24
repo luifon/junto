@@ -209,6 +209,12 @@ pub struct RecordingLimits {
     pub report_time_limit: Duration,
     /// A job that is older than this and has no participant in the room is lost.
     pub lost_after: Duration,
+    /// The same for the job of the composite, whose browser page joins the room only after
+    /// it has started and signals its start up to 10 seconds after it joined (ADR 0604).
+    pub composite_lost_after: Duration,
+    /// The time between two windows in which the processing measures where the sound of a
+    /// microphone file lies in the composite (ADR 0606).
+    pub drift_every: Duration,
     /// The time that a job has to report its end after its stop was delivered.
     pub ending_grace: Duration,
     /// The requests to start the job of one track, or the composite, that fail in a row
@@ -265,6 +271,8 @@ impl Default for RecordingLimits {
             request_timeout: Duration::seconds(5),
             report_time_limit: Duration::seconds(5),
             lost_after: Duration::seconds(10),
+            composite_lost_after: Duration::seconds(45),
+            drift_every: Duration::minutes(5),
             ending_grace: Duration::seconds(20),
             start_attempts: 3,
             most_segments: 2000,
@@ -366,12 +374,6 @@ pub struct CallLimits {
     /// Joins, locks, requests, invitations, moves, meetings and blocks of one session.
     pub actions: RateLimit,
     pub state_reports: RateLimit,
-    pub speaking_reports: RateLimit,
-    /// The shortest time between two speaking events of one call.
-    pub speaking_interval: Duration,
-    /// A speaking mark ends when its report is not renewed within this time.
-    pub speaking_mark_lifetime: Duration,
-    pub most_speaking_marks: usize,
 }
 
 impl Default for CallLimits {
@@ -413,13 +415,6 @@ impl Default for CallLimits {
                 attempts: 30,
                 window: Duration::seconds(10),
             },
-            speaking_reports: RateLimit {
-                attempts: 20,
-                window: Duration::seconds(10),
-            },
-            speaking_interval: Duration::seconds(1),
-            speaking_mark_lifetime: Duration::seconds(5),
-            most_speaking_marks: 16,
         }
     }
 }
@@ -433,6 +428,8 @@ pub struct Limits {
     pub invite_longest_lifetime: Duration,
     pub invite_most_uses: u32,
     pub device_link_lifetime: Duration,
+    /// How long the relay of a device link lives after the approval (ADR 0104).
+    pub device_link_relay_lifetime: Duration,
     pub join_request_lifetime: Duration,
     pub most_pending_join_requests: u32,
     pub join_request_history: Duration,
@@ -608,6 +605,7 @@ impl Default for Limits {
             invite_longest_lifetime: Duration::days(365),
             invite_most_uses: 10_000,
             device_link_lifetime: Duration::minutes(10),
+            device_link_relay_lifetime: Duration::minutes(15),
             join_request_lifetime: Duration::days(7),
             most_pending_join_requests: 200,
             join_request_history: Duration::days(30),

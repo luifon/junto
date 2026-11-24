@@ -40,7 +40,6 @@ impl Places {
 struct Workspace {
     id: WorkspaceId,
     member: bool,
-    person: (i64, i64),
     roles: Vec<(WorkspaceRoleId, i64, bool)>,
 }
 
@@ -152,7 +151,7 @@ async fn load_for(
              'channels' ,cj.value, 'workspaces'
              ,coalesce((select jsonb_agg(jsonb_build_object( 'id' ,w.id, 'member' ,exists(select 1 from
              workspace_members wm where wm.workspace_id=w.id and wm.account_id=a.id),
-             'person', coalesce((select jsonb_build_array(p.allow,p.deny) from workspace_person_overrides p where p.workspace_id=w.id and p.account_id=a.id),'[0,0]'::jsonb), 'roles' ,(select
+             'roles' ,(select
              jsonb_agg(jsonb_build_array(r.id,r.permissions,r.is_everyone)) from workspace_roles r where
              r.workspace_id=w.id and (r.is_everyone or exists( select 1 from member_roles mr where mr.role_id=r.id and
              mr.account_id=a.id))))) from workspaces w where w.deleted_at is null and ($2::uuid[] is null or w.id in(select workspace_id from
@@ -201,7 +200,6 @@ async fn load_for(
                     }
                 }
                 let scope = WorkspaceScope {
-                    person_override: stored_override(workspace.person.0, workspace.person.1)?,
                     membership: if workspace.member {
                         Membership::Member
                     } else {

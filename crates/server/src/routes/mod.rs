@@ -32,6 +32,7 @@ pub mod calls;
 pub mod channels;
 pub mod contacts;
 pub mod departures;
+pub mod device_relay;
 pub mod exports;
 pub mod glossary;
 pub mod groups;
@@ -158,6 +159,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         routes!(threads::set_follow, threads::remove_follow)
     });
     add(&mut router, || routes!(threads::followed));
+    add(&mut router, || routes!(threads::workspace_followed));
     add(&mut router, || routes!(pins::list));
     add(&mut router, || routes!(pins::pin, pins::unpin));
     add(&mut router, || routes!(search::search));
@@ -258,6 +260,12 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(account_cards::get_card));
     add(&mut router, || routes!(presence::read_presence));
     add(&mut router, || routes!(presence::set_presence));
+    add(&mut router, || routes!(presence::set_status_text));
+    add(&mut router, || routes!(device_relay::read_offer));
+    add(&mut router, || routes!(device_relay::write_answer));
+    add(&mut router, || {
+        routes!(device_relay::read_answer, device_relay::end)
+    });
     add(&mut router, || routes!(account::get_avatar));
     add(&mut router, || routes!(account::list_devices));
     add(&mut router, || {
@@ -388,6 +396,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     });
     add(&mut router, || routes!(exports::get_export_file));
     add(&mut router, || routes!(channels::get_channel_permissions));
+    add(&mut router, || routes!(channels::get_channel_viewers));
     add(&mut router, || routes!(rules::get_channel_rules));
     add(&mut router, || {
         routes!(
@@ -443,7 +452,6 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || {
         routes!(calls::raise_hand, calls::lower_hand)
     });
-    add(&mut router, || routes!(calls::report_speaking));
     add(&mut router, || routes!(calls::get_channel_call));
     add(&mut router, || routes!(calls::update_call_settings));
     add(&mut router, || routes!(calls::set_voice_channel_status));
@@ -485,6 +493,12 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     });
     add(&mut router, || routes!(recordings::list_recordings));
     add(&mut router, || {
+        routes!(
+            recordings::get_recording_settings,
+            recordings::set_recording_settings
+        )
+    });
+    add(&mut router, || {
         routes!(recordings::get_recording, recordings::remove_recording)
     });
     add(&mut router, || routes!(recordings::get_segment_file));
@@ -516,9 +530,20 @@ fn documented_routes() -> OpenApiRouter<AppState> {
 /// The OpenAPI document of every route that [`router`] serves.
 pub fn openapi() -> utoipa::openapi::OpenApi {
     let mut document = documented_routes().into_openapi();
-    let group_capability = document.paths.paths.get("/api/v1/snapshot").and_then(|item| item.get.as_ref())
-        .and_then(|operation| operation.parameters.as_ref())
-        .and_then(|parameters| parameters.iter().find(|parameter| matches!(parameter, utoipa::openapi::RefOr::T(value) if value.name.eq_ignore_ascii_case(junto_protocol::message::GROUPS_HEADER)))).cloned();
+    // The headers of the group conversations, as the snapshot documents them, belong to every
+    // route of messages, calls, events and exports (ADR 0302).
+    let snapshot_parameter = |name: &str| {
+        document.paths.paths.get("/api/v1/snapshot").and_then(|item| item.get.as_ref())
+            .and_then(|operation| operation.parameters.as_ref())
+            .and_then(|parameters| parameters.iter().find(|parameter| matches!(parameter, utoipa::openapi::RefOr::T(value) if value.name.eq_ignore_ascii_case(name)))).cloned()
+    };
+    let group_capabilities: Vec<_> = [
+        junto_protocol::message::GROUPS_HEADER,
+        junto_protocol::message::GROUP_NAMES_HEADER,
+    ]
+    .into_iter()
+    .filter_map(|name| snapshot_parameter(name).map(|parameter| (name, parameter)))
+    .collect();
     for item in document.paths.paths.values_mut() {
         for operation in [
             &mut item.get,
@@ -533,10 +558,11 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
             if operation.tags.as_ref().is_some_and(|tags| {
                 tags.iter()
                     .any(|tag| matches!(tag.as_str(), "messages" | "calls" | "events" | "exports"))
-            }) && let Some(capability) = &group_capability
-            {
+            }) {
                 let parameters = operation.parameters.get_or_insert_with(Vec::new);
-                if !parameters.iter().any(|parameter| matches!(parameter, utoipa::openapi::RefOr::T(value) if value.name.eq_ignore_ascii_case(junto_protocol::message::GROUPS_HEADER))) { parameters.push(capability.clone()); }
+                for (name, capability) in &group_capabilities {
+                    if !parameters.iter().any(|parameter| matches!(parameter, utoipa::openapi::RefOr::T(value) if value.name.eq_ignore_ascii_case(name))) { parameters.push(capability.clone()); }
+                }
             }
             for (status, response) in &mut operation.responses.responses {
                 if status.starts_with('2')
@@ -549,6 +575,27 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
                         header.into(),
                     );
                 }
+            }
+        }
+    }
+    // A retired route stays in version 1, marked deprecated with the message of its
+    // refusal (ADR 0201).
+    if let Some(item) = document
+        .paths
+        .paths
+        .get_mut("/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions")
+    {
+        for operation in [&mut item.get, &mut item.put, &mut item.patch]
+            .into_iter()
+            .flatten()
+        {
+            operation.deprecated = Some(utoipa::openapi::Deprecated::True);
+            operation.description = Some(person_permissions::MEMBER_RULES_RETIRED.to_owned());
+            if let Some(error) = operation.responses.responses.get("default").cloned() {
+                operation
+                    .responses
+                    .responses
+                    .insert("410".to_owned(), error);
             }
         }
     }

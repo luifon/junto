@@ -57,6 +57,27 @@ pub(crate) struct SavedFiles {
 pub(crate) struct Snapshot {
     pub texts: Vec<SavedDraft>,
     pub files: Vec<SavedFiles>,
+    /// The edits of messages in their rows, apart from the new messages (ADR 0740).
+    #[serde(default)]
+    pub edits: Vec<SavedDraft>,
+}
+impl Snapshot {
+    /// A book of an earlier build kept the edit of a message in the draft of its place.
+    /// That draft moves to the edits with its target and original document, and the place
+    /// keeps no draft of a new message (ADR 0740). An edit already saved for the place wins.
+    pub fn upgraded(mut self) -> Self {
+        let (edits, texts): (Vec<_>, Vec<_>) = std::mem::take(&mut self.texts)
+            .into_iter()
+            .partition(|draft| draft.editing.is_some());
+        self.texts = texts;
+        for mut edit in edits {
+            if self.edits.iter().all(|held| held.desk != edit.desk) {
+                edit.reply = None;
+                self.edits.push(edit);
+            }
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -95,5 +116,51 @@ mod tests {
             .collect();
         assert_eq!(desks.len(), 2);
         assert_eq!(desks[&other.desk], "other account");
+    }
+
+    /// A book of the earlier format, without `edits`, keeps an edit in `texts`: it moves to
+    /// the edits with its target and original document.
+    #[test]
+    fn an_edit_in_a_book_of_an_earlier_build_moves_to_the_edits() {
+        let channel = junto_client_core::protocol::ids::ChannelId::generate();
+        let desk = (
+            ServerId::generate(),
+            AccountId::generate(),
+            PlaceId::Channel(channel),
+        );
+        let message = MessageId::generate();
+        let original = Document { blocks: Vec::new() };
+        let written = crate::compose::written(&original, &|_| String::new());
+        let edit = SavedDraft {
+            desk,
+            entry_generation: 3,
+            text: "changed text".to_owned(),
+            tokens: Vec::new(),
+            reply: None,
+            editing: Some((message, original.clone(), written)),
+        };
+        let mut new_message = edit.clone();
+        new_message.desk.2 =
+            PlaceId::Channel(junto_client_core::protocol::ids::ChannelId::generate());
+        new_message.text = "a new message".to_owned();
+        new_message.editing = None;
+        let earlier = serde_json::json!({
+            "texts": [edit, new_message],
+            "files": [],
+        });
+        let snapshot: Snapshot = serde_json::from_value(earlier).unwrap();
+        let snapshot = snapshot.upgraded();
+        assert_eq!(snapshot.texts.len(), 1);
+        assert_eq!(snapshot.texts[0].text, "a new message");
+        assert_eq!(snapshot.edits.len(), 1);
+        assert_eq!(snapshot.edits[0].desk, desk);
+        assert_eq!(snapshot.edits[0].text, "changed text");
+        assert_eq!(
+            snapshot.edits[0]
+                .editing
+                .as_ref()
+                .map(|(id, document, _)| (*id, document.clone())),
+            Some((message, original))
+        );
     }
 }

@@ -1,22 +1,24 @@
 //! The devices page of the account layer (ADR 0112, ADR 0781): the devices of the account
-//! with a new name and the removal, and the approval of a new device by its link code.
+//! with a new name and the removal, and the button that links a new device with this
+//! server checked (ADR 0782).
 
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Role, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
+    Window, div, prelude::FluentBuilder,
 };
 use junto_client_core::protocol::ids::DeviceId;
 
 use super::Mode;
 use crate::assets::Icon;
 use crate::shell::Shell;
-use crate::shell::admin::{group_label, line, named, page_title, refusal, row_action, sentence};
+use crate::shell::admin::{line, named, page_title, refusal, row_action, sentence};
 use crate::state::account::{
-    AccountPage, AccountView, AskKind, DeviceLine, DeviceList, DevicesPage, LinkView, PageView,
+    AccountPage, AccountView, AskKind, DeviceLine, DeviceList, DevicesPage,
 };
+use crate::state::linking::LinkRole;
 use crate::text;
 use crate::theme::{Theme, theme, u};
-use crate::ui::{Button, ButtonKind, Chip, Field, FieldKind, Notice, StyleExt};
+use crate::ui::{Button, ButtonKind, Chip, Field, Notice, StyleExt};
 
 /// A number that tells the rows of the devices apart as elements.
 fn row_number(device_id: DeviceId) -> u64 {
@@ -74,34 +76,6 @@ fn device_text(
         .child(small(text::account::last_login(row.last_login, cycle)))
 }
 
-/// A key as a person compares it: fixed-width type, in its groups.
-fn fingerprint(
-    label: &'static str,
-    text: &str,
-    selector: &'static str,
-    theme: &Theme,
-) -> gpui::Div {
-    div()
-        .flex_none()
-        .child(
-            div()
-                .typeface(theme.types.label, theme)
-                .ink(theme.colors.bronze)
-                .child(label),
-        )
-        .child(
-            div()
-                .id(selector)
-                .role(Role::Label)
-                .aria_label(SharedString::from(format!("{label}: {text}")))
-                .debug_selector(move || selector.to_owned())
-                .mt(u(2.0))
-                .typeface(theme.types.mono_code, theme)
-                .ink(theme.colors.ink)
-                .child(text.to_owned()),
-        )
-}
-
 impl Shell {
     /// Puts text into the field for the new name of a device, as typing does.
     pub fn type_device_name(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -138,95 +112,6 @@ impl Shell {
         self.state
             .update(cx, |state, cx| state.remove_device(device_id, cx));
         cx.notify();
-    }
-
-    /// Puts text into the field for the link code of a new device, as typing does.
-    pub fn type_link_code(&mut self, code: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let code = code.to_owned();
-        self.account
-            .code
-            .update(cx, |field, cx| field.set_value(code, window, cx));
-        self.link_code_changed(cx);
-    }
-
-    /// What was told about the text of the code field belongs to the text before.
-    pub(super) fn link_code_changed(&mut self, cx: &mut Context<Self>) {
-        self.account.invalid = None;
-        cx.notify();
-    }
-
-    /// True when the field for the link code holds no text.
-    pub fn link_code_is_empty(&self, cx: &gpui::App) -> bool {
-        self.account.code.read(cx).value().is_empty()
-    }
-
-    /// Looks up the typed link code. An empty field is not sent, and neither is a second
-    /// code while the first one is looked up. The field is emptied when the lookup
-    /// starts: the flow holds the code from then on, and the field keeps no code that
-    /// the server refused.
-    pub fn submit_link_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let link = self
-            .state
-            .read(cx)
-            .account_view()
-            .and_then(|view| match view.page {
-                PageView::Devices(page) => page.link,
-                PageView::Profile(_) | PageView::Recoveries(_) | PageView::Departure(_) => None,
-            });
-        if !matches!(
-            link,
-            Some(LinkView::EnterCode {
-                looking_up: false,
-                ..
-            })
-        ) {
-            return;
-        }
-        let code = self.account.code.read(cx).value().trim().to_owned();
-        if code.is_empty() {
-            self.account.invalid = Some(text::account::LINK_CODE_EMPTY);
-        } else if code.chars().count() > crate::state::account::LONGEST_TYPED_CODE {
-            self.account.invalid = Some(text::account::LINK_CODE_TOO_LONG);
-        } else {
-            self.account.invalid = None;
-            self.account
-                .code
-                .update(cx, |field, cx| field.set_value("", window, cx));
-            self.state
-                .update(cx, |state, cx| state.look_up_link(&code, cx));
-        }
-        cx.notify();
-    }
-
-    /// Ends the link that the page shows: the flow starts again, and the code is gone.
-    fn end_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.account.invalid = None;
-        self.account
-            .code
-            .update(cx, |field, cx| field.set_value("", window, cx));
-        self.state.update(cx, |state, cx| state.reset_link(cx));
-    }
-
-    /// The code field holds a code only while the page asks for one. A lookup empties
-    /// the field when it starts; a field that was filled afterwards is emptied here when
-    /// the page shows the key, the result or another page.
-    pub(super) fn settle_link_code(
-        &mut self,
-        view: &AccountView,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let asks_for_code = match &view.page {
-            PageView::Devices(page) => {
-                matches!(page.link, None | Some(LinkView::EnterCode { .. }))
-            }
-            PageView::Profile(_) | PageView::Recoveries(_) | PageView::Departure(_) => false,
-        };
-        if !asks_for_code && !self.account.code.read(cx).value().is_empty() {
-            self.account
-                .code
-                .update(cx, |field, cx| field.set_value("", window, cx));
-        }
     }
 
     fn render_device_row(
@@ -382,6 +267,8 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
+            // Room at the right end for the menu button of the row (ADR 0731).
+            .pr(u(28.0))
             .child(
                 named(
                     format!("device-row-{device_id}"),
@@ -393,9 +280,11 @@ impl Shell {
                 view.refused(rename).or(view.refused(remove)),
                 "device-refused",
             ));
-        let row = crate::ui::bind_action_menu(
+        let focused = focus.is_focused(window);
+        let row = crate::ui::bind_row_action_menu(
             row,
             SharedString::from(format!("device-actions-{device_id}")),
+            crate::ui::RowMenu::overlay(focused),
             actions,
             window,
             cx,
@@ -470,217 +359,6 @@ impl Shell {
         }
     }
 
-    /// The approval of a new device: the code, then the key to compare, then the result.
-    fn render_link(
-        &mut self,
-        link: &LinkView,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let failure = |error: &Option<String>| {
-            Some(
-                crate::ui::notice_slot("link-error-slot").children(
-                    error
-                        .clone()
-                        .map(|error| Notice::error(error).selector("link-error")),
-                ),
-            )
-        };
-        let cancel = |cx: &mut Context<Self>| {
-            Button::new("link-cancel")
-                .label(text::CANCEL)
-                .selector("link-cancel")
-                .h(u(30.0))
-                .px(u(12.0))
-                .on_click(cx.listener(|this, _, window, cx| this.end_link(window, cx)))
-        };
-        match link {
-            LinkView::EnterCode { looking_up, error } => div()
-                .flex()
-                .flex_col()
-                .flex_none()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(u(8.0))
-                        .child(
-                            div().flex_none().w(u(220.0)).child(
-                                Field::new(&self.account.code, text::account::LINK_CODE_FIELD)
-                                    .kind(FieldKind::Code)
-                                    .selector("link-code-field"),
-                            ),
-                        )
-                        .child(
-                            Button::new("link-look-up")
-                                .label(if *looking_up {
-                                    text::account::LOOKING_UP
-                                } else {
-                                    text::account::LOOK_UP
-                                })
-                                .selector("link-look-up")
-                                .disabled(*looking_up)
-                                .h(u(32.0))
-                                .px(u(12.0))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.submit_link_code(window, cx);
-                                })),
-                        ),
-                )
-                .child(sentence(text::account::LINK_NEW_DEVICE_HELP, theme).mt(u(5.0)))
-                .when_some(self.account.invalid, |column, invalid| {
-                    column.child(
-                        div()
-                            .flex_none()
-                            .mt(u(6.0))
-                            .child(Notice::error(invalid).selector("link-code-invalid")),
-                    )
-                })
-                .children(failure(error))
-                .into_any_element(),
-            LinkView::Confirm {
-                device_name,
-                fingerprint: key,
-                expires_at,
-                approving,
-                error,
-            } => div()
-                .flex()
-                .flex_col()
-                .flex_none()
-                .debug_selector(|| "link-confirm".to_owned())
-                // The name comes from the new device: it has a line of its own that is
-                // cut at the width of the page.
-                .child(
-                    sentence(text::account::new_device_named(device_name), theme)
-                        .truncate()
-                        .debug_selector(|| "link-device-name".to_owned()),
-                )
-                .child(
-                    fingerprint(
-                        text::account::KEY_OF_NEW_DEVICE,
-                        key,
-                        "link-fingerprint",
-                        theme,
-                    )
-                    .mt(u(8.0)),
-                )
-                .child(sentence(text::account::COMPARE_KEY, theme).mt(u(6.0)))
-                .child(
-                    sentence(
-                        text::account::code_expires(*expires_at, self.state.read(cx).hour_cycle()),
-                        theme,
-                    )
-                    .mt(u(2.0)),
-                )
-                .children(failure(error))
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .gap(u(8.0))
-                        .mt(u(10.0))
-                        .child(cancel(cx))
-                        .child(
-                            Button::new("link-approve")
-                                .kind(ButtonKind::Primary)
-                                .icon(Icon::Check)
-                                .label(if *approving {
-                                    text::account::APPROVING
-                                } else {
-                                    text::account::APPROVE
-                                })
-                                .selector("link-approve")
-                                .disabled(*approving)
-                                .h(u(30.0))
-                                .px(u(12.0))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.state.update(cx, |state, cx| state.approve_link(cx));
-                                })),
-                        ),
-                )
-                .into_any_element(),
-            LinkView::OutcomeUnknown {
-                device_name,
-                fingerprint: key,
-                checking,
-                error,
-            } => div()
-                .flex()
-                .flex_col()
-                .flex_none()
-                .child(
-                    Notice::new(text::account::OUTCOME_UNKNOWN)
-                        .icon(Icon::Warning)
-                        .selector("link-unknown"),
-                )
-                .child(
-                    sentence(text::account::new_device_named(device_name), theme)
-                        .truncate()
-                        .mt(u(8.0)),
-                )
-                .child(
-                    fingerprint(
-                        text::account::KEY_OF_NEW_DEVICE,
-                        key,
-                        "link-fingerprint",
-                        theme,
-                    )
-                    .mt(u(8.0)),
-                )
-                .children(failure(error))
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .gap(u(8.0))
-                        .mt(u(10.0))
-                        .child(cancel(cx))
-                        .child(
-                            Button::new("link-check")
-                                .kind(ButtonKind::Primary)
-                                .icon(Icon::Retry)
-                                .label(if *checking {
-                                    text::account::CHECKING
-                                } else {
-                                    text::CHECK_AGAIN
-                                })
-                                .selector("link-check")
-                                .disabled(*checking)
-                                .h(u(30.0))
-                                .px(u(12.0))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.state.update(cx, |state, cx| state.check_link(cx));
-                                })),
-                        ),
-                )
-                .into_any_element(),
-            LinkView::Approved { device_name } => div()
-                .flex_none()
-                .child(
-                    Notice::new(format!(
-                        "{}. {}",
-                        text::account::DEVICE_LINKED,
-                        text::account::device_linked(device_name)
-                    ))
-                    .icon(Icon::Check)
-                    .selector("link-approved")
-                    .action(
-                        Button::new("link-done")
-                            .kind(ButtonKind::Primary)
-                            .label(text::account::DONE)
-                            .selector("link-done")
-                            .h(u(28.0))
-                            .px(u(10.0))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.end_link(window, cx);
-                            })),
-                    ),
-                )
-                .into_any_element(),
-        }
-    }
-
     pub(crate) fn render_devices_page(
         &mut self,
         view: &AccountView,
@@ -690,10 +368,17 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let list = self.render_device_list(view, &page.list, &theme, window, cx);
-        let link = page
-            .link
-            .as_ref()
-            .map(|link| self.render_link(link, &theme, cx));
+        let server_id = view.server_id;
+        // The same flow as in the settings, with only this server checked (ADR 0782).
+        let link = Button::new("account-link-new-device")
+            .icon(Icon::Link)
+            .label(text::account::LINK_NEW_DEVICE)
+            .selector("account-link-new-device")
+            .h(u(30.0))
+            .px(u(12.0))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_link_all(LinkRole::FirstDevice, Some(server_id), window, cx);
+            }));
         div()
             .flex()
             .flex_col()
@@ -703,8 +388,7 @@ impl Shell {
                 &theme,
             ))
             .child(list)
-            .child(group_label(text::account::LINK_NEW_DEVICE, &theme))
-            .children(link)
+            .child(div().flex().flex_none().mt(u(12.0)).child(link))
             .into_any_element()
     }
 }
